@@ -20,6 +20,8 @@ import platformdirs
 import requests
 from loguru import logger
 
+from app.downloads import download_file as download_file_via_library
+
 try:
     import magic
 except ImportError:
@@ -516,6 +518,47 @@ def _reverse_mime(mime: str) -> str | None:
     return _REVERSE_MIME_MAP.get(mime)
 
 
+def _ensure_download_extension(path: Path, custom_filename: str | None = None) -> Path:
+    if custom_filename and "." in custom_filename:
+        return path
+
+    current_ext = path.suffix.lower()
+    if current_ext and current_ext not in {".bin", ".tmp"}:
+        return path
+
+    try:
+        head = path.read_bytes()[:4096]
+    except Exception:
+        return path
+
+    ext = _guess_ext_by_signature(head)
+    if ext == ".zip":
+        ext = _is_office_zip(head) or ext
+
+    if (not ext or ext in {".bin", ".tmp"}) and magic:
+        try:
+            ext = mimetypes.guess_extension(magic.from_buffer(head, mime=True))
+        except Exception:
+            ext = ext
+
+    if (not ext or ext in {".bin", ".tmp"}) and filetype:
+        try:
+            guessed = filetype.guess(head)
+            if guessed:
+                ext = "." + guessed.extension
+        except Exception:
+            ext = ext
+
+    if not ext or ext == current_ext:
+        return path
+
+    target = path.with_suffix(ext)
+    if target.exists() and target != path:
+        target = path.with_name(f"{path.stem}-{uuid.uuid4().hex[:8]}{ext}")
+    path.replace(target)
+    return target
+
+
 # ---------- 服务器侧推断 ----------
 # def _infer_ext_from_server(resp_headers: dict[str, str], url: str) -> str | None:
 #     # 1) Content-Disposition
@@ -558,222 +601,36 @@ def download_file(
     resume: bool = False,
 ) -> str | None:
     logger.debug(f"开始下载：{url}")
-
-    # 构造请求头（字典形式，便于 requests 直接使用）
     req_headers_dict: dict[str, str] = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
         "Connection": "keep-alive",
     }
     if headers:
-        # 覆盖/追加自定义头
         req_headers_dict.update(headers)
 
-    save_path = Path(save_path).expanduser().resolve()
-    save_dir = save_path if save_path.is_dir() else save_path.parent
-    save_dir.mkdir(parents=True, exist_ok=True)
+    result = download_file_via_library(
+        url=url,
+        save_path=save_path,
+        filename=custom_filename,
+        timeout=timeout,
+        max_retries=max_retries,
+        headers=req_headers_dict,
+        progress_callback=progress_callback,
+        resume=resume,
+    )
+    if not result:
+        return None
 
+    final_path = Path(result)
+    if final_path.exists():
+        try:
+            final_path = _ensure_download_extension(final_path, custom_filename)
+        except Exception as exc:
+            logger.debug("下载后缀修正失败: {error}", error=str(exc))
 
-    # 使用 requests 会话以复用连接、限制重定向次数
-    with requests.Session() as session:
-        session.headers.update(req_headers_dict)
-        session.max_redirects = 5  # 与原逻辑保持一致
-
-        for attempt in range(1, max_retries + 1):
-            start_offset = 0
-            tmp_path = save_dir / f"{uuid.uuid4().hex}.tmp"
-            mode = "wb"
-
-            # 失败后尝试断点续传：复用之前的临时文件
-            if resume and attempt > 1:
-                tmp_files = list(save_dir.glob("*.tmp"))
-                if tmp_files:
-                    tmp_path = tmp_files[0]
-                    try:
-                        start_offset = tmp_path.stat().st_size
-                    except Exception:
-                        start_offset = 0
-                    if start_offset > 0:
-                        logger.debug("断点续传：从 {} 字节继续", start_offset)
-                        mode = "ab"
-
-            try:
-                # 按需设置 Range 头
-                request_headers = dict(req_headers_dict)
-                if start_offset > 0:
-                    request_headers["Range"] = f"bytes={start_offset}-"
-
-                # 发起流式请求
-                # timeout 同时用于连接和读取，以接近原 CONNECTTIMEOUT/TIMEOUT 语义
-                with session.get(
-                    url,
-                    headers=request_headers,
-                    stream=True,
-                    timeout=(timeout, timeout),
-                    allow_redirects=True,
-                ) as resp:
-                    status = resp.status_code
-
-                    # 不存在直接返回
-                    if status == 404:
-                        logger.error("资源不存在，放弃重试：{}", url)
-                        return None
-
-                    # 断点续传要求 206
-                    if start_offset > 0 and status != 206:
-                        logger.warning("服务器不支持断点续传 HTTP {}，重新下载", status)
-                        tmp_path.unlink(missing_ok=True)
-                        # 继续下一次尝试（不增加 start_offset）
-                        continue
-
-                    # 其他错误码统一失败
-                    if status >= 400:
-                        raise requests.HTTPError(f"HTTP {status}", response=resp)
-
-                    # 解析响应头供后续文件名/扩展名推断
-                    resp_headers = {k.lower(): v.strip() for k, v in resp.headers.items()}
-
-                    # 写入文件并回调进度
-                    total_from_server = 0
-                    try:
-                        total_from_server = int(resp.headers.get("Content-Length", "0"))
-                    except Exception:
-                        total_from_server = 0
-                    total_size = start_offset + (total_from_server or 0)
-
-                    bytes_written_this_round = 0
-                    chunk_size = 1024 * 1024  # 1MB，兼顾吞吐与响应
-                    with open(tmp_path, mode) as f:
-                        for chunk in resp.iter_content(chunk_size=chunk_size):
-                            if not chunk:
-                                continue
-                            f.write(chunk)
-                            bytes_written_this_round += len(chunk)
-                            # 仅当总大小可用时触发进度回调，保持与原逻辑一致（d_total>0）
-                            if progress_callback and total_size > 0:
-                                progress_callback(start_offset + bytes_written_this_round, total_size)
-
-                # ---------- 文件名与扩展名推断 ----------
-                def _clean_filename(raw: str) -> str:
-                    raw = raw.strip().strip("\"").strip("'")
-                    return unquote(raw)
-
-                def _ext_from_filename(name: str) -> str | None:
-                    suffix = Path(name).suffix
-                    return suffix.lower() if suffix else None
-
-                def _filename_from_content_disposition(cd_value: str) -> str | None:
-                    if not cd_value:
-                        return None
-                    match_star = re.findall(r"filename\*\s*=\s*([^;]+)", cd_value, re.IGNORECASE)
-                    if match_star:
-                        value = _clean_filename(match_star[-1])
-                        if "''" in value:
-                            _, value = value.split("''", 1)
-                        return value
-                    match = re.findall(r"filename\s*=\s*([^;]+)", cd_value, re.IGNORECASE)
-                    if match:
-                        return _clean_filename(match[-1])
-                    return None
-
-                def _ensure_head() -> bytes:
-                    nonlocal head
-                    if head == b"":
-                        try:
-                            with open(tmp_path, "rb") as fb:
-                                head = fb.read(2048)
-                        except Exception:
-                            head = b""
-                    return head
-
-                head = b""
-                filename = custom_filename
-                ext = None
-                content_type = resp_headers.get("content-type", "").split(";")[0].strip().lower()
-
-                # 1) Content-Disposition（filename* 优先，随后 filename）
-                if not filename:
-                    cd_filename = _filename_from_content_disposition(resp_headers.get("content-disposition", ""))
-                    if cd_filename:
-                        filename = cd_filename
-                        ext = _ext_from_filename(cd_filename)
-
-                # 2) URL 查询参数中的 response-content-disposition
-                if not ext:
-                    query_params = parse_qs(urlparse(url).query)
-                    rcd_values = query_params.get("response-content-disposition", [])
-                    if rcd_values:
-                        decoded_cd = unquote(rcd_values[-1])
-                        query_cd_filename = _filename_from_content_disposition(decoded_cd) or _clean_filename(decoded_cd)
-                        if not filename and query_cd_filename:
-                            filename = query_cd_filename
-                        if query_cd_filename:
-                            ext = ext or _ext_from_filename(query_cd_filename)
-
-                # 3) URL 路径
-                if not filename:
-                    path_name = _clean_filename(Path(unquote(urlparse(url).path)).name)
-                    if path_name:
-                        filename = path_name
-                if filename and not ext:
-                    ext = _ext_from_filename(filename)
-                    if not ext and content_type:
-                        guessed = mimetypes.guess_extension(content_type) or _reverse_mime(content_type)
-                        if guessed:
-                            ext = guessed
-
-                # 4) 兜底默认值
-                if not filename:
-                    ts = int(time.time())
-                    ext = ext or mimetypes.guess_extension(content_type) or _reverse_mime(content_type) or ".bin"
-                    filename = f"downloaded_file{ts}{ext}"
-                elif not ext:
-                    ext = mimetypes.guess_extension(content_type) or _reverse_mime(content_type)
-
-                # 额外兜底：魔数 / MIME 猜测
-                if not ext or ext in {".bin", ".tmp"}:
-                    head = _ensure_head()
-                    guessed_ext = _guess_ext_by_signature(head)
-                    if guessed_ext:
-                        ext = guessed_ext
-
-                if ext == ".zip":
-                    head = _ensure_head()
-                    ext = _is_office_zip(head) or ext
-
-                if (not ext or ext in {".bin", ".tmp"}) and magic:
-                    head = _ensure_head()
-                    ext = mimetypes.guess_extension(magic.from_buffer(head, mime=True))
-
-                if (not ext or ext in {".bin", ".tmp"}) and filetype:
-                    head = _ensure_head()
-                    ft = filetype.guess(head)
-                    if ft:
-                        ext = "." + ft.extension
-
-                if custom_filename and "." in custom_filename:
-                    pass
-                elif ext and not filename.lower().endswith(ext.lower()):
-                    filename = f"{Path(filename).stem}{ext}"
-
-                target = save_path if save_path.is_file() else save_dir / filename
-                shutil.move(str(tmp_path), str(target))
-                logger.success("下载完成：{}", target)
-                return str(target)
-
-            except Exception as e:
-                # 重试控制
-                logger.warning("第 {}/{} 次尝试失败：{}", attempt, max_retries, e)
-                if attempt == max_retries:
-                    logger.error("下载失败：{}", url)
-                    return None
-                time.sleep(2 ** attempt)
-            finally:
-                try:
-                    if attempt == max_retries and "tmp_path" in locals() and tmp_path.exists():
-                        tmp_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+    logger.success("下载完成：{}", final_path)
+    return str(final_path)
 
 
 if __name__ == "__main__":

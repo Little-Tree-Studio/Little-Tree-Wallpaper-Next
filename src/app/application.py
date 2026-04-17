@@ -122,6 +122,7 @@ from .plugins import (
     Plugin,
     PluginContext,
     PluginEventBus,
+    PluginGeneratePage,
     PluginImportResult,
     PluginManager,
     PluginManifest,
@@ -344,6 +345,7 @@ class Application:
         bing_action_factories: list[Callable[[], ft.Control]] = []
         spotlight_action_factories: list[Callable[[], ft.Control]] = []
         settings_pages: list[PluginSettingsPage] = []
+        generate_pages: list[PluginGeneratePage] = []
 
         self._event_bus.clear_all()
         self._register_core_events()
@@ -471,6 +473,7 @@ class Application:
                 bing_action_factories=bing_action_factories,
                 spotlight_action_factories=spotlight_action_factories,
                 settings_pages=settings_pages,
+                generate_pages=generate_pages,
                 permissions=permissions_map,
                 plugin_service=self._plugin_service,
                 event_bus=self._event_bus,
@@ -1058,6 +1061,7 @@ class Application:
             self._core_pages = pages
             try:
                 pages.set_route_registrar(core_context.register_route)
+                pages.refresh_generate_pages_view()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning(
                     "注册核心设置路由回调失败: {error}",

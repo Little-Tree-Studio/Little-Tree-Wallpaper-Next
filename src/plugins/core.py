@@ -75,6 +75,7 @@ class CorePlugin(Plugin):
             bing_action_factories=context.bing_action_factories,
             spotlight_action_factories=context.spotlight_action_factories,
             settings_pages=context.settings_pages,
+            generate_pages=context.generate_pages,
             event_bus=context.event_bus,
             plugin_service=context.plugin_service,
             plugin_runtime=runtime_info,

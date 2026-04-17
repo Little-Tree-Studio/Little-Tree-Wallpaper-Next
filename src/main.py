@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# SPDX-FileCopyrightText: 2025 Little Tree Studio <studio@zsxiaoshu.cn>
+# SPDX-FileCopyrightText: 2026 Little Tree Studio <studio@zsxiaoshu.cn>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
@@ -51,9 +51,9 @@ https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet
 
 ================================================================================
 
-Module Name: [module_name]
+Module Name: main.py
 
-Copyright (C) 2024 Little Tree Studio <studio@zsxiaoshu.cn>
+Copyright (C) 2026 Little Tree Studio <studio@zsxiaoshu.cn>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published

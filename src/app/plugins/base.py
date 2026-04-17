@@ -178,6 +178,17 @@ class PluginSettingsPage:
     description: str | None = None
 
 
+@dataclass(slots=True)
+class PluginGeneratePage:
+    """Definition for a plugin-provided generation interface page."""
+
+    plugin_identifier: str
+    title: str
+    builder: Callable[[], ft.Control]
+    icon: str | None = None
+    description: str | None = None
+
+
 # Backwards compatibility alias for legacy imports
 PluginSettingsTab = PluginSettingsPage
 
@@ -221,6 +232,7 @@ class PluginContext:
     bing_action_factories: list[ActionFactory]
     spotlight_action_factories: list[ActionFactory]
     settings_pages: list[PluginSettingsPage]
+    generate_pages: list[PluginGeneratePage]
     permissions: dict[str, PermissionState] = field(default_factory=dict)
     plugin_service: PluginService | None = None
     event_bus: PluginEventBus | None = None
@@ -354,6 +366,50 @@ class PluginContext:
                     "同步插件设置页面注册信息失败: {error}",
                     error=str(exc),
                 )
+
+    def register_generate_page(
+        self,
+        label: str,
+        builder: Callable[[], ft.Control],
+        *,
+        icon: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        """Register a dedicated generation interface shown on the host generate page."""
+        new_page = PluginGeneratePage(
+            plugin_identifier=self.manifest.identifier,
+            title=label,
+            builder=builder,
+            icon=icon,
+            description=description,
+        )
+        self.generate_pages.append(new_page)
+
+        core_pages = self.metadata.get("core_pages")
+        if core_pages and hasattr(core_pages, "notify_generate_page_registered"):
+            try:
+                core_pages.notify_generate_page_registered(new_page)  # type: ignore[call-arg]
+            except Exception as exc:  # pragma: no cover - defensive logging
+                self.logger.warning(
+                    "同步插件生成页面注册信息失败: {error}",
+                    error=str(exc),
+                )
+
+    def add_generate_page(
+        self,
+        label: str,
+        builder: Callable[[], ft.Control],
+        *,
+        icon: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        """Backward-compatible alias for :meth:`register_generate_page`."""
+        self.register_generate_page(
+            label,
+            builder,
+            icon=icon,
+            description=description,
+        )
 
 
 

@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
             },
         },
         "allow_NSFW": False,
+        "history_save_copy": False,
         "sources": {
             "merge_display": False,
         },

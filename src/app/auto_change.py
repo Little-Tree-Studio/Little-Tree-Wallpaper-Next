@@ -866,27 +866,11 @@ class AutoChangeService:
         return False
 
     async def _apply_ai(self, config: dict[str, Any]) -> bool:
-        provider = str(config.get("provider") or "pollinations")
-        prompt = str(config.get("prompt") or "").strip()
-        if not prompt:
-            return False
-        width = config.get("width")
-        height = config.get("height")
-        allow_nsfw = bool(self._settings_store.get("wallpaper.allow_nsfw", False))
-        params: dict[str, str] = {}
-        if width:
-            params["width"] = str(width)
-        if height:
-            params["height"] = str(height)
-        params["safe"] = "false" if allow_nsfw else "true"
-        seed = config.get("seed")
-        if seed:
-            params["seed"] = str(seed)
-        enhance = config.get("enhance")
-        if enhance:
-            params["enhance"] = "true"
-        url = _build_ai_url(provider, prompt, params)
-        return await self._download_and_apply(url, prefix="ai")
+        logger.warning(
+            "检测到已移除的默认 AI 自动更换配置，已跳过: {config}",
+            config=config,
+        )
+        return False
 
     async def _download_and_apply(self, url: str | None, *, prefix: str) -> bool:
         if not url:

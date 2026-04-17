@@ -74,6 +74,31 @@ manifest = PluginManifest(
 - 存储路径工厂：`plugin_data_path`、`plugin_config_path`、`plugin_cache_path` 以及对应的 `*_dir` 方法用于访问 / 初始化插件专属的数据、配置、缓存目录。传入 `create=True` 时会确保目录存在。
 - `add_bing_action(factory)`: 在“资源 → Bing 每日”操作行追加自定义按钮或其他控件。
 - `add_spotlight_action(factory)`: 在“资源 → Windows 聚焦”操作行追加控件。
+- `register_generate_page(label, builder, *, icon=None, description=None)`: 向宿主“生成”页面注册一个插件自定义生成界面。宿主不再提供默认生成实现；若要提供文本生图、工作流生图或其他生成能力，应通过此接口挂载自己的 UI。
+
+```python
+import flet as ft
+
+
+def build_generate_panel() -> ft.Control:
+    return ft.Column(
+        [
+            ft.Text("这里是插件自己的生成界面"),
+            ft.TextField(label="提示词"),
+            ft.FilledButton("开始生成"),
+        ],
+        spacing=12,
+    )
+
+
+context.register_generate_page(
+    "我的生成器",
+    build_generate_panel,
+    icon=ft.Icons.AUTO_AWESOME,
+    description="由插件提供的自定义生成功能",
+)
+```
+
 - `register_settings_page(label, builder, *, icon=None, button_label="插件设置", description=None)`: 注册插件的专属设置页面。插件管理面板会在对应插件卡片中显示一个“插件设置”按钮，并在新页面中渲染 `builder` 返回的控件。
 - 收藏管理接口（核心插件激活后可用，需在 manifest 中声明并获批对应的 `favorites_*` 权限；使用前可通过 `context.has_favorite_support()` 判断）：
     - `context.favorites`：返回 `FavoriteService` 实例，包裹了全部收藏操作并在内部执行权限校验。历史属性 `context.favorite_manager` 仍可用，但会返回同一服务实例。

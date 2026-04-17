@@ -437,30 +437,37 @@ class PluginManager:
             )
         path = runtime.source_path
         if path and path.exists():
-            if path.is_dir():
-                shutil.rmtree(path)
+            resolved_path = path.resolve()
+            was_file = resolved_path.is_file()
+
+            # 当源路径是包内文件（通常是 __init__.py）时，优先删除整个插件目录，避免留下空壳目录导致需要二次删除。
+            package_dir: Path | None = None
+            if was_file:
+                for root in self._search_paths:
+                    try:
+                        rel_parent = resolved_path.parent.relative_to(root)
+                    except ValueError:
+                        continue
+                    if rel_parent.parts:
+                        package_dir = resolved_path.parent
+                    break
+
+            target = package_dir or resolved_path
+            if target.is_dir():
+                shutil.rmtree(target)
             else:
-                path.unlink()
-            if path.is_file():
-                pycache_dir = path.with_name("__pycache__")
+                target.unlink()
+
+            if was_file:
+                pycache_dir = resolved_path.with_name("__pycache__")
                 if pycache_dir.exists() and pycache_dir.is_dir():
-                    module_name = path.stem
+                    module_name = resolved_path.stem
                     for cached in list(pycache_dir.iterdir()):
                         if cached.stem.startswith(module_name):
                             try:
                                 cached.unlink()
                             except OSError:
                                 pass
-                # 如果源路径是文件，额外尝试删除其所在目录（用户插件目录）
-                parent_dir = path.parent
-                for root in self._search_paths:
-                    try:
-                        parent_dir.relative_to(root)
-                    except ValueError:
-                        continue
-                    if parent_dir.exists():
-                        shutil.rmtree(parent_dir, ignore_errors=True)
-                    break
         self._config.remove_plugin(identifier)
         self._runtime.pop(identifier, None)
         self._loaded = [plugin for plugin in self._loaded if plugin.identifier != identifier]

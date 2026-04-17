@@ -224,7 +224,7 @@ class _WSParameterControl:
 
 if TYPE_CHECKING:
     from app.plugins import PluginOperationResult
-    from app.plugins.base import PluginSettingsPage
+    from app.plugins.base import PluginGeneratePage, PluginSettingsPage
     from app.theme import ThemeManager
 
 
@@ -235,6 +235,7 @@ class Pages:
         bing_action_factories: list[Callable[[], ft.Control]] | None = None,
         spotlight_action_factories: list[Callable[[], ft.Control]] | None = None,
         settings_pages: list[PluginSettingsPage] | None = None,
+        generate_pages: list[PluginGeneratePage] | None = None,
         event_bus: PluginEventBus | None = None,
         plugin_service: PluginService | None = None,
         plugin_runtime: list[PluginRuntimeInfo] | None = None,
@@ -290,6 +291,7 @@ class Pages:
         self._home_custom_import_picker: ft.FilePicker | None = None
         self._home_custom_export_picker: ft.FilePicker | None = None
         self._wallpaper_history_limit = 200
+        self._history_storage_dir = DATA_DIR / "wallpaper_history"
         self._wallpaper_history: list[dict[str, Any]] = self._load_wallpaper_history()
         self._history_list_column: ft.Column | None = None
         self._history_placeholder: ft.Text | None = None
@@ -312,7 +314,9 @@ class Pages:
             spotlight_action_factories if spotlight_action_factories is not None else []
         )
         self._settings_pages = settings_pages if settings_pages is not None else []
+        self._generate_pages = generate_pages if generate_pages is not None else []
         self._settings_page_map: dict[str, PluginSettingsPage] = {}
+        self._generate_content_container: ft.Container | None = None
         self._refresh_settings_registry()
         self._global_data = global_data
         self._bing_data_id: str | None = None
@@ -962,6 +966,40 @@ class Pages:
         )
         self._refresh_auto_change_controls()
         return wrapper
+
+    def _on_toggle_history_save_copy(self, event: ft.ControlEvent) -> None:
+        switch = getattr(event, "control", None)
+        if switch is None:
+            return
+        value = bool(getattr(switch, "value", False))
+        app_config.set("wallpaper.history_save_copy", value)
+
+    def _build_wallpaper_history_settings_section(self) -> ft.Control:
+        save_copy_switch = ft.Switch(
+            label="自动保存历史壁纸副本",
+            value=bool(app_config.get("wallpaper.history_save_copy", False)),
+            on_change=self._on_toggle_history_save_copy,
+            tooltip="开启后会在记录历史时复制一份到数据目录，原文件被删除也可正常预览和应用。",
+        )
+        hint_text = ft.Text(
+            "可能会占用额外存储空间，历史列表上限 200 条。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("历史记录", size=18, weight=ft.FontWeight.BOLD),
+                    save_copy_switch,
+                    hint_text,
+                ],
+                spacing=8,
+                tight=True,
+            ),
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=8,
+            padding=12,
+        )
 
     def _build_auto_change_lists_section(self) -> ft.Control:
         self._ensure_auto_list_picker()
@@ -2355,10 +2393,6 @@ class Pages:
                     on_click=lambda _: self._auto_editor_add_entry_type("im_source"),
                 ),
                 ft.PopupMenuItem(
-                    text="AI 生成",
-                    on_click=lambda _: self._auto_editor_add_entry_type("ai"),
-                ),
-                ft.PopupMenuItem(
                     text="本地图片",
                     on_click=lambda _: self._auto_editor_add_entry_type("local_image"),
                 ),
@@ -2646,29 +2680,7 @@ class Pages:
             return payload
 
         def _collect_ai() -> dict[str, Any]:
-            provider_field: ft.Dropdown = collected_controls["provider"]
-            prompt_field: ft.TextField = collected_controls["prompt"]
-            width_field: ft.TextField = collected_controls["width"]
-            height_field: ft.TextField = collected_controls["height"]
-            provider = provider_field.value or ""
-            prompt = (prompt_field.value or "").strip()
-            if not provider:
-                raise ValueError("请选择提供商。")
-            if not prompt:
-                raise ValueError("请输入提示词。")
-            try:
-                width = int(width_field.value or 0)
-                height = int(height_field.value or 0)
-            except ValueError:
-                raise ValueError("请输入合法的尺寸。")
-            if width <= 0 or height <= 0:
-                raise ValueError("尺寸必须大于 0。")
-            return {
-                "provider": provider,
-                "prompt": prompt,
-                "width": width,
-                "height": height,
-            }
+            raise ValueError("默认 AI 生成接口已移除，请删除此条目并改用生成插件。")
 
         def _collect_local_path(field_key: str, required_text: str) -> dict[str, Any]:
             text_field: ft.TextField = collected_controls[field_key]
@@ -2923,42 +2935,13 @@ class Pages:
             controls.extend([dropdown, params_column])
             collect_fn = _collect_im_source
         elif normalized_type == "ai":
-            provider_dropdown = ft.Dropdown(
-                label="提供商",
-                options=[ft.dropdown.Option(key="pollinations", text="Pollinations")],
-                value=config.get("provider") or "pollinations",
-                dense=True,
-            )
-            prompt_field = ft.TextField(
-                label="提示词(英文)",
-                value=config.get("prompt") or "",
-                multiline=True,
-                min_lines=2,
-                max_lines=4,
-            )
-            width_field = ft.TextField(
-                label="宽度",
-                value=str(config.get("width") or "512"),
-                keyboard_type=ft.KeyboardType.NUMBER,
-                width=140,
-                dense=True,
-            )
-            height_field = ft.TextField(
-                label="高度",
-                value=str(config.get("height") or "512"),
-                keyboard_type=ft.KeyboardType.NUMBER,
-                width=140,
-                dense=True,
-            )
-            collected_controls["provider"] = provider_dropdown
-            collected_controls["prompt"] = prompt_field
-            collected_controls["width"] = width_field
-            collected_controls["height"] = height_field
             controls.extend(
                 [
-                    provider_dropdown,
-                    prompt_field,
-                    ft.Row([width_field, height_field], spacing=8),
+                    ft.Text(
+                        "默认 AI 生成接口已移除。若这是旧配置，请删除该条目并改用插件提供的生成能力。",
+                        size=12,
+                        color=ft.Colors.GREY,
+                    ),
                 ],
             )
             collect_fn = _collect_ai
@@ -4869,21 +4852,25 @@ class Pages:
         for item in raw_history:
             if not isinstance(item, dict):
                 continue
-            path = str(item.get("path") or "").strip()
-            if not path:
+            stored_path = str(item.get("path") or "").strip()
+            original_path = str(item.get("original_path") or stored_path).strip()
+            path = stored_path or original_path
+            if not path and not original_path:
                 continue
             try:
                 ts = float(item.get("timestamp", time.time()))
             except Exception:
                 ts = time.time()
-            title = str(item.get("title") or Path(path).name)
+            title_source = original_path or path
+            title = str(item.get("title") or Path(title_source).name)
             source = str(item.get("source") or "").strip() or None
             reason = str(item.get("reason") or "set")
             entry_id = str(item.get("id") or uuid.uuid4().hex)
             history.append(
                 {
                     "id": entry_id,
-                    "path": path,
+                    "path": path or original_path,
+                    "original_path": original_path or path,
                     "title": title,
                     "source": source,
                     "reason": reason,
@@ -4892,9 +4879,43 @@ class Pages:
             )
         return history
 
+    def _save_history_copy(self, path: Path) -> str | None:
+        try:
+            if not path.exists():
+                return None
+            self._history_storage_dir.mkdir(parents=True, exist_ok=True)
+            ext = path.suffix or ".img"
+            target = self._history_storage_dir / f"{int(time.time() * 1000)}_{uuid.uuid4().hex}{ext}"
+            shutil.copy2(path, target)
+            return str(target)
+        except Exception as exc:
+            logger.warning("保存历史壁纸副本失败: {error}", error=str(exc))
+            return None
+
+    def _cleanup_history_files(
+        self,
+        old_history: list[dict[str, Any]],
+        new_history: list[dict[str, Any]],
+    ) -> None:
+        try:
+            keep_paths = {str(item.get("path") or "") for item in new_history}
+            if not self._history_storage_dir.exists():
+                return
+            for entry in old_history:
+                entry_path = str(entry.get("path") or "")
+                if not entry_path or entry_path in keep_paths:
+                    continue
+                path_obj = Path(entry_path)
+                if path_obj.is_file() and path_obj.parent == self._history_storage_dir:
+                    path_obj.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("清理历史壁纸副本失败: {error}", error=str(exc))
+
     def _save_wallpaper_history(self, history: list[dict[str, Any]]) -> None:
+        old_history = self._wallpaper_history
         self._wallpaper_history = history
         app_config.set("wallpaper.history", copy.deepcopy(history))
+        self._cleanup_history_files(old_history, history)
         self._refresh_history_view()
 
     def _append_wallpaper_history(
@@ -4908,17 +4929,28 @@ class Pages:
         if not path:
             return
         path_str = str(path)
-        normalized = path_str.lower()
+        original_path = path_str
+        target_path = path_str
+        if bool(app_config.get("wallpaper.history_save_copy", False)):
+            copy_path = self._save_history_copy(Path(path_str))
+            if copy_path:
+                target_path = copy_path
+        normalized = original_path.lower()
         deduped: list[dict[str, Any]] = []
         for item in self._wallpaper_history:
-            existing = str(item.get("path") or "").lower()
+            existing = str(
+                item.get("original_path")
+                or item.get("path")
+                or "",
+            ).lower()
             if existing == normalized:
                 continue
             deduped.append(item)
         entry = {
             "id": uuid.uuid4().hex,
-            "path": path_str,
-            "title": title or Path(path_str).name,
+            "path": target_path,
+            "original_path": original_path,
+            "title": title or Path(original_path).name,
             "source": source,
             "reason": reason,
             "timestamp": time.time(),
@@ -5038,13 +5070,19 @@ class Pages:
 
     def _build_history_entry_card(self, entry: dict[str, Any]) -> ft.Control:
         entry_id = str(entry.get("id") or uuid.uuid4().hex)
-        path = str(entry.get("path") or "")
-        title = str(entry.get("title") or Path(path).name or "历史记录")
-        exists = bool(path and Path(path).exists())
+        stored_path = str(entry.get("path") or "")
+        original_path = str(entry.get("original_path") or stored_path)
+        display_path = stored_path or original_path
+        exists = bool(display_path and Path(display_path).exists())
+        if not exists and original_path and original_path != display_path:
+            if Path(original_path).exists():
+                display_path = original_path
+                exists = True
+        title = str(entry.get("title") or Path(original_path or display_path).name or "历史记录")
         preview: ft.Control
         if exists:
             preview = ft.Image(
-                src=path,
+                src=display_path,
                 width=200,
                 height=120,
                 fit=ft.ImageFit.COVER,
@@ -5073,7 +5111,14 @@ class Pages:
 
         meta_text = ft.Text(self._history_reason_label(entry), size=12)
         time_text = ft.Text(self._history_time_text(entry), size=12, color=ft.Colors.GREY)
-        path_text = ft.Text(path or "未知路径", size=12, color=ft.Colors.GREY, selectable=True)
+        path_lines: list[ft.Control] = [
+            ft.Text(display_path or original_path or "未知路径", size=12, color=ft.Colors.GREY, selectable=True),
+        ]
+        if stored_path and original_path and stored_path != original_path:
+            path_lines.append(
+                ft.Text(f"原始路径：{original_path}", size=12, color=ft.Colors.GREY, selectable=True),
+            )
+        path_column = ft.Column(path_lines, spacing=2, tight=True)
 
         set_button = ft.FilledTonalButton(
             "设为壁纸",
@@ -5101,7 +5146,7 @@ class Pages:
                                 ft.Text(title, size=16, weight=ft.FontWeight.BOLD),
                                 meta_text,
                                 time_text,
-                                path_text,
+                                path_column,
                                 ft.Row([set_button, delete_button], spacing=8, wrap=True),
                             ],
                             spacing=6,
@@ -5119,8 +5164,14 @@ class Pages:
         if not entry:
             self._show_snackbar("未找到历史记录。", error=True)
             return
-        path = entry.get("path")
-        if not path or not Path(path).exists():
+        stored_path = str(entry.get("path") or "")
+        original_path = str(entry.get("original_path") or stored_path)
+        path = ""
+        for candidate in (stored_path, original_path):
+            if candidate and Path(candidate).exists():
+                path = candidate
+                break
+        if not path:
             self._show_snackbar("文件不存在，无法设置壁纸。", error=True)
             return
         try:
@@ -7265,199 +7316,18 @@ class Pages:
         )
 
     def _build_generate(self):
-        self._generate_provider_dropdown = ft.Dropdown(
-            label="服务提供商",
-            value="pollinations",
-            options=[
-                ft.DropdownOption(key="pollinations", text="Pollinations.ai"),
-            ],
-        )
-        self._generate_seed_field = ft.TextField(
-            label="种子（相同种子将生成相同图片）",
-            value="42",
-            input_filter=ft.NumbersOnlyInputFilter(),
-            expand=True,
-        )
-        seed_random_button = ft.IconButton(
-            icon=ft.Icons.SHUFFLE,
-            tooltip="随机生成种子",
-            on_click=self._handle_generate_random_seed,
-        )
-        seed_row = ft.Row(
-            [self._generate_seed_field, seed_random_button],
-            spacing=8,
-            vertical_alignment=ft.CrossAxisAlignment.END,
-        )
-        self._generate_width_field = ft.TextField(
-            label="图片宽度",
-            value="1920",
-            input_filter=ft.NumbersOnlyInputFilter(),
-        )
-        self._generate_height_field = ft.TextField(
-            label="图片高度",
-            value="1080",
-            input_filter=ft.NumbersOnlyInputFilter(),
-        )
-        self._generate_enhance_switch = ft.Switch(
-            label="使用大模型优化提示词",
-            value=False,
-        )
-        self._generate_prompt_field = ft.TextField(
-            label="提示词",
-            min_lines=3,
-            max_lines=5,
-            multiline=True,
-        )
-
-        self._generate_loading_indicator = ft.ProgressRing(
-            width=20,
-            height=20,
-            stroke_width=2,
-            visible=False,
-        )
-        self._generate_status_text = ft.Text(
-            "填写提示词后点击生成，即可在右侧查看图片",
-            size=12,
-            color=ft.Colors.OUTLINE,
-        )
-
-        download_button = ft.FilledTonalButton(
-            "下载",
-            icon=ft.Icons.DOWNLOAD,
-            disabled=True,
-            on_click=lambda _: self.page.run_task(self._generate_download),
-        )
-        save_as_button = ft.FilledTonalButton(
-            "另存为",
-            icon=ft.Icons.SAVE_ALT,
-            disabled=True,
-            on_click=self._handle_generate_save_as_request,
-        )
-        copy_image_button = ft.FilledTonalButton(
-            "复制图片",
-            icon=ft.Icons.CONTENT_COPY,
-            disabled=True,
-            on_click=lambda _: self.page.run_task(self._generate_copy_image),
-        )
-        copy_file_button = ft.FilledTonalButton(
-            "复制文件",
-            icon=ft.Icons.FOLDER_COPY,
-            disabled=True,
-            on_click=lambda _: self.page.run_task(self._generate_copy_file),
-        )
-        favorite_button = ft.FilledTonalButton(
-            "收藏",
-            icon=ft.Icons.BOOKMARK_ADD,
-            disabled=True,
-            on_click=self._handle_generate_favorite,
-        )
-        set_wallpaper_button = ft.FilledTonalButton(
-            "设为壁纸",
-            icon=ft.Icons.WALLPAPER,
-            disabled=True,
-            on_click=lambda _: self.page.run_task(self._generate_set_wallpaper),
-        )
-
-        self._generate_action_buttons = {
-            "download": download_button,
-            "save_as": save_as_button,
-            "copy_image": copy_image_button,
-            "copy_file": copy_file_button,
-            "favorite": favorite_button,
-            "set_wallpaper": set_wallpaper_button,
-        }
-
-        self._generate_update_actions()
-
-        actions_row = ft.Row(
-            [
-                download_button,
-                save_as_button,
-                copy_image_button,
-                copy_file_button,
-                favorite_button,
-                set_wallpaper_button,
-            ],
-            spacing=8,
-            run_spacing=8,
-            wrap=True,
-        )
-
-        placeholder = ft.Column(
-            [
-                ft.Icon(ft.Icons.IMAGE, size=72, color=ft.Colors.OUTLINE),
-                ft.Text("生成的图片会展示在这里", color=ft.Colors.OUTLINE),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=12,
-        )
-
-        self._generate_output_container = ft.Container(
-            expand=True,
-            border_radius=12,
-            bgcolor=self._bgcolor_surface_low,
-            alignment=ft.alignment.center,
-            padding=16,
-            content=placeholder,
-        )
-
-        left_panel = ft.Container(
-            width=360,
-            padding=16,
-            bgcolor=self._bgcolor_surface_low,
-            border_radius=12,
-            content=ft.Column(
-                [
-                    self._generate_provider_dropdown,
-                    seed_row,
-                    self._generate_width_field,
-                    self._generate_height_field,
-                    self._generate_enhance_switch,
-                    self._generate_prompt_field,
-                    ft.FilledButton("生成", on_click=self._handle_generate_clicked),
-                ],
-                spacing=12,
-                tight=True,
-            ),
-        )
-
-        right_panel = ft.Container(
-            expand=True,
-            padding=16,
-            bgcolor=ft.Colors.SURFACE,
-            border_radius=12,
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            self._generate_loading_indicator,
-                            self._generate_status_text,
-                        ],
-                        spacing=8,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    actions_row,
-                    self._generate_output_container,
-                ],
-                spacing=16,
-                expand=True,
-            ),
-        )
-
+        self._generate_content_container = ft.Container(expand=True)
+        self.refresh_generate_pages_view()
         return ft.Container(
             content=ft.Column(
                 [
                     ft.Text("生成", size=30),
-                    ft.Row(
-                        [
-                            left_panel,
-                            right_panel,
-                        ],
-                        expand=True,
-                        vertical_alignment=ft.CrossAxisAlignment.START,
-                        alignment=ft.MainAxisAlignment.START,
+                    ft.Text(
+                        "该页面由插件提供生成接口。安装并启用支持的插件后，可在此处使用其自定义生成界面。",
+                        size=12,
+                        color=ft.Colors.GREY,
                     ),
+                    self._generate_content_container,
                 ],
                 spacing=24,
                 expand=True,
@@ -7465,6 +7335,114 @@ class Pages:
             expand=True,
             padding=16,
         )
+
+    def _build_generate_placeholder(self) -> ft.Control:
+        return ft.Container(
+            expand=True,
+            border_radius=12,
+            bgcolor=self._bgcolor_surface_low,
+            padding=24,
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.EXTENSION_OFF, size=72, color=ft.Colors.OUTLINE),
+                    ft.Text("暂无可用的生成接口", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        "请安装支持生成能力的插件。插件可通过 register_generate_page() 向此页面注册自定义生成界面。",
+                        size=12,
+                        color=ft.Colors.GREY,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=12,
+            ),
+        )
+
+    def _build_generate_plugin_view(self, entry: PluginGeneratePage) -> ft.Control:
+        try:
+            content = entry.builder()
+        except Exception as exc:
+            logger.error("插件生成页面构建失败: {error}", error=str(exc))
+            return ft.Container(
+                padding=20,
+                border_radius=12,
+                bgcolor=self._bgcolor_surface_low,
+                content=ft.Column(
+                    [
+                        ft.Text(entry.title, size=18, weight=ft.FontWeight.BOLD),
+                        ft.Text(
+                            entry.description or f"插件 {entry.plugin_identifier} 的生成界面构建失败。",
+                            size=12,
+                            color=ft.Colors.GREY,
+                        ),
+                        ft.Text(str(exc), color=ft.Colors.ERROR),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        header_controls: list[ft.Control] = [
+            ft.Text(entry.title, size=18, weight=ft.FontWeight.BOLD),
+        ]
+        if entry.description:
+            header_controls.append(
+                ft.Text(entry.description, size=12, color=ft.Colors.GREY),
+            )
+
+        return ft.Container(
+            padding=16,
+            border_radius=12,
+            bgcolor=self._bgcolor_surface_low,
+            content=ft.Column(
+                [
+                    *header_controls,
+                    content,
+                ],
+                spacing=12,
+                expand=True,
+            ),
+            expand=True,
+        )
+
+    def iter_plugin_generate_pages(self) -> list[PluginGeneratePage]:
+        return list(self._generate_pages or [])
+
+    def refresh_generate_pages_view(self) -> None:
+        container = self._generate_content_container
+        if container is None:
+            return
+
+        entries = self.iter_plugin_generate_pages()
+        if not entries:
+            container.content = self._build_generate_placeholder()
+        elif len(entries) == 1:
+            container.content = self._build_generate_plugin_view(entries[0])
+        else:
+            tabs: list[ft.Tab] = []
+            for entry in entries:
+                tabs.append(
+                    ft.Tab(
+                        text=entry.title,
+                        icon=entry.icon,
+                        content=ft.Container(
+                            content=self._build_generate_plugin_view(entry),
+                            padding=12,
+                            expand=True,
+                        ),
+                    )
+                )
+            container.content = ft.Tabs(
+                tabs=tabs,
+                expand=True,
+                animation_duration=150,
+            )
+
+        if container.page is not None:
+            container.update()
+
+    def notify_generate_page_registered(self, entry: PluginGeneratePage) -> None:
+        self.refresh_generate_pages_view()
 
     def _handle_generate_error(self, message: str) -> None:
         logger.error("Image generation failed: {message}", message=message)
@@ -7757,117 +7735,7 @@ class Pages:
         self._open_favorite_editor(payload)
 
     def _handle_generate_clicked(self, _: ft.ControlEvent) -> None:
-        prompt = (
-            (self._generate_prompt_field.value or "").strip()
-            if self._generate_prompt_field
-            else ""
-        )
-        if not prompt:
-            self._handle_generate_error("请输入提示词。")
-            return
-
-        logger.info(
-            "Generate button clicked with prompt: {prompt}",
-            prompt=self._abbreviate_text(prompt, 120),
-        )
-
-        provider = (
-            (self._generate_provider_dropdown.value or "").strip().lower()
-            if self._generate_provider_dropdown
-            else "pollinations"
-        )
-        if provider not in ("pollinations", ""):
-            logger.error("Unsupported provider selected: {provider}", provider=provider)
-            self._handle_generate_error("当前仅支持 Pollinations.ai。")
-            return
-
-        width: int | None = None
-        if self._generate_width_field:
-            raw_width = (self._generate_width_field.value or "").strip()
-            if raw_width:
-                try:
-                    width = int(raw_width)
-                    if width <= 0:
-                        raise ValueError
-                except ValueError:
-                    logger.warning("Invalid width value: {value}", value=raw_width)
-                    self._handle_generate_error("图片宽度必须是正整数。")
-                    return
-
-        height: int | None = None
-        if self._generate_height_field:
-            raw_height = (self._generate_height_field.value or "").strip()
-            if raw_height:
-                try:
-                    height = int(raw_height)
-                    if height <= 0:
-                        raise ValueError
-                except ValueError:
-                    logger.warning("Invalid height value: {value}", value=raw_height)
-                    self._handle_generate_error("图片高度必须是正整数。")
-                    return
-
-        params: dict[str, str] = {}
-        seed = (
-            (self._generate_seed_field.value or "").strip()
-            if self._generate_seed_field
-            else ""
-        )
-        enhance = (
-            self._generate_enhance_switch.value
-            if self._generate_enhance_switch is not None
-            else False
-        )
-        allow_nsfw = bool(app_config.get("wallpaper.allow_nsfw", False))
-
-        if seed:
-            params["seed"] = seed
-        if width is not None:
-            params["width"] = str(width)
-        if height is not None:
-            params["height"] = str(height)
-        if enhance:
-            params["enhance"] = "true"
-        params["safe"] = "false" if allow_nsfw else "true"
-
-        base_url = "https://image.pollinations.ai/prompt/"
-        encoded_prompt = quote_plus(prompt)
-        request_url = f"{base_url}{encoded_prompt}"
-        if params:
-            request_url = f"{request_url}?{urlencode(params)}&nologo=true"
-        cache_token = str(int(time.time() * 1000))
-        cache_suffix = f"cb={cache_token}"
-        request_url = (
-            f"{request_url}&{cache_suffix}"
-            if params
-            else f"{request_url}?{cache_suffix}"
-        )
-
-        logger.info(
-            "Dispatching Pollinations request",
-            prompt=self._abbreviate_text(prompt, 120),
-            url=request_url,
-            width=width,
-            height=height,
-            seed=seed,
-            provider=provider or "pollinations",
-            enhance=enhance,
-            safe=params.get("safe"),
-        )
-
-        self._set_generate_loading(True)
-        self._update_generate_status("已发送生成请求，正在等待图像生成…")
-        self.page.run_task(
-            self._process_generate_request,
-            request_url,
-            prompt,
-            width,
-            height,
-            seed,
-            enhance,
-            allow_nsfw,
-            provider,
-        )
+        self._handle_generate_error("默认生成接口已移除，请安装支持生成能力的插件。")
 
     async def _process_generate_request(
         self,
@@ -7880,74 +7748,12 @@ class Pages:
         allow_nsfw: bool,
         provider: str,
     ) -> None:
-        cache_dir = CACHE_DIR / "generations"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        slug = self._favorite_filename_slug(prompt, "generation")
-        timestamp = int(time.time())
-        custom_name = f"{slug}-{timestamp}"
-
-        async def _download() -> str | None:
-            return await asyncio.to_thread(
-                ltwapi.download_file,
-                request_url,
-                cache_dir,
-                custom_name,
-                120,
-                3,
-                {"Accept": "image/*"},
-                None,
-                False,
-            )
-
-        try:
-            path_str = await _download()
-        except Exception as exc:  # pragma: no cover - network
-            logger.error(
-                "Error downloading generated image: {error}",
-                error=str(exc),
-            )
-            self._handle_generate_error("生成图片下载失败，请稍后重试。")
-            return
-
-        if not path_str:
-            self._handle_generate_error("生成图片失败，请稍后重试。")
-            return
-
-        path = Path(path_str)
-        self._generate_last_file = path
-        try:
-            self._set_generate_output_image(str(path), is_local_file=True)
-        except Exception:
-            self._handle_generate_error("加载生成的图片失败。")
-            return
-
-        self._generate_last_file = path
-        self._generate_last_prompt = prompt
-        self._generate_last_width = width
-        self._generate_last_height = height
-        self._generate_last_seed = seed
-        self._generate_last_request_url = request_url
-        self._generate_last_provider = provider or "pollinations"
-        self._generate_last_model = None
-        self._generate_last_enhance = enhance
-        self._generate_last_allow_nsfw = allow_nsfw
-        self._generate_update_actions()
-
-        self._update_generate_status(f"生成完成，已保存到 {path.name}")
-        logger.info(
-            "Generated image cached locally",
-            path=str(path),
-            prompt=self._abbreviate_text(prompt, 120),
-            width=width,
-            height=height,
-            seed=seed,
-            provider=provider or "pollinations",
-            enhance=enhance,
-            safe="false" if allow_nsfw else "true",
-        )
+        del request_url, prompt, width, height, seed, enhance, allow_nsfw, provider
         self._set_generate_loading(False)
-        self.page.update()
+        self._update_generate_status(
+            "默认生成接口已移除，请安装支持生成能力的插件。",
+            error=True,
+        )
 
     def _build_bing_loading_indicator(self):
         return ft.Container(
@@ -16914,27 +16720,41 @@ class Pages:
     async def _download_file_with_progress(
         self, url: str, target: Path, task_id: str
     ) -> None:
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                total = resp.content_length or 0
-                downloaded = 0
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with target.open("wb") as fp:
-                    async for chunk in resp.content.iter_chunked(8192):
-                        fp.write(chunk)
-                        downloaded += len(chunk)
-                        if total:
-                            self._update_install_task(
-                                task_id,
-                                status="downloading",
-                                progress=downloaded / total,
-                            )
-                if not total:
-                    self._update_install_task(
-                        task_id, status="downloading", progress=None
-                    )
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        def progress_callback(downloaded: int, total: int) -> None:
+            if total > 0:
+                self._update_install_task(
+                    task_id,
+                    status="downloading",
+                    progress=downloaded / total,
+                )
+            else:
+                self._update_install_task(
+                    task_id,
+                    status="downloading",
+                    progress=None,
+                )
+
+        result = await asyncio.to_thread(
+            ltwapi.download_file,
+            url,
+            str(target.parent),
+            target.name,
+            300,
+            3,
+            None,
+            progress_callback,
+            False,
+        )
+        if not result:
+            raise RuntimeError("下载失败")
+
+        downloaded_path = Path(result)
+        if downloaded_path.resolve() != target.resolve():
+            downloaded_path.replace(target)
+
+        self._update_install_task(task_id, status="downloading", progress=1.0)
 
     def _write_store_meta(self, target: Path, metadata: ResourceMetadata) -> None:
         try:
@@ -18357,6 +18177,12 @@ class Pages:
             release_rows.append(ft.Text(f"下载地址：{info.download_url}"))
 
         note_text = info.release_note or "暂无更新日志。"
+        note_view = ft.Markdown(
+            note_text,
+            selectable=True,
+            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+            on_tap_link=lambda e: self.page.launch_url(e.data),
+        )
         actions: list[ft.Control] = []
         install_btn = ft.FilledButton(
             "立即安装",
@@ -18392,12 +18218,7 @@ class Pages:
                     ),
                     ft.Column(release_rows, spacing=6),
                     ft.Text("更新内容", size=14, weight=ft.FontWeight.BOLD),
-                    ft.Text(
-                        note_text,
-                        selectable=True,
-                        max_lines=10,
-                        overflow=ft.TextOverflow.ELLIPSIS,
-                    ),
+                    note_view,
                     ft.Row(actions, spacing=12, wrap=True),
                 ],
                 spacing=12,
@@ -18437,17 +18258,30 @@ class Pages:
         self._update_downloading = True
         self._refresh_update_controls(status_hint="正在下载更新…")
         try:
-            timeout = aiohttp.ClientTimeout(total=60)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(pkg.download_url) as resp:
-                    resp.raise_for_status()
-                    hasher = hashlib.sha256()
-                    with dest.open("wb") as f:
-                        async for chunk in resp.content.iter_chunked(65536):
-                            if not chunk:
-                                continue
-                            f.write(chunk)
-                            hasher.update(chunk)
+            result = await asyncio.to_thread(
+                ltwapi.download_file,
+                pkg.download_url,
+                str(dest_dir),
+                filename,
+                300,
+                3,
+                None,
+                None,
+                False,
+            )
+            if not result:
+                raise RuntimeError("下载更新包失败")
+
+            downloaded_path = Path(result)
+            if downloaded_path.resolve() != dest.resolve():
+                downloaded_path.replace(dest)
+
+            hasher = hashlib.sha256()
+            with dest.open("rb") as file_obj:
+                for chunk in iter(lambda: file_obj.read(65536), b""):
+                    if not chunk:
+                        continue
+                    hasher.update(chunk)
             digest = hasher.hexdigest()
             if pkg.sha256 and digest.lower() != pkg.sha256.lower():
                 raise ValueError("校验失败：SHA256 不匹配")
@@ -18545,15 +18379,13 @@ class Pages:
                                         "https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md",
                                     ),
                                 ),
-                                ft.Button(
-                                    "pollinations.ai 用户协议",
-                                    icon=ft.Icons.OPEN_IN_NEW,
-                                    on_click=lambda _: self.page.launch_url(
-                                        "https://enter.pollinations.ai/terms",
-                                    ),
-                                ),
                             ],
                             alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        ft.Text(
+                            "生成类插件的第三方协议请以对应插件说明为准。",
+                            size=12,
+                            color=ft.Colors.GREY,
                         ),
                         ft.TextButton(
                             "关闭",
@@ -18730,6 +18562,7 @@ class Pages:
         wallpaper_tab = tab_content(
             "壁纸设置",
             self._build_auto_change_settings_section(),
+            self._build_wallpaper_history_settings_section(),
         )
         update_tab = tab_content(
             "更新",
@@ -18764,7 +18597,7 @@ class Pages:
                 color=ft.Colors.GREY,
             ),
             ft.Text(
-                "部分壁纸源由 小树壁纸资源中心 和 IntelliMarkets-壁纸源市场 提供\nAI 生成由 pollinations.ai 提供\n\n当您使用本软件时，即表示您接受小树工作室用户协议及第三方数据提供方条款。",
+                "部分壁纸源由 小树壁纸资源中心 和 IntelliMarkets-壁纸源市场 提供\n生成功能由已安装的插件分别提供\n\n当您使用本软件时，即表示您接受小树工作室用户协议及第三方数据提供方条款。",
                 size=12,
                 color=ft.Colors.GREY,
             ),
