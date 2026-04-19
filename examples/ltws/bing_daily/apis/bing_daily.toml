@@ -1,0 +1,56 @@
+name = "Bing 每日壁纸"
+description = "微软 Bing 每日壁纸接口"
+categories = ["daily"]
+
+[[parameters]]
+key = "mkt"
+type = "choice"
+label = "地区"
+default = "zh-CN"
+choices = ["zh-CN", "en-US", "ja-JP"]
+
+[[parameters]]
+key = "n"
+type = "choice"
+label = "数量"
+default = "8"
+choices = ["4", "8", "12"]
+
+[request]
+url = "https://www.bing.com/HPImageArchive.aspx?format=js&n={{n}}&mkt={{mkt}}&ts={{timestamp_ms}}"
+method = "GET"
+timeout_seconds = 15
+interval_seconds = 3600
+
+[request.headers]
+Referer = "https://www.bing.com"
+
+[response]
+format = "json"
+type = "multi"
+
+[mapping]
+items = "/images"
+item_mapping = { image = "/url", title = "/copyright", startdate = "/startdate" }
+
+[post_process]
+image = "https://www.bing.com{{image}}"
+
+[validation]
+required_fields = ["image", "title"]
+field_patterns = [
+  { path = "image", regex = "^https://.+" },
+  { path = "title", max_length = 180 }
+]
+
+[error_handling]
+http_codes = [
+  { code = 429, message = "请求过于频繁", retry_after = 300 }
+]
+on_empty_response = "skip"
+on_mapping_failed = "skip_item"
+
+[cache]
+enabled = true
+ttl_seconds = 21600
+key_template = "bing_daily_{{mkt}}_{{date_iso}}"

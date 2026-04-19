@@ -1,8 +1,9 @@
+## Current Status / 当前实现
 
 <table width="100%">
   <tr>
     <td align="left" width="120">
-      <img src="src\assets\images\icon.ico" alt="OpenCut Logo" width="100" />
+      <img src="src\little_tree_wallpaper\assets\icon.ico" alt="Logo" width="100" />
     </td>
     <td align="right">
       <h1>Little Tree Wallpaper Next  <br><span style="font-size: 0.7em; font-weight: normal;">小树壁纸Next</span></h1>
@@ -11,27 +12,29 @@
   </tr>
 </table>
 
-
 > [!NOTE]
-> 
-> This project is still under development. 
-> 
-> This is the Next version of the Little Tree Wallpaper, developed based on Flet. 
-> 
+>
+> **EN**
+>
+> This project is still under development.
+>
+> This repository is the refactored desktop edition of Little Tree Wallpaper, currently based on PyWebview + React + MUI.
+>
 > [Main repository of Little Tree Wallpaper](https://github.com/shu-shu-1/Little-Tree-Wallpaper)
-> 
-> ————————
-> 
+>
+> **中文**
+>
 > 该项目仍在开发中。
-> 
-> 这是小树壁纸的Next版本，基于Flet开发。
-> 
+>
+> 这是小树壁纸的重构版桌面应用，目前采用 PyWebview + React + MUI 作为主要技术栈。
+>
 > [小树壁纸主仓库](https://github.com/shu-shu-1/Little-Tree-Wallpaper)
-
 
 ![Visitor Count](http://estruyf-github.azurewebsites.net/api/VisitorHit?user=shu-shu-1&repo=Little-Tree-Wallpaper-Next-Flet&countColor=%237B1E7B)
 
 ## Overview / 概述 ℹ️
+
+**EN**
 
 Little Tree Wallpaper is a versatile app designed to quickly change and download wallpapers from a variety of sources, including Bing, 360, and Wallhaven. ✨ In addition, it supports multiple interfaces that allow users to bookshop and automatically rotate their favorite wallpapers.Little Tree Wallpaper will conduct local intelligent classification of users' wallpapers.
 
@@ -39,7 +42,7 @@ Stay tuned for more exciting features coming soon! 🎉
 
 If you like this project, please give it a star! ⭐️
 
-————————
+**中文**
 
 小树壁纸是一款多功能应用程序，旨在快速更换和下载来自多种来源的壁纸，包括 Bing、360 和 Wallhaven。✨ 另外，它支持多种接口，允许用户收藏并自动轮换他们喜欢的壁纸，小树壁纸会为用户壁纸进行本地智能分类。
 
@@ -47,208 +50,92 @@ If you like this project, please give it a star! ⭐️
 
 如果您喜欢这个项目，不妨点个 ⭐️ 吧！
 
-## 指南
+## Environment / 环境要求
 
-## Test watermark / 测试版水印 🏷️
+- Python 3.10 or newer; Python 3.11 is recommended. / Python 3.10 及以上，推荐 Python 3.11。
+- [uv](https://docs.astral.sh/uv/) is used for Python dependency and runtime management. / 使用 [uv](https://docs.astral.sh/uv/) 管理 Python 依赖与运行流程。
+- Node.js 20 or newer is required to build frontend assets. / 构建前端静态资源需要 Node.js 20 及以上版本。
 
-A small, unobtrusive badge appears at the bottom-right when the app runs in non-stable mode. You can tweak or disable it:
+## Quick Start / 快速开始
 
-- File: `src/app/constants.py`
-- Toggle: change `MODE = "TEST"` to `"STABLE"` to hide the badge globally.
-
-当应用处于非稳定模式时，右下角会显示一个不打扰的“测试版”角标；如需关闭或自定义：
-
-- 位置：`src/app/constants.py`
-- 开关：把 `MODE = "TEST"` 改为 `"STABLE"` 即可全局隐藏角标。
-
-## Plugin system quick start / 插件系统速览 🔌
-
-The entry point has been modularized. At runtime the app loads plugins from `src/plugins/`. Each plugin can register navigation destinations and additional routes through a simple context API.
-
-- Core plugin: `src/plugins/core.py` – provides the built-in pages.
-- Sample plugin: `src/plugins/sample.py` – demonstrates the latest API features.
-- Plugin contracts: `src/app/plugins/base.py`.
-- Discovery: `src/app/plugins/manager.py` automatically imports Python modules placed under `src/plugins/` that expose a `PLUGIN` instance.
-- Developer notes: see `docs/plugin_dev.md` for the temporary plugin authoring guide.
-
-要扩展应用，只需在 `src/plugins/` 中新建模块，并实现 `PLUGIN = YourPlugin()`，并为插件定义 `PluginManifest`：
-
-```python
-import flet as ft
-
-from app.plugins import AppNavigationView, Plugin, PluginContext, PluginManifest
-
-
-class ExamplePlugin(Plugin):
-  manifest = PluginManifest(
-    identifier="example",
-    name="示例插件",
-    version="0.1.0",
-  )
-
-  def activate(self, context: PluginContext) -> None:
-    context.add_navigation_view(
-      AppNavigationView(
-        id="example",
-        label="示例",
-        icon=ft.Icons.EMOJI_OBJECTS_OUTLINED,
-        selected_icon=ft.Icons.EMOJI_OBJECTS,
-        content=ft.Text("Hello from plugin!"),
-      )
-    )
-
-
-PLUGIN = ExamplePlugin()
-```
-
-Plugins can keep state, use the shared `ft.Page` instance from `context.page`, schedule startup hooks via `context.add_startup_hook`, and persist files under the per-plugin storage helpers provided by `PluginContext`. 插件可以访问 `context.page` 获取 Flet 页面实例，通过 `context.add_startup_hook` 注册启动钩子，并使用上下文提供的路径助手读写专属数据。
-
-Need plugin-specific actions? Use `context.add_bing_action` / `context.add_spotlight_action` to append buttons below the built-in wallpaper cards, and `context.register_settings_page` to expose a dedicated settings view accessed via the plugin card's **插件设置** button. 更多扩展 API 详见 `docs/plugin_dev.md`。
-
-
-## Run the app / 运行指南 ▶️
-
-### uv
-
-Run as a desktop app / 作为桌面应用运行: 
-
-```
-uv run flet run
-```
-
-Run as a web app / 作为web应用运行:
-
-```
-uv run flet run --web
-```
-
-### Poetry
-
-Install dependencies from `pyproject.toml` / 从 `pyproject.toml` 安装依赖:
-
-```
-poetry install
-```
-
-Run as a desktop app / 作为桌面应用运行:
-
-```
-poetry run flet run
-```
-
-Run as a web app / 作为web应用运行:
-
-```
-poetry run flet run --web
-```
-
-For more details on running the app, refer to the [Flet Getting Started Guide](https://flet.dev/docs/getting-started/).
-
-有关运行该应用程序的更多详细信息，请参阅 [Flet入门指南](https://flet.dev/docs/getting-started/)。
-
-## Build the app / 构建指南 📦
-
-### macOS
-
-```
-flet build macos -v
-```
-
-For more details on building macOS package, refer to the [Flet macOS Packaging Guide](https://flet.dev/docs/publish/macos/).
-
-有关构建macOS包的更多详细信息，请参阅 [Flet macOS打包指南](https://flet.dev/docs/publish/macos/)。
-
-### Linux
-
-```
-flet build linux -v
-```
-
-For more details on building Linux package, refer to the [Flet Linux Packaging Guide](https://flet.dev/docs/publish/linux/).
-
-有关构建Linux包的更多详细信息，请参阅 [Flet Linux打包指南](https://flet.dev/docs/publish/linux/)。
-
-### Windows
-
-```
-flet build windows -v
-```
-
-For more details on building Windows package, refer to the [Flet Windows Packaging Guide](https://flet.dev/docs/publish/windows/).
-
-有关构建Windows包的更多详细信息，请参阅 [Flet Windows打包指南](https://flet.dev/docs/publish/windows/)。
-
-## Release Notes / 版本发行说明 📋
-
-This project follows the versioning conventions of [Semantic Versioning 2.0.0](https://semver.org/). 📦
-
-本项目采用[语义化版本 2.0.0](https://semver.org/lang/zh-CN/)的版本命名规则。📦
-
-## Special Thanks / 特别感谢 ❤️
-
-@[炫饭的芙芙](https://space.bilibili.com/1669914811)
-
-
-## Star History / Star 趋势 🌟
-
-
-<a href="https://www.star-history.com/#shu-shu-1/Little-Tree-Wallpaper-Next-Flet&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date" />
- </picture>
-</a>
-
-
----
-
-Feel free to explore, contribute, 和 help improve the project! 
-
-🚀 欢迎随时探索、贡献和帮助改进此项目！
-
-## Plugin settings tab index (0-based) / 插件设置页索引说明 🧭
-
-When developing plugins, you may want to programmatically open the app Settings page and switch to the "Plugins" tab. Flet's Tabs selection is numeric and 0-based, so using a hard-coded number in plugins is fragile and hard to maintain.
-
-To avoid magic numbers the application exposes a small constant in `src/app/constants.py`:
-
-- `SETTINGS_TAB_PLUGINS` — index of the "Plugins" tab inside the Settings view (0-based).
-
-Example (inside a plugin):
-
-```python
-from app.constants import SETTINGS_TAB_PLUGINS
-
-# ... inside your plugin's activate or UI builder:
-context.open_settings_tab(SETTINGS_TAB_PLUGINS)
-```
-
-
-插件如果需要跳转到应用的“设置 → 插件”页，请优先使用 `src/app/constants.py` 中提供的 `SETTINGS_TAB_PLUGINS` 常量，避免在代码中直接写入索引数字（0-based）。示例：
-
-```python
-from app.constants import SETTINGS_TAB_PLUGINS
-
-context.open_settings_tab(SETTINGS_TAB_PLUGINS)
-```
-
-Using the named constant improves readability and makes future reshuffles of the Settings tabs safer, since only the constant needs to be updated.
-
-
-## Application settings / 全局设置（开发者说明）
-
-This repository includes a small application-level settings system used to persist program preferences (UI theme, language, storage paths, update policy, etc.). The implementation stores settings as JSON in the platform-appropriate config directory (see `app.paths.CONFIG_DIR`).
-
-- Settings defaults are defined in `src/config.py` as `DEFAULT_CONFIG`.
-- A convenience helper `SettingsStore` is provided at `src/app/settings.py` with `get/set/save/reset/as_dict` APIs.
-- During startup the app instantiates a `SettingsStore(CONFIG_DIR / "config.json")` and exposes a read-only snapshot and path to plugins via `PluginContext` metadata under `metadata['app_settings']` and `metadata['app_settings_path']`.
-
-Developer note: the project prefers `orjson` for fast JSON operations (imported in `src/config.py`). Before running the app or tests locally, ensure `orjson` is available in your environment:
+### 1. Sync Python Environment / 同步 Python 环境
 
 ```powershell
-# activate your venv, then
-python -m pip install orjson
+uv sync
 ```
 
-If you prefer not to install `orjson`, I can add a small fallback so `src/config.py` uses the built-in `json` when `orjson` is missing.
+Dependencies are resolved from pyproject.toml and uv.lock. / 项目依赖以 pyproject.toml 和 uv.lock 为准。
+
+### 2. Install And Build Frontend / 安装并构建前端
+
+```powershell
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+### 3. Launch The Desktop App / 启动桌面应用
+
+```powershell
+uv run python main.py
+```
+
+## Common Commands / 常用开发命令
+
+```powershell
+uv sync
+uv run python main.py
+
+cd frontend
+npm install
+npm run build
+npm run dev
+```
+
+Notes / 说明：
+
+- The desktop host loads frontend/dist by default, so frontend changes usually require another npm run build. / 桌面宿主默认读取 frontend/dist，因此修改前端后通常需要重新执行 npm run build。
+- npm run dev is useful for standalone frontend debugging, but it does not replace the static assets loaded by the desktop shell. / npm run dev 适合单独调试前端界面，不会自动替代桌面端加载的静态资源。
+- requirements.txt is now only a legacy compatibility artifact and is no longer the primary dependency source. / 当前保留的 requirements.txt 仅用于兼容历史工作流，不再作为主依赖来源。
+
+## Project Layout / 目录结构
+
+```text
+frontend/                     React + MUI frontend project / React + MUI 前端工程
+  src/                        UI, theming, i18n, and app components / 应用界面、主题系统、多语言与业务组件
+  public/                     Static frontend assets / 前端静态资源
+src/little_tree_wallpaper/    Python host, bridge layer, and services / Python 宿主、桌面桥接与服务实现
+  services/                   Wallpaper, favorites, plugins, store, and storage services / 壁纸、收藏、插件、商店、存储等服务
+  assets/                     App icons and host-side assets / 应用图标与宿主资源
+examples/ltws/                Example LTWS v3 wallpaper sources / 示例 LTWS v3 壁纸源
+docs/                         Design and implementation docs / 设计与实现文档
+main.py                       Desktop application entry / 桌面应用入口
+pyproject.toml                Python project metadata and dependencies / Python 项目元数据与依赖声明
+uv.lock                       uv lockfile / uv 锁文件
+```
+
+## Highlights / 当前实现重点
+
+- The desktop host and frontend shell are already in place, including window bootstrap, settings bridge, and frontend-backend communication. / 已有桌面宿主与前端界面骨架，可以完成桌面窗口启动、设置桥接与前后端通信。
+- Multiple wallpaper sources and service layers are implemented, including Bing, Windows Spotlight, LTWS, and the custom intelligent market flow. / 已实现多类壁纸来源与服务层，包括 Bing、Windows Spotlight、LTWS、自定义智能市场等。
+- Favorites, localization, history, auto-change, theming, plugins, and store scaffolding are all present and ready for further iteration. / 收藏、本地化、历史记录、自动换壁纸、主题系统、插件与商店骨架均已进入可继续迭代的状态。
+- The frontend already includes a theme designer, theme import/export, i18n, and wallpaper creator modules. / 前端包含主题设计器、主题导入导出、多语言、壁纸创作器等模块。
+
+## Development Notes / 开发说明
+
+- Windows wallpaper integration is implemented; macOS and Linux currently rely on baseline command-based branches. / Windows 壁纸设置已实现，macOS 与 Linux 目前仍以基础命令分支为主。
+- Frontend build artifacts are emitted to frontend/dist, and the desktop app loads that directory directly. / 前端构建产物输出到 frontend/dist，桌面应用直接加载该目录。
+- The store and plugin systems are still closer to host-side scaffolding, which makes them a good base for future protocol and installation work. / 商店与插件系统目前偏向宿主框架能力，适合作为后续真实协议接入与安装流程的基础层。
+- LTWS currently covers source/config/categories/apis, template substitution, JSON Pointer wildcards, basic validation, and API caching. / LTWS 当前实现覆盖 source/config/categories/apis、变量替换、JSON Pointer 通配、基础校验与 API 缓存。
+- This repository is currently best validated on Windows, while other platforms still focus on baseline functionality. / 当前仓库更适合在 Windows 上优先验证完整桌面体验，其它平台仍以基础能力为主。
+
+## Documentation / 文档
+
+- Theme system design and file format details: [docs/theme-system.md](docs/theme-system.md). / 主题系统设计与文件格式说明见 [docs/theme-system.md](docs/theme-system.md)。
+
+## Roadmap / 后续方向
+
+- Improve plugin installation flow and lifecycle management. / 完善插件安装与生命周期管理。
+- Continue expanding cross-platform wallpaper integration and system-level experience. / 继续补足跨平台壁纸设置与系统集成体验。
+- Consolidate store protocol, resource delivery, and theme/plugin distribution workflows. / 收敛商店协议、资源下载与主题/插件分发流程。

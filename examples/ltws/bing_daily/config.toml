@@ -1,0 +1,27 @@
+[request]
+global_interval_seconds = 1800
+timeout_seconds = 15
+max_concurrent = 2
+skip_ssl_verify = false
+user_agent = "LittleTreeWallpaperNext/0.1.0"
+
+[request.headers]
+Accept = "application/json"
+Accept-Language = "zh-CN,zh;q=0.9"
+Referer = "https://www.bing.com"
+
+[request.retry]
+max_attempts = 2
+backoff_base = 1.5
+initial_delay_ms = 600
+
+[request.cache]
+enabled = true
+default_ttl_seconds = 21600
+max_memory_mb = 32
+
+[request.variables]
+timestamp = "{{timestamp_ms}}"
+date = "{{date_iso}}"
+screen_width = "{{screen_width}}"
+screen_height = "{{screen_height}}"

@@ -1,0 +1,21 @@
+scheme = "littletree_wallpaper_source_v3"
+identifier = "com.littletree.bing_daily"
+name = "Bing 每日壁纸源"
+version = "1.0.0"
+categories = "categories.toml"
+apis = ["apis/*.toml"]
+config = "config.toml"
+description = "示例 LTWS v3 壁纸源，直接映射 Bing 每日壁纸接口。"
+details = """
+# Bing 每日壁纸源
+
+这是一个示例源，用于验证 pywebview 重构版对 littletree_wallpaper_source_v3 的基础解析能力。
+"""
+footer_text = "Little Tree Wallpaper Source Example"
+
+[merge]
+enabled = true
+strategy = "same_id"
+priority = 120
+metadata_source = "high_priority"
+allow_metadata_override = true

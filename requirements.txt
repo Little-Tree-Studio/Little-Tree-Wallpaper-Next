@@ -1,0 +1,15 @@
+pywebview>=5.1
+platformdirs>=4.3.6
+orjson>=3.10.18
+rtoml>=0.12.0
+loguru>=0.7.3
+requests>=2.32.3
+aiohttp>=3.11.18
+pillow>=11.2.1
+pillow-avif-plugin>=1.5.2
+pystray>=0.19.5
+psutil>=7.0.0
+pyperclip>=1.9.0
+filetype>=1.2.0
+littledl>=0.4.1
+ltws-parser>=1.5.1

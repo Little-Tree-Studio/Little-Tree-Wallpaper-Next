@@ -1,49 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "little-tree-wallpaper-next-flet"
-version = "1.2.0"
-description = ""
-readme = "README.md"
+name = "little-tree-wallpaper-refactor"
+version = "2.0.0"
+description = "PyWebview + MUI desktop wallpaper manager inspired by Little Tree Wallpaper Next"
 requires-python = ">=3.10"
-authors = [
-    { name = "Little Tree Studio", email = "studio@zsxiaoshu.com" }
-]
 dependencies = [
-  "aiohttp>=3.13.2",
-  "littledl>=0.9.0",
-  "requests>=2.32.5",
-  "filetype>=1.2.0",
-  "flet==0.28.3",
-  "python-magic>=0.4.27; platform_system != 'Windows'",
-  "python-magic-bin>=0.4.14; platform_system == 'Windows'",
-  "loguru>=0.7.3",
-  "platformdirs>=4.5.0",
-  "pyperclip>=1.11.0",
-  "orjson>=3.11.4",
-  "rtoml>=0.13.0",
-  "pystray>=0.19.5",
-  "psutil>=7.1.3",
-  "pillow>=12.0.0",
-  "ltws-parser>=1.5.1",
+    "aiohttp>=3.11.18",
+    "filetype>=1.2.0",
+    "littledl>=0.4.1",
+    "loguru>=0.7.3",
+    "ltws-parser>=1.5.1",
+    "orjson>=3.10.18",
+    "pillow>=11.2.1",
+    "pillow-avif-plugin>=1.5.2",
+    "platformdirs>=4.3.6",
+    "psutil>=7.0.0",
+    "pyperclip>=1.9.0",
+    "pystray>=0.19.5",
+    "pywebview>=5.1",
+    "requests>=2.32.3",
+    "rtoml>=0.12.0",
 ]
 
-[dependency-groups]
-dev = [
-    "colorama>=0.4.6",
-    "flet[all]==0.28.3",
-    "pyinstaller>=6.16.0",
-]
+[tool.setuptools]
+package-dir = {"" = "src"}
 
-[tool.flet]
-org = "com.littletreestudio"
-product = "Little Tree Wallpaper Next"
-company = "Little Tree Studio"
-copyright = "Copyright (C) 2025 by Little Tree Studio"
-
-[tool.flet.app]
-path = "src"
-
-[tool.poetry]
-package-mode = false
-
-[tool.poetry.group.dev.dependencies]
-flet = {extras = ["all"], version = "0.28.3"}
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,13 @@
+[template]
+category = "每日更新"
+
+[[categories]]
+id = "daily"
+name = "每日壁纸"
+category = "官方"
+subcategory = "Bing"
+description = "Bing 每日更新壁纸"
+
+[[category_groups]]
+name = "官方推荐"
+category_ids = ["daily"]
