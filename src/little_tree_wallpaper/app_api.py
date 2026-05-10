@@ -27,7 +27,11 @@ from little_tree_wallpaper.services.spotlight import SpotlightService
 from little_tree_wallpaper.services.storage import StorageService
 from little_tree_wallpaper.services.store import DEFAULT_STORE_URL, StoreService
 from little_tree_wallpaper.services.wallpaper import WallpaperService
-from little_tree_wallpaper.settings import SettingsStore, resolve_bing_market
+from little_tree_wallpaper.settings import (
+    SettingsStore,
+    resolve_bing_market,
+    resolve_download_behavior,
+)
 
 
 class AppBridge:
@@ -118,6 +122,20 @@ class AppBridge:
 
     def list_wallpaper_sources(self) -> list[dict[str, Any]]:
         return self._ltws_service.list_sources()
+
+    def set_wallpaper_source_enabled(
+        self,
+        source_id: str,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        source = self._ltws_service.set_source_enabled(source_id, enabled)
+        self._auto_change_service.reconfigure()
+        return source
+
+    def delete_wallpaper_source(self, source_id: str) -> dict[str, Any]:
+        result = self._ltws_service.delete_source(source_id)
+        self._auto_change_service.reconfigure()
+        return result
 
     def execute_wallpaper_source(
         self, source_id: str, api_name: str, parameters: dict[str, Any] | None = None
@@ -416,6 +434,18 @@ class AppBridge:
             return None
         return {"path": selected_path}
 
+    def pick_auto_change_local_folder(self) -> dict[str, Any] | None:
+        if self._window is None:
+            return None
+        selected = self._window.create_file_dialog(
+            webview.FileDialog.FOLDER,
+            allow_multiple=False,
+        )
+        selected_path = self._dialog_result_path(selected)
+        if not selected_path:
+            return None
+        return {"path": selected_path}
+
     def set_download_directory(self, directory: str | None = None) -> dict[str, Any]:
         resolved_directory = self._storage_service.resolve_download_directory(
             directory,
@@ -457,6 +487,10 @@ class AppBridge:
             )
             self._wallpaper_service.set_download_dir(resolved_directory)
             normalized_updates["storage.download_directory"] = str(resolved_directory)
+        if "storage.download_behavior" in normalized_updates:
+            normalized_updates["storage.download_behavior"] = resolve_download_behavior(
+                normalized_updates.get("storage.download_behavior")
+            )
 
         snapshot = self._settings.update_many(normalized_updates)
         if any(path.startswith("wallpaper.auto_change") for path in updates) or any(
@@ -479,12 +513,30 @@ class AppBridge:
             metadata=wallpaper.get("metadata"),
         )
 
-    def download_wallpaper(self, wallpaper: dict[str, Any]) -> dict[str, Any]:
-        local_path = self._wallpaper_service.download(
-            wallpaper["image_url"],
-            wallpaper["title"],
-            metadata=wallpaper.get("metadata"),
-        )
+    def download_wallpaper(self, wallpaper: dict[str, Any]) -> dict[str, Any] | None:
+        image_url = wallpaper["image_url"]
+        title = wallpaper["title"]
+        metadata = wallpaper.get("metadata")
+        should_prompt = self._wallpaper_service.is_local_resource(
+            image_url
+        ) or self._resolved_download_behavior() == "prompt"
+
+        if should_prompt:
+            target_path = self._pick_wallpaper_save_path(wallpaper)
+            if not target_path:
+                return None
+            local_path = self._wallpaper_service.save_as(
+                image_url,
+                Path(target_path),
+                title,
+                metadata=metadata,
+            )
+        else:
+            local_path = self._wallpaper_service.download(
+                image_url,
+                title,
+                metadata=metadata,
+            )
         return {"local_path": str(local_path)}
 
     def get_current_wallpaper(self) -> dict[str, Any] | None:
@@ -539,15 +591,81 @@ class AppBridge:
         selected = self._window.create_file_dialog(
             webview.FileDialog.OPEN,
             allow_multiple=False,
-            file_types=("Wallpaper Source (*.ltws;*.toml)",),
+            file_types=("Wallpaper Source (*.ltws;*.json;*.toml;*.yaml;*.yml)",),
         )
-        if not selected:
+        source_path = self._dialog_result_path(selected)
+        if not source_path:
             return None
-        source_path = Path(selected[0])
-        import_target = (
-            source_path if source_path.suffix == ".ltws" else source_path.parent
+        return self._ltws_service.import_source(source_path)
+
+    def import_wallpaper_source_as_draft(self) -> dict[str, Any] | None:
+        if self._window is None:
+            return None
+        selected = self._window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=("APICORE / OpenAPI (*.json;*.toml;*.yaml;*.yml)",),
         )
-        return self._ltws_service.import_source(str(import_target))
+        source_path = self._dialog_result_path(selected)
+        if not source_path:
+            return None
+        return self._ltws_service.import_source_as_payload(source_path)
+
+    def create_wallpaper_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._ltws_service.create_source(payload)
+
+    def export_wallpaper_source(
+        self,
+        source_id: str,
+        suggested_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        if self._window is None:
+            return None
+        base_name = re.sub(r'[\\/:*?"<>|]+', '-', suggested_name or source_id).strip().strip('.')
+        if not base_name:
+            base_name = 'wallpaper-source'
+        if not base_name.lower().endswith('.ltws'):
+            base_name = f'{base_name}.ltws'
+        selected = self._window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename=base_name,
+            file_types=("Wallpaper Source Package (*.ltws)",),
+        )
+        target_path = self._dialog_result_path(selected)
+        if not target_path:
+            return None
+        return self._ltws_service.export_source(source_id, target_path)
+
+    def export_wallpaper_source_payload(
+        self,
+        payload: dict[str, Any],
+        export_format: str,
+        suggested_name: str | None = None,
+        export_options: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if self._window is None:
+            return None
+        normalized_format = str(export_format or "").strip().lower()
+        if normalized_format == "apicore_v1":
+            default_name = self._sanitize_named_export_filename(suggested_name or "wallpaper-source", ".json")
+            file_types = ("APICORE v1 (*.json)",)
+        elif normalized_format == "apicore_v2":
+            default_name = self._sanitize_named_export_filename(suggested_name or "wallpaper-source", ".json")
+            file_types = ("APICORE v2 (*.json;*.yaml;*.yml;*.toml)",)
+        elif normalized_format == "openapi_3_2":
+            default_name = self._sanitize_named_export_filename(suggested_name or "wallpaper-source", ".yaml")
+            file_types = ("OpenAPI 3.2 (*.yaml;*.yml;*.json)",)
+        else:
+            raise ValueError("不支持的导出格式")
+        selected = self._window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename=default_name,
+            file_types=file_types,
+        )
+        target_path = self._dialog_result_path(selected)
+        if not target_path:
+            return None
+        return self._ltws_service.export_payload(payload, normalized_format, target_path, export_options)
 
     def _dialog_result_path(self, selected: Any) -> str | None:
         if not selected:
@@ -565,6 +683,69 @@ class AppBridge:
         if not base_name.lower().endswith(".ltwtheme"):
             base_name = f"{base_name}.ltwtheme"
         return base_name
+
+    def _sanitize_named_export_filename(self, value: str, suffix: str) -> str:
+        base_name = re.sub(r'[\\/:*?"<>|]+', "-", value).strip().strip(".")
+        if not base_name:
+            base_name = "wallpaper-source"
+        if not base_name.lower().endswith(suffix.lower()):
+            base_name = f"{base_name}{suffix}"
+        return base_name
+
+    def _pick_wallpaper_save_path(self, wallpaper: dict[str, Any]) -> str | None:
+        if self._window is None:
+            return None
+        selected = self._window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename=self._suggest_wallpaper_save_filename(wallpaper),
+            file_types=(
+                "Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.gif;*.avif;*.tif;*.tiff)",
+            ),
+        )
+        return self._dialog_result_path(selected)
+
+    def _suggest_wallpaper_save_filename(self, wallpaper: dict[str, Any]) -> str:
+        raw_title = str(wallpaper.get("title") or "").strip() or "wallpaper"
+        suffix = self._infer_wallpaper_filename_suffix(
+            str(wallpaper.get("image_url") or ""),
+            str(wallpaper.get("preview_url") or ""),
+        )
+        base_name = re.sub(r'[\\/:*?"<>|]+', "-", raw_title).strip().strip(".")
+        if not base_name:
+            base_name = "wallpaper"
+        if suffix and not base_name.lower().endswith(suffix.lower()):
+            return f"{base_name}{suffix}"
+        return base_name
+
+    def _infer_wallpaper_filename_suffix(self, *candidates: str) -> str:
+        for candidate in candidates:
+            raw = str(candidate or "").strip()
+            if not raw:
+                continue
+            if raw.startswith("data:"):
+                mime_part = raw[5:].split(",", 1)[0]
+                mime_type, *_ = mime_part.split(";")
+                guessed = mimetypes.guess_extension(mime_type or "image/png")
+                if guessed == ".jpe":
+                    return ".jpg"
+                if guessed:
+                    return guessed
+                continue
+            if re.match(r"^[A-Za-z]:[\\/]", raw) or raw.startswith("\\\\"):
+                suffix = Path(raw).suffix.lower()
+                if suffix:
+                    return ".jpg" if suffix == ".jpe" else suffix
+                continue
+            parsed = urlparse(raw)
+            if parsed.scheme == "file":
+                suffix = Path(unquote(parsed.path or "")).suffix.lower()
+                if suffix:
+                    return ".jpg" if suffix == ".jpe" else suffix
+                continue
+            suffix = Path(unquote(parsed.path or "")).suffix.lower()
+            if suffix:
+                return ".jpg" if suffix == ".jpe" else suffix
+        return ".jpg"
 
     def _resolve_local_theme_asset_path(self, asset_ref: str | None) -> Path | None:
         raw = str(asset_ref or "").strip()
@@ -590,6 +771,11 @@ class AppBridge:
         return resolve_bing_market(
             str(self._settings.get("ui.language", "zh-CN")),
             self._settings.get("wallpaper.bing.market", "auto"),
+        )
+
+    def _resolved_download_behavior(self) -> str:
+        return resolve_download_behavior(
+            self._settings.get("storage.download_behavior", "directory")
         )
 
     def list_history(self) -> list[dict[str, Any]]:
@@ -645,8 +831,8 @@ class AppBridge:
             "display": get_primary_display_resolution(),
         }
 
-    def trigger_auto_change_now(self) -> dict[str, Any]:
-        return self._auto_change_service.trigger_once()
+    def trigger_auto_change_now(self, plan_id: str | None = None) -> dict[str, Any]:
+        return self._auto_change_service.trigger_once(plan_id)
 
     def _open_path(self, target: Path) -> None:
         logger.info("open debug path: {}", target)

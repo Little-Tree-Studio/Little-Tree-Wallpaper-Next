@@ -2010,7 +2010,7 @@ export function WallpaperCreator({ language, displayResolution, onSetWallpaper, 
                   <Typography variant="body2" color="text.secondary">{copy.previewSubtitle}</Typography>
                 </Stack>
 
-                <Paper variant="outlined" sx={{ overflow: 'hidden', borderRadius: 3, bgcolor: alpha(theme.palette.common.black, 0.04) }}>
+                <Paper variant="outlined" sx={{ overflow: 'hidden', borderRadius: 0, border: `12px solid ${alpha(theme.palette.common.black, 0.85)}`, boxShadow: `0 0 0 1px ${alpha(theme.palette.common.black, 0.2)}, 0 8px 24px ${alpha(theme.palette.common.black, 0.25)}`, bgcolor: alpha(theme.palette.common.black, 0.04) }}>
                   {generatedUrl ? (
                     <Box component="img" src={generatedUrl} alt={title} sx={{ width: '100%', display: 'block', aspectRatio: `${renderSize.outputWidth} / ${renderSize.outputHeight}`, objectFit: 'cover' }} />
                   ) : (

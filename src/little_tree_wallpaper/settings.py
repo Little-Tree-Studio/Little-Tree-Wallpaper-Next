@@ -11,6 +11,7 @@ from little_tree_wallpaper import __version__
 
 
 DEFAULT_BING_MARKET = "auto"
+DEFAULT_DOWNLOAD_BEHAVIOR = "directory"
 DEFAULT_BING_MARKET_BY_LANGUAGE: dict[str, str] = {
     "zh-CN": "zh-CN",
     "en-US": "en-US",
@@ -37,6 +38,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "cache_directory": "",
         "log_directory": "",
         "download_directory": "",
+        "download_behavior": DEFAULT_DOWNLOAD_BEHAVIOR,
     },
     "wallpaper": {
         "bing": {
@@ -44,14 +46,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
         "auto_change": {
             "enabled": False,
-            "mode": "off",
-            "interval": 3600,
-            "schedule": "09:00",
-            "slideshow": {"strategy": "random", "sources": []},
+            "plans": [],
+            "local_sources": [],
         },
         "allow_NSFW": False,
         "history_save_copy": True,
-        "sources": {"merge_display": True},
+        "sources": {"merge_display": True, "disabled_ids": []},
     },
     "download": {"segment_size_kb": 512, "proxy": ""},
     "sniff": {
@@ -86,6 +86,13 @@ def resolve_bing_market(language: str | None, market: str | None) -> str:
     if RFC5646_TAG_PATTERN.fullmatch(normalized_market):
         return normalized_market
     return DEFAULT_BING_MARKET_BY_LANGUAGE.get(normalized_language, "en-US")
+
+
+def resolve_download_behavior(value: str | None) -> str:
+    normalized_value = str(value or "").strip().lower()
+    if normalized_value == "prompt":
+        return "prompt"
+    return DEFAULT_DOWNLOAD_BEHAVIOR
 
 
 class SettingsStore:

@@ -89,7 +89,12 @@ def run() -> None:
     spotlight_service = SpotlightService()
     wallpaper_service = WallpaperService(download_directory, paths.history_dir)
     favorite_manager = FavoriteManager(paths.favorites_dir)
-    ltws_service = LTWSService(paths.sources_dir, paths.cache_dir, paths.examples_dir)
+    ltws_service = LTWSService(
+        paths.sources_dir,
+        paths.cache_dir,
+        paths.examples_dir,
+        settings=settings,
+    )
     intelligent_market_service = IntelligentMarketService(paths.cache_dir, settings)
     storage_service = StorageService(
         paths=paths,

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import base64
-import ctypes
 import hashlib
 import io
 import mimetypes
-import os
-import platform
 import shutil
-import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 import re
@@ -33,6 +28,7 @@ except ImportError:  # pragma: no cover
     filetype = None
 
 from little_tree_wallpaper.models import HistoryItem
+from little_tree_wallpaper.services.sys_wallpaper import get_sys_wallpaper, set_wallpaper
 
 
 class WallpaperService:
@@ -136,6 +132,117 @@ class WallpaperService:
             suggested_name=suggested_name,
             metadata=metadata,
         )
+
+    def is_local_resource(self, image_url: str) -> bool:
+        return self._resolve_local_path(image_url) is not None
+
+    def save_as(
+        self,
+        image_url: str,
+        target_path: Path,
+        suggested_name: str | None = None,
+        metadata: dict | None = None,
+    ) -> Path:
+        local_path = self._resolve_local_path(image_url)
+        profile = self._extract_output_profile(metadata)
+        if local_path is not None:
+            resolved_target = self._resolve_save_target_path(
+                target_path,
+                preferred_suffix=local_path.suffix,
+            )
+            if profile is None:
+                if local_path.resolve() != resolved_target:
+                    shutil.copy2(local_path, resolved_target)
+                return resolved_target
+            return self._apply_output_profile(
+                local_path,
+                suggested_name=suggested_name,
+                metadata=metadata,
+                target_path=resolved_target,
+            )
+
+        parsed = urlparse(image_url)
+        if parsed.scheme == "data":
+            resolved_target = self._resolve_save_target_path(
+                target_path,
+                preferred_suffix=self._infer_data_url_suffix(image_url),
+            )
+            if profile is None:
+                return self._save_data_url(
+                    image_url,
+                    suggested_name=suggested_name,
+                    target_path=resolved_target,
+                )
+            temp_path = self._build_temporary_download_path(
+                resolved_target,
+                preferred_suffix=resolved_target.suffix,
+            )
+            saved_path = self._save_data_url(
+                image_url,
+                suggested_name=suggested_name,
+                target_path=temp_path,
+            )
+            try:
+                return self._apply_output_profile(
+                    saved_path,
+                    suggested_name=suggested_name,
+                    metadata=metadata,
+                    target_path=resolved_target,
+                )
+            finally:
+                saved_path.unlink(missing_ok=True)
+
+        headers = self._build_download_headers(image_url=image_url, metadata=metadata)
+
+        try:
+            response = self._http.get(
+                image_url,
+                timeout=(12, 90),
+                headers=headers,
+                stream=True,
+            )
+            response.raise_for_status()
+        except requests.exceptions.Timeout as exc:
+            logger.warning("wallpaper download timed out: {}", image_url)
+            raise RuntimeError("下载壁纸超时，请稍后重试或切换其他画质。") from exc
+        except requests.exceptions.RequestException as exc:
+            logger.warning("wallpaper download failed: {}", exc)
+            raise RuntimeError(f"下载壁纸失败: {exc}") from exc
+
+        preferred_suffix = self._infer_remote_suffix(
+            parsed.path, response.headers.get("content-type")
+        )
+        resolved_target = self._resolve_save_target_path(
+            target_path,
+            preferred_suffix=preferred_suffix,
+        )
+        if profile is None:
+            saved_path = self._write_response_to_path(response, resolved_target)
+            return self._ensure_download_extension(
+                saved_path,
+                content_type=response.headers.get("content-type"),
+                suggested_name=resolved_target.name,
+            )
+
+        temp_path = self._build_temporary_download_path(
+            resolved_target,
+            preferred_suffix=preferred_suffix,
+        )
+        saved_path = self._write_response_to_path(response, temp_path)
+        saved_path = self._ensure_download_extension(
+            saved_path,
+            content_type=response.headers.get("content-type"),
+            suggested_name=saved_path.name,
+        )
+        try:
+            return self._apply_output_profile(
+                saved_path,
+                suggested_name=suggested_name,
+                metadata=metadata,
+                target_path=resolved_target,
+            )
+        finally:
+            saved_path.unlink(missing_ok=True)
 
     def set_wallpaper(
         self,
@@ -293,7 +400,12 @@ class WallpaperService:
             orjson.dumps(payload[:200], option=orjson.OPT_INDENT_2)
         )
 
-    def _save_data_url(self, image_url: str, suggested_name: str | None = None) -> Path:
+    def _save_data_url(
+        self,
+        image_url: str,
+        suggested_name: str | None = None,
+        target_path: Path | None = None,
+    ) -> Path:
         header, _, payload = image_url.partition(",")
         if not header.startswith("data:") or not payload:
             raise RuntimeError("下载壁纸失败: 无效的数据图像")
@@ -317,7 +429,11 @@ class WallpaperService:
             if suggested_name
             else hashlib.sha1(image_url.encode("utf-8")).hexdigest()
         )
-        output_path = self.download_dir / f"{safe_name}{suffix}"
+        output_path = (
+            self._resolve_save_target_path(target_path, preferred_suffix=suffix)
+            if target_path is not None
+            else self.download_dir / f"{safe_name}{suffix}"
+        )
         output_path.write_bytes(raw_bytes)
         return output_path
 
@@ -360,21 +476,22 @@ class WallpaperService:
         return headers
 
     def _apply_wallpaper(self, image_path: Path) -> None:
-        system = platform.system().lower()
-        if system == "windows":
-            self._set_windows_wallpaper(image_path)
-            return
-        if system == "darwin":
-            self._set_macos_wallpaper(image_path)
-            return
-        if system == "linux":
-            self._set_linux_wallpaper(image_path)
-            return
-        raise RuntimeError("当前平台暂未实现设置壁纸")
+        set_wallpaper(str(image_path))
 
     def _slugify(self, value: str) -> str:
         cleaned = "".join(char if char.isalnum() else "_" for char in value).strip("_")
         return cleaned[:64] or "wallpaper"
+
+    def _infer_data_url_suffix(self, image_url: str) -> str:
+        header, _, _ = image_url.partition(",")
+        if not header.startswith("data:"):
+            return ".png"
+        mime_part = header[5:]
+        mime_type, *_ = mime_part.split(";")
+        suffix = mimetypes.guess_extension(mime_type or "image/png") or ".png"
+        if suffix == ".jpe":
+            return ".jpg"
+        return suffix
 
     def _resolve_local_path(self, image_url: str) -> Path | None:
         raw = str(image_url or "").strip()
@@ -406,6 +523,49 @@ class WallpaperService:
         if guessed:
             return guessed
         return ".bin"
+
+    def _resolve_save_target_path(
+        self,
+        target_path: Path,
+        preferred_suffix: str | None = None,
+    ) -> Path:
+        resolved_target = target_path.expanduser().resolve()
+        resolved_target.parent.mkdir(parents=True, exist_ok=True)
+        normalized_suffix = (preferred_suffix or "").strip().lower()
+        if normalized_suffix == ".jpe":
+            normalized_suffix = ".jpg"
+        if normalized_suffix and not normalized_suffix.startswith("."):
+            normalized_suffix = f".{normalized_suffix}"
+        if not resolved_target.suffix and normalized_suffix:
+            resolved_target = resolved_target.with_suffix(normalized_suffix)
+        return resolved_target
+
+    def _build_temporary_download_path(
+        self,
+        target_path: Path,
+        preferred_suffix: str | None = None,
+    ) -> Path:
+        normalized_suffix = (preferred_suffix or "").strip().lower()
+        if normalized_suffix == ".jpe":
+            normalized_suffix = ".jpg"
+        if normalized_suffix and not normalized_suffix.startswith("."):
+            normalized_suffix = f".{normalized_suffix}"
+        if not normalized_suffix:
+            normalized_suffix = ".tmp"
+        token = hashlib.sha1(str(target_path).encode("utf-8")).hexdigest()[:12]
+        return self.download_dir / f"tmp_{token}{normalized_suffix}"
+
+    def _write_response_to_path(
+        self,
+        response: requests.Response,
+        output_path: Path,
+    ) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 128):
+                if chunk:
+                    handle.write(chunk)
+        return output_path
 
     def _ensure_download_extension(
         self,
@@ -460,6 +620,7 @@ class WallpaperService:
         source_path: Path,
         suggested_name: str | None = None,
         metadata: dict | None = None,
+        target_path: Path | None = None,
     ) -> Path:
         profile = self._extract_output_profile(metadata)
         if profile is None:
@@ -470,6 +631,7 @@ class WallpaperService:
             suggested_name=suggested_name,
             width=profile["width"],
             height=profile["height"],
+            target_path=target_path,
         )
 
         with Image.open(source_path) as image:
@@ -503,10 +665,19 @@ class WallpaperService:
         suggested_name: str | None,
         width: int,
         height: int,
+        target_path: Path | None = None,
     ) -> Path:
         suffix = source_path.suffix.lower()
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
             suffix = ".jpg"
+
+        if target_path is not None:
+            resolved_target = target_path.expanduser().resolve()
+            resolved_target.parent.mkdir(parents=True, exist_ok=True)
+            target_suffix = resolved_target.suffix.lower()
+            if target_suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+                resolved_target = resolved_target.with_suffix(suffix)
+            return resolved_target
 
         base_name = self._slugify(suggested_name or source_path.stem)
         return self.download_dir / f"{base_name}_{width}x{height}{suffix}"
@@ -543,285 +714,7 @@ class WallpaperService:
         rendered.save(target_path, format="JPEG", quality=92, optimize=True)
 
     def _get_current_wallpaper_path(self, windows_way: str = "auto") -> str | None:
-        if os.name == "nt":
-            return self._get_windows_wallpaper(windows_way)
-        if sys.platform == "darwin":
-            return self._get_macos_wallpaper()
-        if sys.platform.startswith("linux"):
-            return self._get_linux_wallpaper()
-        return None
-
-    def _get_windows_wallpaper(self, windows_way: str) -> str | None:
-        reg_path = None
-        spi_path = None
-
-        if windows_way in {"auto", "reg"}:
-            try:
-                import winreg
-
-                with winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop"
-                ) as key:
-                    reg_path, _ = winreg.QueryValueEx(key, "WallPaper")
-            except Exception:
-                reg_path = None
-
-        if windows_way in {"auto", "spi"}:
-            try:
-                buffer = ctypes.create_unicode_buffer(4096)
-                ok = ctypes.windll.user32.SystemParametersInfoW(
-                    0x0073, len(buffer), buffer, 0
-                )
-                spi_path = buffer.value if ok else None
-            except Exception:
-                spi_path = None
-
-        for candidate in [reg_path, spi_path]:
-            if candidate and Path(candidate).is_file():
-                return candidate
-
-        return reg_path or spi_path
-
-    def _set_windows_wallpaper(self, image_path: Path) -> None:
-        ctypes.windll.user32.SystemParametersInfoW(20, 0, str(image_path), 3)
-        try:
-            import winreg
-
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Control Panel\Desktop",
-                0,
-                winreg.KEY_SET_VALUE,
-            ) as key:
-                winreg.SetValueEx(key, "Wallpaper", 0, winreg.REG_SZ, str(image_path))
-        except Exception:
-            logger.debug("failed to persist wallpaper registry value")
-
-    def _get_macos_wallpaper(self) -> str | None:
-        script = 'tell application "System Events" to get POSIX path of picture of every desktop'
-        output = self._try_subprocess(["osascript", "-e", script])
-        if not output:
-            return None
-
-        for candidate in [
-            item.strip()
-            for item in output.replace(",", "\n").splitlines()
-            if item.strip()
-        ]:
-            if Path(candidate).is_file():
-                return candidate
-        return None
-
-    def _set_macos_wallpaper(self, image_path: Path) -> None:
-        script = f'''
-        tell application "System Events"
-            tell every desktop
-                set picture to "{image_path}"
-            end tell
-        end tell
-        '''
-        subprocess.run(["osascript", "-e", script], check=True)
-
-    def _get_linux_wallpaper(self) -> str | None:
-        schemas = [
-            ("org.gnome.desktop.background", "picture-uri-dark"),
-            ("org.gnome.desktop.background", "picture-uri"),
-            ("org.cinnamon.desktop.background", "picture-uri"),
-            ("org.mate.background", "picture-filename"),
-        ]
-        for schema, key in schemas:
-            output = self._try_subprocess(["gsettings", "get", schema, key])
-            if not output:
-                continue
-            normalized = output.strip().strip("'\"")
-            for candidate in [
-                item.strip() for item in normalized.split(",") if item.strip()
-            ]:
-                path = self._from_file_uri(candidate)
-                if Path(path).is_file():
-                    return path
-
-        kde_conf = Path.home() / ".config" / "plasma-org.kde.plasma.desktop-appletsrc"
-        if kde_conf.is_file():
-            for line in reversed(
-                kde_conf.read_text(encoding="utf-8", errors="ignore").splitlines()
-            ):
-                if line.startswith("Image="):
-                    path = self._from_file_uri(line.split("=", 1)[1].strip())
-                    if Path(path).is_file():
-                        return path
-
-        props_output = self._try_subprocess(
-            [
-                "xfconf-query",
-                "--channel",
-                "xfce4-desktop",
-                "--property",
-                "/backdrop",
-                "--list",
-            ],
-        )
-        if props_output:
-            for prop in [
-                item.strip() for item in props_output.splitlines() if item.strip()
-            ]:
-                if not (prop.endswith("image-path") or prop.endswith("last-image")):
-                    continue
-                value = self._try_subprocess(
-                    ["xfconf-query", "--channel", "xfce4-desktop", "--property", prop],
-                )
-                if not value:
-                    continue
-                path = self._from_file_uri(value.strip())
-                if Path(path).is_file():
-                    return path
-
-        return None
-
-    def _set_linux_wallpaper(self, image_path: Path) -> None:
-        desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
-        session = os.environ.get("DESKTOP_SESSION", "").lower()
-        uri = image_path.as_uri()
-
-        if {"gnome", "unity", "budgie"} & {desktop, session}:
-            subprocess.run(
-                [
-                    "gsettings",
-                    "set",
-                    "org.gnome.desktop.background",
-                    "picture-uri",
-                    uri,
-                ],
-                check=True,
-            )
-            return
-
-        if "mate" in desktop:
-            subprocess.run(
-                [
-                    "gsettings",
-                    "set",
-                    "org.mate.background",
-                    "picture-filename",
-                    str(image_path),
-                ],
-                check=True,
-            )
-            return
-
-        if "cinnamon" in desktop:
-            subprocess.run(
-                [
-                    "gsettings",
-                    "set",
-                    "org.cinnamon.desktop.background",
-                    "picture-uri",
-                    uri,
-                ],
-                check=True,
-            )
-            return
-
-        if "xfce" in desktop or "xfce" in session:
-            result = subprocess.run(
-                ["xfconf-query", "-c", "xfce4-desktop", "-p", "/backdrop", "-l"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            for line in result.stdout.splitlines():
-                if "image-path" in line or "last-image" in line:
-                    subprocess.run(
-                        [
-                            "xfconf-query",
-                            "-c",
-                            "xfce4-desktop",
-                            "-p",
-                            line,
-                            "-s",
-                            str(image_path),
-                        ],
-                        check=False,
-                    )
-            return
-
-        if "kde" in desktop or "plasma" in desktop:
-            script = f"""
-            var allDesktops = desktops();
-            for (i = 0; i < allDesktops.length; i++) {{
-                d = allDesktops[i];
-                d.wallpaperPlugin = "org.kde.image";
-                d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"];
-                d.writeConfig("Image", "file://{image_path}");
-            }}
-            """
-            subprocess.run(
-                [
-                    "qdbus",
-                    "org.kde.plasmashell",
-                    "/PlasmaShell",
-                    "org.kde.PlasmaShell.evaluateScript",
-                    script,
-                ],
-                check=True,
-            )
-            return
-
-        if "deepin" in desktop:
-            subprocess.run(
-                [
-                    "gsettings",
-                    "set",
-                    "com.deepin.wrap.gnome.desktop.background",
-                    "picture-uri",
-                    uri,
-                ],
-                check=True,
-            )
-            return
-
-        if {"lxde", "lxqt"} & {desktop, session}:
-            subprocess.run(["pcmanfm", "--set-wallpaper", str(image_path)], check=False)
-            return
-
-        gsettings = shutil.which("gsettings")
-        if gsettings:
-            result = subprocess.run(
-                [gsettings, "set", "org.gnome.desktop.background", "picture-uri", uri],
-                check=False,
-            )
-            subprocess.run(
-                [
-                    gsettings,
-                    "set",
-                    "org.gnome.desktop.background",
-                    "picture-uri-dark",
-                    uri,
-                ],
-                check=False,
-            )
-            if result.returncode == 0:
-                return
-
-        if shutil.which("feh"):
-            subprocess.run(["feh", "--bg-scale", str(image_path)], check=True)
-            return
-        if shutil.which("nitrogen"):
-            subprocess.run(["nitrogen", "--set-scaled", str(image_path)], check=True)
-            return
-
-        raise RuntimeError("无法识别当前 Linux 桌面环境或缺少设置工具")
-
-    def _try_subprocess(self, cmd: list[str]) -> str | None:
-        try:
-            return subprocess.check_output(cmd, text=True).strip()
-        except Exception:
-            return None
-
-    def _from_file_uri(self, raw: str) -> str:
-        if raw.startswith("file://"):
-            return unquote(urlparse(raw).path)
-        return unquote(raw)
+        return get_sys_wallpaper(windows_way)
 
     def _build_preview_data_url(self, image_path: Path) -> str | None:
         try:

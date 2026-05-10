@@ -77,7 +77,9 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 import { desktopApi } from './api';
 import { ThemeManagerPanel } from './components/ThemeManagerPanel';
+import { AutoChangePlannerPage } from './components/AutoChangePlannerPage';
 import { WallpaperCreator } from './components/WallpaperCreator';
+import { WallpaperSourceCreatorPanel } from './components/WallpaperSourceCreatorPanel';
 import { createTranslator, resolveLocale } from './i18n';
 import type { SupportedLocale, TranslateFn } from './i18n';
 import {
@@ -92,6 +94,7 @@ import {
 } from './themeSystem';
 import type { ThemeDocument } from './themeSystem';
 import type {
+  AutoChangeConfig,
   BootstrapPayload,
   CurrentWallpaperInfo,
   DebugLogPayload,
@@ -104,10 +107,15 @@ import type {
   StorageOverviewPayload,
   StoreResource,
   WallpaperItem,
+  WallpaperSourceApi,
+  WallpaperSourceApiParameter,
+  WallpaperSourceExternalExportFormat,
+  WallpaperSourceCreatorPayload,
+  WallpaperSourceExportOptions,
   WallpaperSource,
 } from './types';
 
-type NavKey = 'home' | 'resource' | 'favorite' | 'store' | 'generate' | 'sniff' | 'history' | 'settings' | 'about';
+type NavKey = 'home' | 'resource' | 'favorite' | 'store' | 'generate' | 'sniff' | 'history' | 'autoChange' | 'settings' | 'about';
 
 type NavItem = {
   key: NavKey;
@@ -122,6 +130,7 @@ type SpotlightCollectionTab = 'local' | 'online';
 type ScreenBingQuality = `screen:${number}x${number}`;
 type BingQuality = 'highDef' | 'ultraHighDef' | ScreenBingQuality;
 type FavoriteLocalizationFilter = 'all' | 'localized' | 'remote' | 'failed';
+type DownloadBehavior = 'directory' | 'prompt';
 
 const drawerWidth = 280;
 import { APP_VERSION, APP_LOGO, STUDIO_LOGO } from './constants';
@@ -148,6 +157,10 @@ const INTELLIGENT_MARKET_MIRROR_OPTIONS = [
   { value: 'ghproxy', labelKey: 'resource.im.mirror.ghproxy' },
 ] as const;
 const INTELLIGENT_MARKET_HEALTH_BATCH_SIZE = 6;
+const DOWNLOAD_BEHAVIOR_OPTIONS = [
+  { value: 'directory', labelKey: 'settings.storage.downloadBehavior.option.directory' },
+  { value: 'prompt', labelKey: 'settings.storage.downloadBehavior.option.prompt' },
+] as const;
 
 function getIntelligentMarketParameterLabel(param: IntelligentMarketParameter, index: number, t: TranslateFn): string {
   return param.friendly_name?.trim() || param.name?.trim() || t('resource.im.parameterFallback', { index: index + 1 });
@@ -182,6 +195,46 @@ function normalizeIntelligentMarketParameterValue(param: IntelligentMarketParame
       return raw.split(param.split_str).map((item) => item.trim()).filter(Boolean);
     }
     return raw.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean);
+  }
+  return value;
+}
+
+function getSourceParameterLabel(param: WallpaperSourceApiParameter, index: number, t: TranslateFn): string {
+  return param.label?.trim() || param.key?.trim() || t('resource.import.parameterFallback', { index: index + 1 });
+}
+
+function getSourceParameterDefaultValue(param: WallpaperSourceApiParameter): string | boolean {
+  const type = String(param.type ?? 'text').toLowerCase();
+  if (type === 'boolean') {
+    return Boolean(param.default);
+  }
+  if (type === 'list') {
+    if (Array.isArray(param.default)) {
+      return param.default.map((item) => String(item)).join('\n');
+    }
+    return String(param.default ?? '');
+  }
+  return String(param.default ?? '');
+}
+
+function normalizeSourceParameterValue(param: WallpaperSourceApiParameter, value: unknown): unknown {
+  const type = String(param.type ?? 'text').toLowerCase();
+  if (type === 'boolean') {
+    return Boolean(value);
+  }
+  if (type === 'list') {
+    return String(value ?? '')
+      .split(/[\r\n,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (type === 'number') {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return '';
+    }
+    const numeric = Number(raw);
+    return Number.isFinite(numeric) ? numeric : raw;
   }
   return value;
 }
@@ -273,6 +326,17 @@ function looksLikeLocalResource(value?: string | null): boolean {
     return true;
   }
   return raw.startsWith('\\\\');
+}
+
+function resolveDownloadBehavior(value: unknown): DownloadBehavior {
+  return value === 'prompt' ? 'prompt' : 'directory';
+}
+
+function isLocalWallpaperItem(item?: WallpaperItem | null): boolean {
+  if (!item) {
+    return false;
+  }
+  return looksLikeLocalResource(item.image_url) || looksLikeLocalResource(item.preview_url);
 }
 
 function resolvePreviewDialogSource(item: WallpaperItem): string {
@@ -533,9 +597,13 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
   const [favoriteFolderDescription, setFavoriteFolderDescription] = useState('');
   const [favoriteDeleteDialogOpen, setFavoriteDeleteDialogOpen] = useState(false);
   const [favoriteDeleteMoveTargetId, setFavoriteDeleteMoveTargetId] = useState('default');
+  const [pendingSourceDeletion, setPendingSourceDeletion] = useState<WallpaperSource | null>(null);
   const [favoriteSearchQuery, setFavoriteSearchQuery] = useState('');
   const [favoriteFilter, setFavoriteFilter] = useState<FavoriteLocalizationFilter>('all');
   const [themePreviewDocument, setThemePreviewDocument] = useState<ThemeDocument | null>(null);
+  const [sourceCreatorOpen, setSourceCreatorOpen] = useState(false);
+  const [sourceCreatorInitialPayload, setSourceCreatorInitialPayload] = useState<WallpaperSourceCreatorPayload | null>(null);
+  const [sourceParameterValues, setSourceParameterValues] = useState<Record<string, unknown>>({});
   const intelligentMarketHealthRequestIdRef = useRef(0);
   const intelligentMarketDetailRef = useRef<HTMLDivElement | null>(null);
 
@@ -580,6 +648,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     { key: 'store', label: t('nav.store.label'), subtitle: t('nav.store.subtitle'), icon: <LocalMallRoundedIcon />, group: 'tools' },
     { key: 'sniff', label: t('nav.sniff.label'), subtitle: t('nav.sniff.subtitle'), icon: <ExploreRoundedIcon />, group: 'tools' },
     { key: 'generate', label: t('nav.generate.label'), subtitle: t('nav.generate.subtitle'), icon: <WidgetsRoundedIcon />, group: 'tools' },
+    { key: 'autoChange', label: t('nav.autoChange.label'), subtitle: t('nav.autoChange.subtitle'), icon: <AutoAwesomeRoundedIcon />, group: 'tools' },
     { key: 'settings', label: t('nav.settings.label'), subtitle: t('nav.settings.subtitle'), icon: <SettingsRoundedIcon />, group: 'tools' },
     { key: 'about', label: t('nav.about.label'), subtitle: t('nav.about.subtitle'), icon: <InfoRoundedIcon />, group: 'info' },
   ], [t]);
@@ -627,7 +696,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
   }, [boot?.favorites?.folders, selectedFavoriteFolderId]);
 
   const sources = boot?.sources ?? [];
-  const validSources = sources.filter((source) => !source.invalid);
+  const validSources = sources.filter((source) => !source.invalid && source.enabled !== false);
   const invalidSources = sources.filter((source) => source.invalid);
   const favorites = boot?.favorites?.items ?? [];
   const favoriteFolders = useMemo<FavoriteFolder[]>(() => {
@@ -708,6 +777,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     () => storageEntries.filter((item) => item.optimize_supported),
     [storageEntries],
   );
+  const downloadBehavior = resolveDownloadBehavior(storageSettings.download_behavior);
   const currentDownloadDirectory = storageOverview?.download_directory ?? String(storageSettings.download_directory ?? '');
   const defaultDownloadDirectory = storageOverview?.default_download_directory ?? currentDownloadDirectory;
 
@@ -715,6 +785,12 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     () => validSources.find((source) => source.identifier === selectedSourceId) ?? validSources[0] ?? null,
     [selectedSourceId, validSources],
   );
+  const selectedSourceApiSpec = useMemo<WallpaperSourceApi | null>(() => {
+    if (!selectedSource) {
+      return null;
+    }
+    return selectedSource.apis?.find((api) => api.name === selectedSourceApi) ?? selectedSource.apis?.[0] ?? null;
+  }, [selectedSource, selectedSourceApi]);
   const intelligentMarketCategories = useMemo(
     () => Array.from(new Set(intelligentMarketSources.map((source) => source.category))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
     [intelligentMarketSources],
@@ -780,13 +856,29 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
       setSelectedSourceApi('');
       return;
     }
-    const apiNames = ((selectedSource.apis ?? []) as Array<{ name?: string }>)
+    const apiNames = (selectedSource.apis ?? [])
       .map((api) => api.name ?? '')
       .filter(Boolean);
     if (!apiNames.includes(selectedSourceApi)) {
       setSelectedSourceApi(apiNames[0] ?? '');
     }
   }, [selectedSource, selectedSourceApi]);
+
+  useEffect(() => {
+    if (!selectedSourceApiSpec) {
+      setSourceParameterValues({});
+      return;
+    }
+
+    setSourceParameterValues((current) => {
+      const nextValues: Record<string, unknown> = {};
+      (selectedSourceApiSpec.parameters ?? []).forEach((param, index) => {
+        const key = param.key || `__param_${index}`;
+        nextValues[key] = key in current ? current[key] : getSourceParameterDefaultValue(param);
+      });
+      return nextValues;
+    });
+  }, [selectedSourceApiSpec]);
 
   useEffect(() => {
     if (!selectedIntelligentMarketSource) {
@@ -1015,7 +1107,13 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     }
     try {
       setWorking(true);
-      setGallery(await desktopApi.executeSource(selectedSourceId, selectedSourceApi, {}));
+      const payload = Object.fromEntries(
+        (selectedSourceApiSpec?.parameters ?? []).map((param, index) => {
+          const key = param.key || `__param_${index}`;
+          return [key, normalizeSourceParameterValue(param, sourceParameterValues[key])];
+        }),
+      );
+      setGallery(await desktopApi.executeSource(selectedSourceId, selectedSourceApi, payload));
     } catch (error) {
       setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.sourceRequestFailed'));
     } finally {
@@ -1315,6 +1413,9 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
   async function downloadWallpaper(item: WallpaperItem) {
     try {
       const result = await desktopApi.downloadWallpaper(item);
+      if (!result) {
+        return;
+      }
       setSnackbar(t('snackbar.downloadedTo', { path: result.local_path }));
     } catch (error) {
       setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.downloadFailed'));
@@ -1363,6 +1464,128 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
       setSnackbar(t('snackbar.importedSource', { name: imported.name }));
     } catch (error) {
       setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.importSourceFailed'));
+    }
+  }
+
+  async function importSourceAsDraft() {
+    try {
+      setWorking(true);
+      const payload = await desktopApi.importWallpaperSourceAsDraft();
+      if (!payload) {
+        return;
+      }
+      setSourceCreatorInitialPayload(payload);
+      setSourceCreatorOpen(true);
+      setSnackbar(t('snackbar.importedSourceDraft', { name: payload.source.name }));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.importSourceDraftFailed'));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function createWallpaperSource(payload: WallpaperSourceCreatorPayload) {
+    try {
+      setWorking(true);
+      const created = await desktopApi.createWallpaperSource(payload);
+      const updatedSources = await desktopApi.listSources();
+      setBoot((current) => (current ? { ...current, sources: updatedSources } : current));
+      setSelectedSourceId(created.identifier);
+      setSelectedSourceApi(created.apis?.[0]?.name ?? '');
+      setSourceCreatorInitialPayload(null);
+      setSourceCreatorOpen(false);
+      setRoute('resource');
+      setResourceTab(2);
+      setSnackbar(t('snackbar.createdSource', { name: created.name }));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.createSourceFailed'));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function exportWallpaperSourceDraft(payload: WallpaperSourceCreatorPayload, exportFormat: WallpaperSourceExternalExportFormat, exportOptions?: WallpaperSourceExportOptions) {
+    try {
+      setWorking(true);
+      const result = await desktopApi.exportWallpaperSourcePayload(payload, exportFormat, payload.source.name || payload.source.identifier, exportOptions);
+      if (!result) {
+        return;
+      }
+      setSnackbar(t('snackbar.exportedSource', { path: result.saved_path }));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.exportSourceFailed'));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function exportWallpaperSourceItem(source: WallpaperSource | null) {
+    if (!source) {
+      return;
+    }
+    try {
+      setWorking(true);
+      const result = await desktopApi.exportWallpaperSource(source.identifier, source.name);
+      if (!result) {
+        return;
+      }
+      setSnackbar(t('snackbar.exportedSource', { path: result.saved_path }));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.exportSourceFailed'));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function exportSelectedSource() {
+    await exportWallpaperSourceItem(selectedSource);
+  }
+
+  async function refreshWallpaperSources() {
+    const [nextSources, runtimePayload] = await Promise.all([
+      desktopApi.listSources(),
+      desktopApi.runtimeSnapshot(),
+    ]);
+    setBoot((current) => (current ? { ...current, sources: nextSources } : current));
+    setRuntime(runtimePayload);
+    return nextSources;
+  }
+
+  function openWallpaperSourceDeleteDialog(source: WallpaperSource) {
+    setPendingSourceDeletion(source);
+  }
+
+  async function toggleWallpaperSource(source: WallpaperSource, enabled: boolean) {
+    try {
+      setWorking(true);
+      await desktopApi.setWallpaperSourceEnabled(source.identifier, enabled);
+      await refreshWallpaperSources();
+      setSnackbar(
+        enabled
+          ? t('snackbar.sourceEnabled', { name: localizeSourceName(source.identifier, source.name, t) })
+          : t('snackbar.sourceDisabled', { name: localizeSourceName(source.identifier, source.name, t) }),
+      );
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.sourceToggleFailed'));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function deleteWallpaperSource() {
+    if (!pendingSourceDeletion) {
+      return;
+    }
+    try {
+      setWorking(true);
+      await desktopApi.deleteWallpaperSource(pendingSourceDeletion.identifier);
+      await refreshWallpaperSources();
+      setSnackbar(t('snackbar.sourceDeleted', { name: localizeSourceName(pendingSourceDeletion.identifier, pendingSourceDeletion.name, t) }));
+      setPendingSourceDeletion(null);
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.sourceDeleteFailed'));
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -1643,6 +1866,15 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     await applyDownloadDirectory('', t('snackbar.downloadDirectoryReset'));
   }
 
+  async function updateDownloadBehavior(value: DownloadBehavior) {
+    try {
+      const settings = await desktopApi.updateSettings({ 'storage.download_behavior': value });
+      setBoot((current) => (current ? { ...current, settings } : current));
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.settingsUpdateFailed'));
+    }
+  }
+
   async function openStorageTarget(targetId: string) {
     try {
       const result = await desktopApi.openStorageTarget(targetId);
@@ -1727,10 +1959,10 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     await fetchDebugLog({ showBusy: true, openDialog: true });
   }
 
-  async function triggerAutoChangeNow() {
+  async function triggerAutoChangeNow(planId?: string) {
     try {
       setWorking(true);
-      const autoChange = await desktopApi.triggerAutoChangeNow();
+      const autoChange = await desktopApi.triggerAutoChangeNow(planId);
       const runtimePayload = await desktopApi.runtimeSnapshot();
       const updatedHistory = await desktopApi.listHistory();
       const currentWallpaperPayload = await desktopApi.getCurrentWallpaper();
@@ -1754,6 +1986,19 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
       setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.autoChangeNowFailed'));
     } finally {
       setWorking(false);
+    }
+  }
+
+  async function saveAutoChangeConfig(config: AutoChangeConfig) {
+    await updateAutoChange({ 'wallpaper.auto_change': config });
+  }
+
+  async function pickAutoChangeLocalFolder() {
+    try {
+      return await desktopApi.pickAutoChangeLocalFolder();
+    } catch (error) {
+      setSnackbar(error instanceof Error ? localizeBackendMessage(error.message, t) : t('snackbar.autoChangeConfigUpdateFailed'));
+      return null;
     }
   }
 
@@ -1857,7 +2102,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
     return (
       <Box sx={{ minHeight: '100vh', display: 'grid', placeItems: 'center', backgroundColor: 'transparent' }}>
         <Stack spacing={2} alignItems="center">
-          <CircularProgress />
+          <CircularProgress sx={{ color: 'success.main' }} />
           <Typography variant="h6">{t('loading.title')}</Typography>
           <Typography variant="body2" color="text.secondary">
             {t('loading.subtitle')}
@@ -1966,7 +2211,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
                         <Button variant="outlined" startIcon={<FavoriteRoundedIcon />} onClick={() => goToRoute('favorite')}>
                           {t('home.openFavorites')}
                         </Button>
-                        <Button variant="outlined" startIcon={<TuneRoundedIcon />} onClick={() => goToRoute('settings')}>
+                        <Button variant="outlined" startIcon={<TuneRoundedIcon />} onClick={() => goToRoute('autoChange')}>
                           {t('home.adjustAutoChange')}
                         </Button>
                       </Stack>
@@ -2231,7 +2476,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
                               fullWidth
                               disabled={!selectedSource}
                             >
-                              {((selectedSource?.apis ?? []) as Array<{ name?: string }>).map((api) => (
+                              {(selectedSource?.apis ?? []).map((api) => (
                                 <MenuItem key={api.name} value={api.name}>
                                   {api.name}
                                 </MenuItem>
@@ -2242,10 +2487,92 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
                             <Button variant="contained" startIcon={<SearchRoundedIcon />} onClick={() => void runSourceQuery()} disabled={!selectedSource || !selectedSourceApi}>
                               {t('common.query')}
                             </Button>
+                            <Button variant="outlined" startIcon={<AutoFixHighRoundedIcon />} onClick={() => { setSourceCreatorInitialPayload(null); setSourceCreatorOpen(true); }}>
+                              {t('resource.import.createAction')}
+                            </Button>
+                            <Button variant="outlined" startIcon={<AutoAwesomeRoundedIcon />} onClick={() => void importSourceAsDraft()}>
+                              {t('resource.import.importAsDraftAction')}
+                            </Button>
                             <Button variant="outlined" startIcon={<CloudDownloadRoundedIcon />} onClick={() => void importSource()}>
                               {t('resource.import.importNewSource')}
                             </Button>
+                            <Button variant="outlined" startIcon={<CloudDownloadRoundedIcon />} onClick={() => void exportSelectedSource()} disabled={!selectedSource}>
+                              {t('resource.import.exportCurrentSource')}
+                            </Button>
                           </Stack>
+                          {selectedSourceApiSpec && (
+                            <Stack spacing={1.75}>
+                              <Box>
+                                <Typography variant="subtitle1">{t('resource.import.parametersTitle')}</Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {t('resource.import.parametersSubtitle')}
+                                </Typography>
+                              </Box>
+                              {(selectedSourceApiSpec.parameters ?? []).length === 0 ? (
+                                <Alert severity="success">{t('resource.import.noParameters')}</Alert>
+                              ) : (
+                                <Grid container spacing={2}>
+                                  {(selectedSourceApiSpec.parameters ?? []).map((param, index) => {
+                                    if (param.hidden === true) {
+                                      return null;
+                                    }
+                                    const key = param.key || `__param_${index}`;
+                                    const label = getSourceParameterLabel(param, index, t);
+                                    const type = String(param.type ?? 'text').toLowerCase();
+                                    const helperText = param.description?.trim() || (type === 'list' ? t('resource.import.listHelper', { separator: t('resource.import.listDefaultSeparator') }) : undefined);
+
+                                    if (type === 'boolean') {
+                                      return (
+                                        <Grid key={key} size={{ xs: 12, md: 6 }}>
+                                          <Paper variant="outlined" sx={{ p: 2, height: '100%' }}>
+                                            <FormControlLabel
+                                              control={<Switch checked={Boolean(sourceParameterValues[key])} onChange={(event) => setSourceParameterValues((current) => ({ ...current, [key]: event.target.checked }))} />}
+                                              label={label}
+                                            />
+                                          </Paper>
+                                        </Grid>
+                                      );
+                                    }
+
+                                    if (type === 'choice' && (param.choices?.length ?? 0) > 0) {
+                                      return (
+                                        <Grid key={key} size={{ xs: 12, md: 6 }}>
+                                          <TextField
+                                            select
+                                            fullWidth
+                                            label={label}
+                                            helperText={helperText}
+                                            value={String(sourceParameterValues[key] ?? '')}
+                                            onChange={(event) => setSourceParameterValues((current) => ({ ...current, [key]: event.target.value }))}
+                                          >
+                                            {(param.choices ?? []).map((option) => (
+                                              <MenuItem key={`${key}-${option}`} value={option}>{option}</MenuItem>
+                                            ))}
+                                          </TextField>
+                                        </Grid>
+                                      );
+                                    }
+
+                                    return (
+                                      <Grid key={key} size={{ xs: 12, md: type === 'list' ? 12 : 6 }}>
+                                        <TextField
+                                          fullWidth
+                                          multiline={type === 'list'}
+                                          minRows={type === 'list' ? 3 : undefined}
+                                          label={label}
+                                          type={type === 'number' ? 'number' : 'text'}
+                                          placeholder={param.placeholder?.trim() || undefined}
+                                          value={String(sourceParameterValues[key] ?? '')}
+                                          onChange={(event) => setSourceParameterValues((current) => ({ ...current, [key]: event.target.value }))}
+                                          helperText={helperText}
+                                        />
+                                      </Grid>
+                                    );
+                                  })}
+                                </Grid>
+                              )}
+                            </Stack>
+                          )}
                           {validSources.length === 0 && <Alert severity="info">{t('resource.import.noValidSources')}</Alert>}
                           {invalidSources.length > 0 && <Alert severity="warning">{t('resource.import.invalidSources', { count: invalidSources.length })}</Alert>}
                         </Stack>
@@ -2769,6 +3096,18 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
             </Stack>
           )}
 
+          {route === 'autoChange' && (
+            <AutoChangePlannerPage
+              autoChange={runtime?.auto_change}
+              wallpaperSources={boot?.sources ?? []}
+              t={t}
+              working={working}
+              onSave={saveAutoChangeConfig}
+              onPickLocalFolder={pickAutoChangeLocalFolder}
+              onTriggerNow={triggerAutoChangeNow}
+            />
+          )}
+
           {route === 'settings' && (
             <Stack spacing={3}>
               <Paper sx={{ p: 1 }}>
@@ -2873,51 +3212,13 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
                       <CardContent>
                         <Stack spacing={2}>
                           <Typography variant="h5">{t('settings.auto.title')}</Typography>
-                          <SettingsSwitchRow
-                            title={t('settings.auto.enable.title')}
-                            description={t('settings.auto.enable.description')}
-                            checked={Boolean(runtime?.auto_change.enabled)}
-                            onChange={(value) =>
-                              void updateAutoChange({
-                                'wallpaper.auto_change.enabled': value,
-                                'wallpaper.auto_change.mode': value ? (runtime?.auto_change.mode === 'off' ? 'interval' : runtime?.auto_change.mode) : 'off',
-                              })
-                            }
-                          />
-                          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-                            <TextField select label={t('settings.auto.mode')} value={runtime?.auto_change.mode ?? 'off'} onChange={(event) => void updateAutoChange({ 'wallpaper.auto_change.mode': event.target.value })} fullWidth>
-                              <MenuItem value="off">{t('settings.auto.mode.off')}</MenuItem>
-                              <MenuItem value="interval">{t('settings.auto.mode.interval')}</MenuItem>
-                              <MenuItem value="schedule">{t('settings.auto.mode.schedule')}</MenuItem>
-                            </TextField>
-                            <TextField
-                              type="number"
-                              label={t('settings.auto.interval')}
-                              value={runtime?.auto_change.interval ?? 3600}
-                              onChange={(event) => void updateAutoChange({ 'wallpaper.auto_change.interval': Number(event.target.value || 3600) })}
-                              fullWidth
-                              disabled={runtime?.auto_change.mode !== 'interval'}
-                            />
+                          <Typography color="text.secondary">{t('settings.auto.movedDescription')}</Typography>
+                          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                            <Chip size="small" color={runtime?.auto_change.running ? 'success' : 'default'} label={runtime?.auto_change.running ? t('common.running') : t('common.stopped')} sx={{ alignSelf: 'flex-start' }} />
+                            <Chip size="small" variant="outlined" label={runtime?.auto_change.next_plan_name ? t('autoChange.nextPlan', { name: runtime.auto_change.next_plan_name }) : t('autoChange.noNextPlan')} sx={{ alignSelf: 'flex-start' }} />
                           </Stack>
-                          <TextField
-                            select
-                            SelectProps={{ multiple: true }}
-                            label={t('settings.auto.sources')}
-                            value={runtime?.auto_change.sources ?? ['favorites', 'bing']}
-                            onChange={(event) => void updateAutoChange({ 'wallpaper.auto_change.slideshow.sources': event.target.value as unknown as string[] })}
-                            fullWidth
-                          >
-                            <MenuItem value="favorites">{t('settings.auto.source.favorites')}</MenuItem>
-                            <MenuItem value="bing">{t('settings.auto.source.bing')}</MenuItem>
-                            <MenuItem value="spotlight">{t('settings.auto.source.spotlight')}</MenuItem>
-                          </TextField>
-                          <TextField select label={t('settings.auto.strategy')} value={runtime?.auto_change.strategy ?? 'random'} onChange={(event) => void updateAutoChange({ 'wallpaper.auto_change.slideshow.strategy': event.target.value })} fullWidth>
-                            <MenuItem value="random">{t('settings.auto.strategy.random')}</MenuItem>
-                            <MenuItem value="sequential">{t('settings.auto.strategy.sequential')}</MenuItem>
-                            <MenuItem value="non_repeat_random">{t('settings.auto.strategy.nonRepeatRandom')}</MenuItem>
-                          </TextField>
-                          <Button variant="contained" startIcon={<WallpaperRoundedIcon />} onClick={() => void triggerAutoChangeNow()}>
-                            {t('settings.auto.triggerNow')}
+                          <Button variant="contained" startIcon={<AutoAwesomeRoundedIcon />} onClick={() => goToRoute('autoChange')}>
+                            {t('settings.auto.openPage')}
                           </Button>
                         </Stack>
                       </CardContent>
@@ -2955,12 +3256,48 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
                               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                                 <Typography variant="h6">{localizeSourceName(source.identifier, source.name, t)}</Typography>
                                 <Chip size="small" label={`v${source.version}`} />
-                                <Chip size="small" color={source.invalid ? 'warning' : 'success'} label={source.invalid ? t('settings.sources.status.invalid') : t('settings.sources.status.available')} />
+                                <Chip size="small" variant="outlined" label={source.is_builtin ? t('settings.sources.kind.builtin') : t('settings.sources.kind.custom')} />
+                                <Chip
+                                  size="small"
+                                  color={source.invalid ? 'warning' : source.enabled === false ? 'default' : 'success'}
+                                  label={source.invalid ? t('settings.sources.status.invalid') : source.enabled === false ? t('settings.sources.status.disabled') : t('settings.sources.status.available')}
+                                />
                               </Stack>
                               <Typography variant="body2" color="text.secondary">{source.description || source.details || t('settings.sources.descriptionFallback')}</Typography>
                               <Typography variant="body2" color="text.secondary">{t('settings.sources.identifier', { value: source.identifier })}</Typography>
                               <Typography variant="body2" color="text.secondary">{t('settings.sources.apiCount', { count: ((source.apis ?? []) as Array<Record<string, unknown>>).length })}</Typography>
                               {source.error && <Alert severity="warning">{localizeBackendMessage(source.error, t)}</Alert>}
+                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => void toggleWallpaperSource(source, source.enabled === false)}
+                                  disabled={working}
+                                >
+                                  {source.enabled === false ? t('settings.sources.enableAction') : t('settings.sources.disableAction')}
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<CloudDownloadRoundedIcon />}
+                                  onClick={() => void exportWallpaperSourceItem(source)}
+                                  disabled={working}
+                                >
+                                  {t('settings.sources.exportAction')}
+                                </Button>
+                                {source.can_delete ? (
+                                  <Button
+                                    size="small"
+                                    color="error"
+                                    variant="outlined"
+                                    startIcon={<DeleteSweepRoundedIcon />}
+                                    onClick={() => openWallpaperSourceDeleteDialog(source)}
+                                    disabled={working}
+                                  >
+                                    {t('settings.sources.deleteAction')}
+                                  </Button>
+                                ) : null}
+                              </Stack>
                             </Stack>
                           </CardContent>
                         </Card>
@@ -3106,6 +3443,22 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
                             </Typography>
                             <Paper variant="outlined" sx={{ p: 2 }}>
                               <Stack spacing={1.5}>
+                                <Typography variant="subtitle1">{t('settings.storage.downloadBehavior.title')}</Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {t('settings.storage.downloadBehavior.description')}
+                                </Typography>
+                                <TextField
+                                  select
+                                  label={t('settings.storage.downloadBehavior.title')}
+                                  value={downloadBehavior}
+                                  fullWidth
+                                  onChange={(event) => void updateDownloadBehavior(resolveDownloadBehavior(event.target.value))}
+                                >
+                                  {DOWNLOAD_BEHAVIOR_OPTIONS.map((option) => (
+                                    <MenuItem key={option.value} value={option.value}>{t(option.labelKey)}</MenuItem>
+                                  ))}
+                                </TextField>
+                                <Divider />
                                 <Typography variant="subtitle1">{t('settings.storage.downloadDirectory.title')}</Typography>
                                 <Typography variant="body2" color="text.secondary">
                                   {t('settings.storage.downloadDirectory.description')}
@@ -3479,6 +3832,21 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
         </DialogActions>
       </Dialog>
 
+      <Dialog open={Boolean(pendingSourceDeletion)} onClose={() => setPendingSourceDeletion(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>{t('settings.sources.deleteDialogTitle')}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            {t('settings.sources.deleteDialogDescription', { name: pendingSourceDeletion ? localizeSourceName(pendingSourceDeletion.identifier, pendingSourceDeletion.name, t) : '' })}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPendingSourceDeletion(null)} disabled={working}>{t('common.cancel')}</Button>
+          <Button color="error" variant="contained" onClick={() => void deleteWallpaperSource()} disabled={working || !pendingSourceDeletion}>
+            {t('settings.sources.deleteDialogConfirm')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={Boolean(storeDetailResource)} onClose={() => setStoreDetailResource(null)} maxWidth="md" fullWidth>
         <DialogTitle>{t('store.detail.title')}</DialogTitle>
         <DialogContent dividers>
@@ -3550,6 +3918,16 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
         </DialogActions>
       </Dialog>
 
+      <WallpaperSourceCreatorPanel
+        t={t}
+        open={sourceCreatorOpen}
+        working={working}
+        initialPayload={sourceCreatorInitialPayload}
+        onClose={() => { setSourceCreatorOpen(false); setSourceCreatorInitialPayload(null); }}
+        onSubmit={createWallpaperSource}
+        onExport={exportWallpaperSourceDraft}
+      />
+
       <Dialog open={Boolean(preview)} onClose={() => setPreview(null)} maxWidth="lg" fullWidth>
         <DialogTitle>{preview?.title}</DialogTitle>
         <DialogContent dividers>
@@ -3570,7 +3948,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setPreview(null)}>{t('common.close')}</Button>
-          {preview && <Button onClick={() => void downloadWallpaper(preview)}>{t('common.download')}</Button>}
+          {preview && <Button onClick={() => void downloadWallpaper(preview)}>{t(isLocalWallpaperItem(preview) ? 'common.saveAs' : 'common.download')}</Button>}
           {preview && <Button variant="contained" onClick={() => void setWallpaper(preview)}>{t('gallery.setWallpaper')}</Button>}
         </DialogActions>
       </Dialog>
@@ -3647,6 +4025,42 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
           <Typography>{t('common.processing')}</Typography>
         </Stack>
       </Backdrop>
+
+      <Box
+        sx={{
+          position: 'fixed',
+          bottom: 24,
+          right: 24,
+          zIndex: theme.zIndex.tooltip,
+          pointerEvents: 'none',
+          userSelect: 'none',
+        }}
+      >
+        <Stack spacing={0.25} alignItems="flex-end">
+          <Typography
+            variant="caption"
+            sx={{
+              fontWeight: 700,
+              fontSize: '0.78rem',
+              letterSpacing: '0.12em',
+              color: alpha(theme.palette.text.secondary, 0.65),
+            }}
+          >
+            {t('beta.watermark')} v{APP_VERSION}
+          </Typography>
+          <Typography
+            variant="caption"
+            sx={{
+              fontWeight: 400,
+              fontSize: '0.62rem',
+              letterSpacing: '0.04em',
+              color: alpha(theme.palette.text.secondary, 0.45),
+            }}
+          >
+            {t('beta.disclaimer')}
+          </Typography>
+        </Stack>
+      </Box>
     </Box>
   );
 }
@@ -3702,7 +4116,7 @@ function SourceSummaryCard({ source, t }: { source: WallpaperSource | null; t: T
           <Typography variant="h6">{localizeSourceName(source.identifier, source.name, t)}</Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Chip size="small" label={`v${source.version}`} />
-            <Chip size="small" label={t('sourceSummary.apiCount', { count: ((source.apis ?? []) as Array<Record<string, unknown>>).length })} />
+            <Chip size="small" label={t('sourceSummary.apiCount', { count: (source.apis ?? []).length })} />
           </Stack>
           <Typography variant="body2" color="text.secondary">
             {source.description || source.details || t('sourceSummary.noDetails')}

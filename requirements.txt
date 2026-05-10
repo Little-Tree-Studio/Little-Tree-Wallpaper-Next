@@ -10,6 +10,7 @@ pillow-avif-plugin>=1.5.2
 pystray>=0.19.5
 psutil>=7.0.0
 pyperclip>=1.9.0
+PyYAML>=6.0.2
 filetype>=1.2.0
 littledl>=0.4.1
 ltws-parser>=1.5.1

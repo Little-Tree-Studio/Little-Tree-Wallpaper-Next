@@ -63,10 +63,10 @@ def _coerce_number(value: Any, *, integer: bool) -> int | float:
     return float(value)
 
 
-def _path_tokens(path: str) -> list[str | int | None]:
+def _path_tokens(path: str) -> list[str | int | slice | None]:
     if not path:
         return []
-    tokens: list[str | int | None] = []
+    tokens: list[str | int | slice | None] = []
     index = 0
     while index < len(path):
         char = path[index]
@@ -82,6 +82,16 @@ def _path_tokens(path: str) -> list[str | int | None]:
                 tokens.append(None)
             elif raw_token.isdigit():
                 tokens.append(int(raw_token))
+            elif ":" in raw_token:
+                parts = raw_token.split(":")
+                if len(parts) <= 3 and all(p.strip() == "" or p.strip().lstrip("-").isdigit() for p in parts):
+                    slice_parts: list[int | None] = []
+                    for p in parts:
+                        p = p.strip()
+                        slice_parts.append(int(p) if p else None)
+                    tokens.append(slice(slice_parts[0], slice_parts[1], slice_parts[2] if len(slice_parts) > 2 else None))
+                else:
+                    tokens.append(raw_token)
             else:
                 tokens.append(raw_token)
             index = end_index + 1
@@ -114,6 +124,10 @@ def _extract_path_values(payload: Any, path: str | None) -> list[Any]:
             if isinstance(token, int):
                 if isinstance(value, list) and 0 <= token < len(value):
                     next_values.append(value[token])
+                continue
+            if isinstance(token, slice):
+                if isinstance(value, list):
+                    next_values.extend(value[token])
                 continue
             if isinstance(value, dict) and token in value:
                 next_values.append(value[token])

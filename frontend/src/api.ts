@@ -1,4 +1,4 @@
-import type { BootstrapPayload, CurrentWallpaperInfo, DebugLogPayload, FavoritePayload, IntelligentMarketHealthUpdate, IntelligentMarketSource, StorageCleanupResult, StorageOptimizeResult, StorageOverviewPayload, StoreResource, WallpaperItem, WallpaperSource } from './types';
+import type { BootstrapPayload, CurrentWallpaperInfo, DebugLogPayload, FavoritePayload, IntelligentMarketHealthUpdate, IntelligentMarketSource, StorageCleanupResult, StorageOptimizeResult, StorageOverviewPayload, StoreResource, WallpaperItem, WallpaperSource, WallpaperSourceCreatorPayload, WallpaperSourceExternalExportFormat, WallpaperSourceExportOptions } from './types';
 import type { ThemeDocument } from './themeSystem';
 
 export type ThemeAssetPayload = {
@@ -93,6 +93,7 @@ export const desktopApi = {
     call<{ added_count: number; favorites: FavoritePayload } | null>('add_local_images_to_favorites', folderId),
   getStorageOverview: () => call<StorageOverviewPayload>('get_storage_overview'),
   pickDownloadDirectory: () => call<{ path: string } | null>('pick_download_directory'),
+  pickAutoChangeLocalFolder: () => call<{ path: string } | null>('pick_auto_change_local_folder'),
   setDownloadDirectory: (directory?: string) =>
     call<{ settings: Record<string, unknown>; storage: StorageOverviewPayload }>('set_download_directory', directory),
   openStorageTarget: (targetId: string) => call<{ opened_path: string }>('open_storage_target', targetId),
@@ -109,7 +110,7 @@ export const desktopApi = {
   readThemeAsset: (assetRef: string) => call<ThemeAssetPayload | null>('read_theme_asset', assetRef),
   updateSettings: (updates: Record<string, unknown>) => call<Record<string, unknown>>('update_settings', updates),
   setWallpaper: (wallpaper: WallpaperItem) => call<{ local_path: string; message: string }>('set_wallpaper', wallpaper),
-  downloadWallpaper: (wallpaper: WallpaperItem) => call<{ local_path: string }>('download_wallpaper', wallpaper),
+  downloadWallpaper: (wallpaper: WallpaperItem) => call<{ local_path: string } | null>('download_wallpaper', wallpaper),
   loadStore: (baseUrl?: string) => call<Record<string, unknown>>('load_store', baseUrl),
   listStoreResources: (resourceType: string = 'theme', baseUrl?: string) =>
     call<StoreResource[]>('list_store_resources', resourceType, baseUrl),
@@ -119,6 +120,15 @@ export const desktopApi = {
   listPlugins: () => call<Array<Record<string, unknown>>>('list_plugins'),
   setPluginEnabled: (pluginId: string, enabled: boolean) => call<Array<Record<string, unknown>>>('set_plugin_enabled', pluginId, enabled),
   importSource: () => call<WallpaperSource | null>('pick_and_import_source'),
+  importWallpaperSourceAsDraft: () => call<WallpaperSourceCreatorPayload | null>('import_wallpaper_source_as_draft'),
+  createWallpaperSource: (payload: WallpaperSourceCreatorPayload) => call<WallpaperSource>('create_wallpaper_source', payload),
+  setWallpaperSourceEnabled: (sourceId: string, enabled: boolean) =>
+    call<WallpaperSource>('set_wallpaper_source_enabled', sourceId, enabled),
+  deleteWallpaperSource: (sourceId: string) =>
+    call<{ deleted: boolean; identifier: string }>('delete_wallpaper_source', sourceId),
+  exportWallpaperSource: (sourceId: string, suggestedName?: string) => call<{ saved_path: string } | null>('export_wallpaper_source', sourceId, suggestedName),
+  exportWallpaperSourcePayload: (payload: WallpaperSourceCreatorPayload, exportFormat: WallpaperSourceExternalExportFormat, suggestedName?: string, exportOptions?: WallpaperSourceExportOptions) =>
+    call<{ saved_path: string } | null>('export_wallpaper_source_payload', payload, exportFormat, suggestedName, exportOptions),
   listHistory: () => call<Array<Record<string, unknown>>>('list_history'),
   getCurrentWallpaper: () => call<CurrentWallpaperInfo | null>('get_current_wallpaper'),
   recordCurrentWallpaper: () => call<CurrentWallpaperInfo | null>('record_current_wallpaper'),
@@ -126,6 +136,6 @@ export const desktopApi = {
   openDebugLogDirectory: () => call<{ opened_path: string }>('open_debug_log_directory'),
   openDebugLogFile: () => call<{ opened_path: string }>('open_debug_log_file'),
   runtimeSnapshot: () => call<BootstrapPayload['runtime']>('runtime_snapshot'),
-  triggerAutoChangeNow: () =>
-    call<BootstrapPayload['runtime']['auto_change'] & { last_result?: { local_path: string; message: string } }>('trigger_auto_change_now'),
+  triggerAutoChangeNow: (planId?: string) =>
+    call<BootstrapPayload['runtime']['auto_change'] & { last_result?: { local_path: string; message: string } }>('trigger_auto_change_now', planId),
 };
