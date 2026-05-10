@@ -506,15 +506,15 @@ def set_wallpaper(path: str) -> None:
             ("com.deepin.dde.appearance", "picture-uri"),
             ("com.deepin.dde.appearance", "background"),
         ]
-        for schema, key in candidates:
+        for schema, gkey in candidates:
             r = subprocess.run(
-                ["gsettings", "set", schema, key, uri if "uri" in key else path],
+                ["gsettings", "set", schema, gkey, uri if "uri" in gkey else path],
                 capture_output=True,
             )
             if r.returncode == 0:
-                logger.debug("Deepin 壁纸已通过 {}/{} 设置", schema, key)
+                logger.debug("Deepin 壁纸已通过 {}/{} 设置", schema, gkey)
                 return
-            logger.debug("Deepin {}/{} 尝试失败: {}", schema, key, r.stderr.decode().strip())
+            logger.debug("Deepin {}/{} 尝试失败: {}", schema, gkey, r.stderr.decode().strip())
         logger.warning("Deepin 所有 gsettings 尝试均失败")
         return
 
