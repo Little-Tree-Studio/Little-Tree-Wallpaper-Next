@@ -84,7 +84,7 @@ export function ThemeEnvironment({ themeDocument, children }: ThemeEnvironmentPr
       </Box>
       {styleSheets.globalCss ? <style data-ltw-theme-global>{styleSheets.globalCss}</style> : null}
       {styleSheets.componentCss ? <style data-ltw-theme-components>{styleSheets.componentCss}</style> : null}
-      <Box sx={{ position: 'relative', zIndex: 1, minHeight: '100vh' }}>
+      <Box sx={{ position: 'relative', zIndex: 1, height: '100%' }}>
         {children}
       </Box>
     </ThemeProvider>

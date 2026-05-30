@@ -73,15 +73,37 @@ import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import WallpaperRoundedIcon from '@mui/icons-material/WallpaperRounded';
 import WidgetsRoundedIcon from '@mui/icons-material/WidgetsRounded';
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 
 import { desktopApi } from './api';
 import { ThemeManagerPanel } from './components/ThemeManagerPanel';
 import { AutoChangePlannerPage } from './components/AutoChangePlannerPage';
 import { WallpaperCreator } from './components/WallpaperCreator';
 import { WallpaperSourceCreatorPanel } from './components/WallpaperSourceCreatorPanel';
+import { FeaturedWallpaperCard, FavoritesGallery, WallpaperGallery } from './components/gallery';
+import {
+  IntelligentMarketSourceCard,
+  IntelligentMarketSummaryCard,
+  SourceSummaryCard,
+} from './components/resourceCards';
+import { StorePanel } from './components/StorePanel';
+import { EmptyState, SectionHeader, SettingsSwitchRow, StatCard } from './components/shared';
 import { createTranslator, resolveLocale } from './i18n';
 import type { SupportedLocale, TranslateFn } from './i18n';
+import {
+  formatBingQualityLabel,
+  formatFileSize,
+  formatTimestamp,
+  getIntelligentMarketHealthColor,
+  getIntelligentMarketHealthLabel,
+  isLocalWallpaperItem,
+  localizeSourceName,
+  looksLikeLocalResource,
+  resolveDownloadBehavior,
+  resolveImageSource,
+  resolvePreviewDialogSource,
+  truncateMiddle,
+} from './utils';
 import {
   DEFAULT_THEME_ID,
   buildThemeCatalog,
@@ -95,23 +117,27 @@ import {
 import type { ThemeDocument } from './themeSystem';
 import type {
   AutoChangeConfig,
+  BingQuality,
   BootstrapPayload,
   CurrentWallpaperInfo,
   DebugLogPayload,
+  DownloadBehavior,
   FavoriteFolder,
   FavoriteItem,
+  FavoriteLocalizationFilter,
   IntelligentMarketHealthUpdate,
   IntelligentMarketParameter,
   IntelligentMarketSource,
+  ScreenBingQuality,
   StorageEntry,
   StorageOverviewPayload,
   StoreResource,
   WallpaperItem,
   WallpaperSourceApi,
   WallpaperSourceApiParameter,
-  WallpaperSourceExternalExportFormat,
   WallpaperSourceCreatorPayload,
   WallpaperSourceExportOptions,
+  WallpaperSourceExternalExportFormat,
   WallpaperSource,
 } from './types';
 
@@ -127,12 +153,8 @@ type NavItem = {
 
 type BingCollectionTab = 'daily' | 'recent';
 type SpotlightCollectionTab = 'local' | 'online';
-type ScreenBingQuality = `screen:${number}x${number}`;
-type BingQuality = 'highDef' | 'ultraHighDef' | ScreenBingQuality;
-type FavoriteLocalizationFilter = 'all' | 'localized' | 'remote' | 'failed';
-type DownloadBehavior = 'directory' | 'prompt';
 
-const drawerWidth = 280;
+const drawerWidth = 220;
 import { APP_VERSION, APP_LOGO, STUDIO_LOGO } from './constants';
 
 const appLogoSrc = APP_LOGO;
@@ -250,29 +272,6 @@ function intelligentMarketSourceMatches(source: IntelligentMarketSource, searchT
   return haystack.includes(searchText);
 }
 
-function getIntelligentMarketHealthColor(status?: string | null): 'success' | 'error' | 'warning' | 'default' {
-  if (status === 'healthy') {
-    return 'success';
-  }
-  if (status === 'unhealthy') {
-    return 'error';
-  }
-  if (status === 'unknown') {
-    return 'warning';
-  }
-  return 'default';
-}
-
-function getIntelligentMarketHealthLabel(status: string | null | undefined, t: TranslateFn): string {
-  if (status === 'healthy') {
-    return t('resource.im.health.healthy');
-  }
-  if (status === 'unhealthy') {
-    return t('resource.im.health.unhealthy');
-  }
-  return t('resource.im.health.unknown');
-}
-
 function mergeIntelligentMarketHealthUpdates(
   sources: IntelligentMarketSource[],
   updates: IntelligentMarketHealthUpdate[],
@@ -286,98 +285,6 @@ function mergeIntelligentMarketHealthUpdates(
     const update = updateMap.get(source.id);
     return update ? { ...source, ...update } : source;
   });
-}
-
-function truncateMiddle(value: string, maxLength = 56): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  const edgeLength = Math.max(8, Math.floor((maxLength - 3) / 2));
-  return `${value.slice(0, edgeLength)}...${value.slice(-edgeLength)}`;
-}
-
-function resolveImageSource(value?: string | null): string {
-  const raw = String(value ?? '').trim();
-  if (!raw) {
-    return '';
-  }
-  if (/^(https?:|data:|blob:|file:)/i.test(raw)) {
-    return raw;
-  }
-  if (/^[a-zA-Z]:[\\/]/.test(raw)) {
-    return encodeURI(`file:///${raw.replace(/\\/g, '/')}`);
-  }
-  if (raw.startsWith('\\\\')) {
-    return encodeURI(`file:${raw.replace(/\\/g, '/')}`);
-  }
-  return raw;
-}
-
-function looksLikeLocalResource(value?: string | null): boolean {
-  const raw = String(value ?? '').trim();
-  if (!raw) {
-    return false;
-  }
-  if (/^file:/i.test(raw)) {
-    return true;
-  }
-  if (/^[a-zA-Z]:[\\/]/.test(raw)) {
-    return true;
-  }
-  return raw.startsWith('\\\\');
-}
-
-function resolveDownloadBehavior(value: unknown): DownloadBehavior {
-  return value === 'prompt' ? 'prompt' : 'directory';
-}
-
-function isLocalWallpaperItem(item?: WallpaperItem | null): boolean {
-  if (!item) {
-    return false;
-  }
-  return looksLikeLocalResource(item.image_url) || looksLikeLocalResource(item.preview_url);
-}
-
-function resolvePreviewDialogSource(item: WallpaperItem): string {
-  if (looksLikeLocalResource(item.image_url) && item.preview_url) {
-    return resolveImageSource(item.preview_url);
-  }
-  return resolveImageSource(item.image_url || item.preview_url || '');
-}
-
-function formatTimestamp(value?: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
-}
-
-function formatFileSize(size?: number | null): string | null {
-  if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
-    return null;
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = size;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
 function getStorageTargetTitle(targetId: string, t: TranslateFn): string {
@@ -435,34 +342,6 @@ function matchesBingQuality(items: WallpaperItem[], quality: BingQuality): boole
   return typeof currentQuality !== 'string' || currentQuality === quality;
 }
 
-function parseScreenBingQuality(quality: string): { width: number; height: number } | null {
-  const match = /^screen:(\d{2,5})x(\d{2,5})$/.exec(quality);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    width: Number(match[1]),
-    height: Number(match[2]),
-  };
-}
-
-function formatBingQualityLabel(quality: string, t: TranslateFn): string {
-  if (quality === 'highDef') {
-    return t('resource.bing.quality.highDef');
-  }
-  if (quality === 'ultraHighDef') {
-    return t('resource.bing.quality.ultraHighDef');
-  }
-
-  const screenQuality = parseScreenBingQuality(quality);
-  if (screenQuality) {
-    return t('resource.bing.quality.screen', { width: screenQuality.width, height: screenQuality.height });
-  }
-
-  return quality;
-}
-
 function resolveBingMarket(language: SupportedLocale, market: string | null | undefined): string {
   const normalizedMarket = String(market ?? '').trim();
   if (!normalizedMarket || normalizedMarket === DEFAULT_BING_MARKET) {
@@ -488,21 +367,6 @@ function localizeBackendMessage(message: string, t: TranslateFn): string {
     return `${t('errors.downloadFailedPrefix')}: ${message.slice('下载壁纸失败:'.length).trim()}`;
   }
   return message;
-}
-
-function localizeSourceName(sourceId: string, fallback: string, t: TranslateFn): string {
-  switch (sourceId) {
-    case 'builtin.bing_daily':
-      return t('builtin.bingDaily');
-    case 'builtin.bing_recent':
-      return t('builtin.bingRecent');
-    case 'builtin.windows_spotlight':
-      return t('builtin.spotlightLocal');
-    case 'builtin.windows_spotlight_online':
-      return t('builtin.spotlightOnline');
-    default:
-      return fallback;
-  }
 }
 
 function localizeStoreName(id: string, fallback: string, t: TranslateFn): string {
@@ -1123,10 +987,13 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
 
   function focusIntelligentMarketDetail() {
     window.requestAnimationFrame(() => {
-      intelligentMarketDetailRef.current?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'start',
-      });
+      const el = intelligentMarketDetailRef.current;
+      if (el) {
+        const parent = el.closest('[data-ltw-page-surface]') as HTMLElement | null;
+        if (parent) {
+          parent.scrollTop = el.offsetTop - 16;
+        }
+      }
     });
   }
 
@@ -2015,19 +1882,19 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
 
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Toolbar sx={{ px: 2.5, py: 1.5, alignItems: 'center' }}>
-        <Avatar src={appLogoSrc} variant="rounded" sx={{ bgcolor: 'background.paper', width: 40, height: 40 }} />
-        <Box sx={{ ml: 1.5, minWidth: 0 }}>
-          <Typography variant="subtitle1" noWrap>
+      <Toolbar sx={{ px: 2, py: 1, alignItems: 'center', minHeight: 52 }}>
+        <Avatar src={appLogoSrc} variant="rounded" sx={{ bgcolor: 'background.paper', width: 32, height: 32 }} />
+        <Box sx={{ ml: 1.25, minWidth: 0 }}>
+          <Typography variant="subtitle2" noWrap fontWeight={700}>
             {t('app.name')}
           </Typography>
-          <Typography variant="body2" color="text.secondary" noWrap>
+          <Typography variant="caption" color="text.secondary" noWrap>
             {t('app.subtitle')}
           </Typography>
         </Box>
       </Toolbar>
       <Divider />
-      <Box sx={{ px: 1.5, py: 1.5, overflowY: 'auto' }}>
+      <Box sx={{ px: 1, py: 1, overflowY: 'auto', flex: 1 }}>
         <List
           subheader={
             <ListSubheader component="div" disableSticky sx={{ bgcolor: 'transparent' }}>
@@ -2038,15 +1905,15 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
           {navigation
             .filter((item) => item.group === 'browse')
             .map((item) => (
-              <ListItemButton key={item.key} selected={route === item.key} onClick={() => goToRoute(item.key)} sx={{ borderRadius: 2 }}>
-                <ListItemIcon>{item.icon}</ListItemIcon>
-                <ListItemText primary={item.label} secondary={item.subtitle} secondaryTypographyProps={{ noWrap: true }} />
+              <ListItemButton key={item.key} selected={route === item.key} onClick={() => goToRoute(item.key)} sx={{ borderRadius: 1.5, py: 0.75 }}>
+                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} secondary={item.subtitle} primaryTypographyProps={{ variant: 'body2', fontWeight: route === item.key ? 600 : 400 }} secondaryTypographyProps={{ noWrap: true, variant: 'caption' }} />
               </ListItemButton>
             ))}
         </List>
         <List
           subheader={
-            <ListSubheader component="div" disableSticky sx={{ bgcolor: 'transparent' }}>
+            <ListSubheader component="div" disableSticky sx={{ bgcolor: 'transparent', py: 0.5, lineHeight: 1.5 }}>
               {t('nav.group.tools')}
             </ListSubheader>
           }
@@ -2054,16 +1921,16 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
           {navigation
             .filter((item) => item.group === 'tools')
             .map((item) => (
-              <ListItemButton key={item.key} selected={route === item.key} onClick={() => goToRoute(item.key)} sx={{ borderRadius: 2 }}>
-                <ListItemIcon>{item.icon}</ListItemIcon>
-                <ListItemText primary={item.label} secondary={item.subtitle} secondaryTypographyProps={{ noWrap: true }} />
+              <ListItemButton key={item.key} selected={route === item.key} onClick={() => goToRoute(item.key)} sx={{ borderRadius: 1.5, py: 0.75 }}>
+                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} secondary={item.subtitle} primaryTypographyProps={{ variant: 'body2', fontWeight: route === item.key ? 600 : 400 }} secondaryTypographyProps={{ noWrap: true, variant: 'caption' }} />
               </ListItemButton>
             ))}
         </List>
         {navigation.some((item) => item.group === 'info') && (
           <List
             subheader={
-              <ListSubheader component="div" disableSticky sx={{ bgcolor: 'transparent' }}>
+              <ListSubheader component="div" disableSticky sx={{ bgcolor: 'transparent', py: 0.5, lineHeight: 1.5 }}>
                 {t('nav.group.info')}
               </ListSubheader>
             }
@@ -2071,25 +1938,25 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
             {navigation
               .filter((item) => item.group === 'info')
               .map((item) => (
-                <ListItemButton key={item.key} selected={route === item.key} onClick={() => goToRoute(item.key)} sx={{ borderRadius: 2 }}>
-                  <ListItemIcon>{item.icon}</ListItemIcon>
-                  <ListItemText primary={item.label} secondary={item.subtitle} secondaryTypographyProps={{ noWrap: true }} />
+                <ListItemButton key={item.key} selected={route === item.key} onClick={() => goToRoute(item.key)} sx={{ borderRadius: 1.5, py: 0.75 }}>
+                  <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                  <ListItemText primary={item.label} secondary={item.subtitle} primaryTypographyProps={{ variant: 'body2', fontWeight: route === item.key ? 600 : 400 }} secondaryTypographyProps={{ noWrap: true, variant: 'caption' }} />
                 </ListItemButton>
               ))}
           </List>
         )}
       </Box>
-      <Box sx={{ p: 2 }}>
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack spacing={1}>
-            <Typography variant="subtitle2">{t('drawer.currentStatus')}</Typography>
+      <Box sx={{ p: 1.5 }}>
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
+          <Stack spacing={0.75}>
+            <Typography variant="caption" fontWeight={600}>{t('drawer.currentStatus')}</Typography>
             <Chip
               size="small"
               color={runtime?.auto_change.enabled ? 'success' : 'default'}
               label={runtime?.auto_change.enabled ? t('drawer.autoChangeOn') : t('drawer.autoChangeOff')}
-              sx={{ alignSelf: 'flex-start' }}
+              sx={{ alignSelf: 'flex-start', height: 22 }}
             />
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="caption" color="text.secondary">
               {t('drawer.summary', { sourceCount: validSources.length, favoriteCount: favorites.length })}
             </Typography>
           </Stack>
@@ -2100,7 +1967,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
 
   if (loading) {
     return (
-      <Box sx={{ minHeight: '100vh', display: 'grid', placeItems: 'center', backgroundColor: 'transparent' }}>
+      <Box sx={{ height: '100%', display: 'grid', placeItems: 'center', backgroundColor: 'transparent' }}>
         <Stack spacing={2} alignItems="center">
           <CircularProgress sx={{ color: 'success.main' }} />
           <Typography variant="h6">{t('loading.title')}</Typography>
@@ -2113,7 +1980,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
   }
 
   return (
-    <Box data-ltw-app-shell="true" sx={{ display: 'flex', minHeight: '100vh', backgroundColor: 'transparent' }}>
+    <Box data-ltw-app-shell="true" sx={{ display: 'flex', height: '100%', backgroundColor: 'transparent' }}>
       {mobile ? (
         <Drawer
           open={drawerOpen}
@@ -2143,9 +2010,9 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
         </Drawer>
       )}
 
-      <Box data-ltw-page-surface="true" sx={{ flex: 1, minWidth: 0 }}>
-        <AppBar data-ltw-top-bar="true" position="sticky">
-          <Toolbar sx={{ gap: 2 }}>
+      <Box data-ltw-page-surface="true" sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+        <AppBar data-ltw-top-bar="true" position="static">
+          <Toolbar sx={{ gap: 1.5, minHeight: 48 }}>
             {mobile && (
               <IconButton edge="start" onClick={() => setDrawerOpen(true)}>
                 <MenuRoundedIcon />
@@ -2155,8 +2022,8 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
               src={appLogoSrc}
               variant="rounded"
               sx={{
-                width: 36,
-                height: 36,
+                width: 28,
+                height: 28,
                 bgcolor: 'background.paper',
                 border: `1px solid ${alpha(theme.palette.common.black, 0.08)}`,
               }}
@@ -2186,7 +2053,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
           </Toolbar>
         </AppBar>
 
-        <Container maxWidth={false} sx={{ px: { xs: 2, md: 4 }, py: 3 }}>
+        <Box sx={{ flex: 1, overflow: 'auto', px: { xs: 2, md: 3 }, py: 2.5 }}>
           {route === 'home' && (
             <Stack spacing={3}>
               <Paper
@@ -3766,7 +3633,7 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
               </Box>
             </Stack>
           )}
-        </Container>
+        </Box>
       </Box>
 
       <Dialog open={favoriteFolderDialogMode !== null} onClose={closeFavoriteFolderDialog} maxWidth="sm" fullWidth>
@@ -4065,664 +3932,4 @@ export default function App({ onThemeChange }: { onThemeChange: (themeDocument: 
   );
 }
 
-function SectionHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) {
-  return (
-    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ mb: 0.5 }}>
-      <Box sx={{ flex: 1 }}>
-        <Typography variant="h5">{title}</Typography>
-        {subtitle && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            {subtitle}
-          </Typography>
-        )}
-      </Box>
-      {action}
-    </Stack>
-  );
-}
 
-function StatCard({ icon, title, value, description }: { icon: React.ReactNode; title: string; value: string; description: string }) {
-  return (
-    <Card sx={{ height: '100%' }}>
-      <CardContent>
-        <Stack spacing={1.5}>
-          <Stack direction="row" alignItems="center" spacing={1.5}>
-            <Avatar sx={{ bgcolor: 'primary.50', color: 'primary.main' }}>{icon}</Avatar>
-            <Box>
-              <Typography variant="body2" color="text.secondary">
-                {title}
-              </Typography>
-              <Typography variant="h5">{value}</Typography>
-            </Box>
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            {description}
-          </Typography>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-function SourceSummaryCard({ source, t }: { source: WallpaperSource | null; t: TranslateFn }) {
-  if (!source) {
-    return <EmptyState title={t('sourceSummary.emptyTitle')} description={t('sourceSummary.emptyDescription')} compact />;
-  }
-
-  return (
-    <Card>
-      <CardContent>
-        <Stack spacing={1.5}>
-          <Typography variant="h6">{localizeSourceName(source.identifier, source.name, t)}</Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Chip size="small" label={`v${source.version}`} />
-            <Chip size="small" label={t('sourceSummary.apiCount', { count: (source.apis ?? []).length })} />
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            {source.description || source.details || t('sourceSummary.noDetails')}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">{t('sourceSummary.identifier', { value: source.identifier })}</Typography>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-function IntelligentMarketSourceCard({
-  source,
-  selected,
-  t,
-  onSelect,
-}: {
-  source: IntelligentMarketSource;
-  selected: boolean;
-  t: TranslateFn;
-  onSelect: () => void;
-}) {
-  const healthColor = getIntelligentMarketHealthColor(source.health_status);
-  const healthLabel = getIntelligentMarketHealthLabel(source.health_status, t);
-
-  return (
-    <Card
-      onClick={onSelect}
-      sx={{
-        height: '100%',
-        cursor: 'pointer',
-        borderColor: selected
-          ? 'primary.main'
-          : source.health_status === 'unhealthy'
-            ? 'error.light'
-            : 'divider',
-        boxShadow: selected
-          ? (theme) => `0 20px 40px ${alpha(theme.palette.primary.main, 0.18)}`
-          : 'none',
-        background: (theme) => source.health_status === 'unhealthy'
-          ? `linear-gradient(180deg, ${alpha(theme.palette.error.light, 0.08)}, ${alpha(theme.palette.background.paper, 0.94)})`
-          : `linear-gradient(180deg, ${alpha(theme.palette.primary.light, selected ? 0.14 : 0.06)}, ${alpha(theme.palette.background.paper, 0.96)})`,
-        transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease',
-        '&:hover': {
-          transform: 'translateY(-2px)',
-          boxShadow: (theme) => `0 18px 36px ${alpha(theme.palette.common.black, 0.12)}`,
-        },
-      }}
-    >
-      <CardContent sx={{ height: '100%' }}>
-        <Stack spacing={1.75} sx={{ height: '100%' }}>
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            {source.icon ? (
-              <Avatar variant="rounded" src={source.icon} sx={{ width: 52, height: 52 }}>
-                <WallpaperRoundedIcon />
-              </Avatar>
-            ) : (
-              <Avatar variant="rounded" sx={{ width: 52, height: 52, bgcolor: 'primary.50', color: 'primary.main' }}>
-                <WallpaperRoundedIcon />
-              </Avatar>
-            )}
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="subtitle1" noWrap>{source.friendly_name}</Typography>
-              <Typography variant="body2" color="text.secondary" noWrap>{source.category}</Typography>
-            </Box>
-          </Stack>
-
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Chip
-              size="small"
-              color={healthColor}
-              icon={source.health_status === 'healthy'
-                ? <CheckCircleRoundedIcon />
-                : source.health_status === 'unhealthy'
-                  ? <ErrorOutlineRoundedIcon />
-                  : <HelpOutlineRoundedIcon />}
-              label={healthLabel}
-            />
-            <Chip size="small" variant="outlined" label={source.method} />
-            <Chip size="small" variant="outlined" label={t('resource.im.summary.parameters', { count: source.parameters.filter((param) => param.enabled !== false).length })} />
-          </Stack>
-
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{
-              minHeight: 64,
-              display: '-webkit-box',
-              WebkitLineClamp: 3,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            }}
-          >
-            {source.intro || t('resource.im.summary.noIntro')}
-          </Typography>
-
-          <Box sx={{ mt: 'auto' }}>
-            <Typography
-              variant="caption"
-              color={source.health_status === 'unhealthy' ? 'error.main' : 'text.secondary'}
-              sx={{
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-            >
-              {source.health_message || t('resource.im.health.messageFallback')}
-            </Typography>
-          </Box>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-function IntelligentMarketSummaryCard({ source, t }: { source: IntelligentMarketSource | null; t: TranslateFn }) {
-  if (!source) {
-    return <EmptyState title={t('resource.im.emptyTitle')} description={t('resource.im.emptyDescription')} compact />;
-  }
-
-  const healthColor = getIntelligentMarketHealthColor(source.health_status);
-  const healthLabel = getIntelligentMarketHealthLabel(source.health_status, t);
-
-  return (
-    <Card>
-      <CardContent>
-        <Stack spacing={1.5}>
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            {source.icon ? (
-              <Avatar variant="rounded" src={source.icon} sx={{ width: 52, height: 52 }}>
-                <WallpaperRoundedIcon />
-              </Avatar>
-            ) : (
-              <Avatar variant="rounded" sx={{ width: 52, height: 52, bgcolor: 'primary.50', color: 'primary.main' }}>
-                <WallpaperRoundedIcon />
-              </Avatar>
-            )}
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="h6">{source.friendly_name}</Typography>
-              <Typography variant="body2" color="text.secondary">{source.file_path}</Typography>
-            </Box>
-          </Stack>
-
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Chip size="small" label={source.category} />
-            <Chip size="small" color={healthColor} label={healthLabel} />
-            <Chip size="small" variant="outlined" label={`${source.method} · APICORE ${source.api_core_version}`} />
-            <Chip size="small" variant="outlined" label={t('resource.im.summary.parameters', { count: source.parameters.filter((param) => param.enabled !== false).length })} />
-          </Stack>
-
-          <Typography variant="body2" color="text.secondary">
-            {source.intro || t('resource.im.summary.noIntro')}
-          </Typography>
-
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <Stack spacing={0.75}>
-              <Typography variant="subtitle2">{t('resource.im.health.title')}</Typography>
-              <Typography variant="body2" color={source.health_status === 'unhealthy' ? 'error.main' : 'text.secondary'}>
-                {source.health_message || t('resource.im.health.messageFallback')}
-              </Typography>
-              {source.health_checked_at && (
-                <Typography variant="caption" color="text.secondary">
-                  {t('resource.im.health.checkedAt', { time: source.health_checked_at })}
-                </Typography>
-              )}
-            </Stack>
-          </Paper>
-
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <Stack spacing={1}>
-              <Typography variant="subtitle2">{t('resource.im.summary.endpoint')}</Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
-                {source.link}
-              </Typography>
-            </Stack>
-          </Paper>
-
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-            {source.html_url && (
-              <Button component="a" href={source.html_url} target="_blank" rel="noreferrer" variant="outlined" size="small">
-                {t('resource.im.summary.openConfig')}
-              </Button>
-            )}
-            {source.raw_url && (
-              <Button component="a" href={source.raw_url} target="_blank" rel="noreferrer" variant="text" size="small">
-                {t('resource.im.summary.openRaw')}
-              </Button>
-            )}
-          </Stack>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-function SettingsSwitchRow({ title, description, checked, onChange }: { title: string; description: string; checked: boolean; onChange: (value: boolean) => void | Promise<void> }) {
-  return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="subtitle1">{title}</Typography>
-          <Typography variant="body2" color="text.secondary">
-            {description}
-          </Typography>
-        </Box>
-        <Switch checked={checked} onChange={(event) => void onChange(event.target.checked)} />
-      </Stack>
-    </Paper>
-  );
-}
-
-function EmptyState({ title, description, action, compact = false }: { title: string; description: string; action?: React.ReactNode; compact?: boolean }) {
-  return (
-    <Card>
-      <CardContent sx={{ py: compact ? 4 : 6 }}>
-        <Stack spacing={1.5} alignItems="flex-start">
-          <Typography variant={compact ? 'h6' : 'h5'}>{title}</Typography>
-          <Typography variant="body2" color="text.secondary">
-            {description}
-          </Typography>
-          {action}
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-function FeaturedWallpaperCard({
-  t,
-  item,
-  onPreview,
-  onSetWallpaper,
-  onDownload,
-  onToggleFavorite,
-  isFavorite,
-}: {
-  t: TranslateFn;
-  item: WallpaperItem;
-  onPreview: (item: WallpaperItem) => void;
-  onSetWallpaper: (item: WallpaperItem) => void;
-  onDownload: (item: WallpaperItem) => void;
-  onToggleFavorite: (item: WallpaperItem) => void;
-  isFavorite: (item: WallpaperItem) => boolean;
-}) {
-  const theme = useTheme();
-  const qualityLabel = typeof item.metadata?.quality === 'string' ? formatBingQualityLabel(item.metadata.quality, t) : null;
-
-  return (
-    <Card sx={{ overflow: 'hidden' }}>
-      <Grid container>
-        <Grid size={{ xs: 12, lg: 7 }}>
-          <CardActionArea onClick={() => onPreview(item)} sx={{ height: '100%' }}>
-            <CardMedia
-              component="img"
-              image={resolveImageSource(item.preview_url || item.image_url)}
-              alt={item.title}
-              sx={{
-                minHeight: { xs: 260, md: 360, lg: '100%' },
-                maxHeight: { xs: 360, lg: 520 },
-                objectFit: 'cover',
-              }}
-            />
-          </CardActionArea>
-        </Grid>
-        <Grid size={{ xs: 12, lg: 5 }}>
-          <CardContent sx={{ height: '100%', p: { xs: 2.5, md: 3 }, display: 'flex' }}>
-            <Stack spacing={2.5} sx={{ width: '100%' }}>
-              <Stack spacing={1.25}>
-                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                  <Chip size="small" color="primary" variant="outlined" label={localizeSourceName(item.source_id, item.source_name, t)} />
-                  <IconButton color={isFavorite(item) ? 'secondary' : 'default'} onClick={() => onToggleFavorite(item)}>
-                    <FavoriteRoundedIcon />
-                  </IconButton>
-                </Stack>
-                <Typography variant="h4" sx={{ lineHeight: 1.1 }}>
-                  {item.title}
-                </Typography>
-                <Typography variant="body1" color="text.secondary">
-                  {item.description || t('featuredWallpaper.fallbackDescription')}
-                </Typography>
-              </Stack>
-
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                {item.width && item.height && <Chip size="small" label={`${item.width} × ${item.height}`} />}
-                {qualityLabel && <Chip size="small" label={qualityLabel} variant="outlined" />}
-                <Chip size="small" label={t('featuredWallpaper.todayLabel')} variant="outlined" sx={{ borderColor: alpha(theme.palette.primary.main, 0.28) }} />
-              </Stack>
-
-              <Box sx={{ flex: 1 }} />
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25}>
-                <Button variant="contained" size="large" onClick={() => onSetWallpaper(item)}>
-                  {t('gallery.setWallpaper')}
-                </Button>
-                <Button variant="outlined" size="large" onClick={() => onDownload(item)}>
-                  {t('gallery.download')}
-                </Button>
-                <Button size="large" onClick={() => onPreview(item)}>
-                  {t('common.preview')}
-                </Button>
-              </Stack>
-            </Stack>
-          </CardContent>
-        </Grid>
-      </Grid>
-    </Card>
-  );
-}
-
-function WallpaperGallery({
-  t,
-  items,
-  onPreview,
-  onSetWallpaper,
-  onDownload,
-  onToggleFavorite,
-  isFavorite,
-  compact = false,
-  emptyTitle,
-  emptyDescription,
-  emptyAction,
-}: {
-  t: TranslateFn;
-  items: WallpaperItem[];
-  onPreview: (item: WallpaperItem) => void;
-  onSetWallpaper: (item: WallpaperItem) => void;
-  onDownload: (item: WallpaperItem) => void;
-  onToggleFavorite: (item: WallpaperItem) => void;
-  isFavorite: (item: WallpaperItem) => boolean;
-  compact?: boolean;
-  emptyTitle?: string;
-  emptyDescription?: string;
-  emptyAction?: React.ReactNode;
-}) {
-  if (items.length === 0) {
-    return <EmptyState title={emptyTitle ?? t('gallery.emptyTitle')} description={emptyDescription ?? t('gallery.emptyDescription')} action={emptyAction} compact />;
-  }
-
-  return (
-    <Grid container spacing={2}>
-      {items.map((item) => (
-        <Grid key={item.id} size={{ xs: 12, sm: compact ? 12 : 6, xl: compact ? 12 : 4 }}>
-          <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <CardActionArea onClick={() => onPreview(item)}>
-              <CardMedia component="img" height={compact ? 180 : 220} image={resolveImageSource(item.preview_url || item.image_url)} alt={item.title} sx={{ objectFit: 'cover' }} />
-              <CardContent>
-                <Stack spacing={1.25}>
-                  <Typography variant="h6" noWrap>
-                    {item.title}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {localizeSourceName(item.source_id, item.source_name, t)}
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    {item.width && item.height && <Chip size="small" label={`${item.width} × ${item.height}`} />}
-                    {item.description && <Chip size="small" label={t('gallery.hasDescription')} variant="outlined" />}
-                  </Stack>
-                </Stack>
-              </CardContent>
-            </CardActionArea>
-            <CardActions sx={{ px: 2, pb: 2, pt: 0 }}>
-              <Button size="small" variant="contained" onClick={() => onSetWallpaper(item)}>
-                {t('gallery.setWallpaper')}
-              </Button>
-              <Button size="small" onClick={() => onDownload(item)}>
-                {t('gallery.download')}
-              </Button>
-              <Box sx={{ flex: 1 }} />
-              <IconButton color={isFavorite(item) ? 'secondary' : 'default'} onClick={() => onToggleFavorite(item)}>
-                <FavoriteRoundedIcon />
-              </IconButton>
-            </CardActions>
-          </Card>
-        </Grid>
-      ))}
-    </Grid>
-  );
-}
-
-function FavoritesGallery({
-  t,
-  items,
-  folders,
-  onPreview,
-  onSetWallpaper,
-  onDownload,
-  onToggleFavorite,
-  onMoveItem,
-  onLocalizeItem,
-  onResetLocalization,
-  isFavorite,
-  emptyTitle,
-  emptyDescription,
-  emptyAction,
-}: {
-  t: TranslateFn;
-  items: FavoriteItem[];
-  folders: FavoriteFolder[];
-  onPreview: (item: WallpaperItem) => void;
-  onSetWallpaper: (item: WallpaperItem) => void;
-  onDownload: (item: WallpaperItem) => void;
-  onToggleFavorite: (item: WallpaperItem) => void;
-  onMoveItem: (itemId: string, folderId: string) => void;
-  onLocalizeItem: (itemId: string) => void;
-  onResetLocalization: (itemId: string) => void;
-  isFavorite: (item: WallpaperItem) => boolean;
-  emptyTitle?: string;
-  emptyDescription?: string;
-  emptyAction?: React.ReactNode;
-}) {
-  const theme = useTheme();
-
-  if (items.length === 0) {
-    return <EmptyState title={emptyTitle ?? t('favorites.emptyTitle')} description={emptyDescription ?? t('favorites.emptyDescription')} action={emptyAction} compact />;
-  }
-
-  return (
-    <Grid container spacing={2}>
-      {items.map((item) => {
-        const localized = Boolean(item.localized || item.localization_status === 'completed');
-        const localizedFileSize = formatFileSize(item.localization_file_size);
-        const canLocalize = item.can_localize !== false;
-
-        return (
-        <Grid key={item.id} size={{ xs: 12, md: 6, xl: 4 }}>
-          <Card
-            sx={{
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-              background: localized
-                ? `linear-gradient(180deg, ${alpha(theme.palette.success.light, 0.12)}, ${alpha(theme.palette.background.paper, 0.92)})`
-                : theme.palette.background.paper,
-            }}
-          >
-            <CardActionArea onClick={() => onPreview(item)}>
-              <CardMedia component="img" height={220} image={resolveImageSource(item.preview_url || item.image_url)} alt={item.title} sx={{ objectFit: 'cover' }} />
-              <CardContent>
-                <Stack spacing={1.25}>
-                  <Typography variant="h6" noWrap>
-                    {item.title}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {localizeSourceName(item.source_id, item.source_name, t)}
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    {item.width && item.height && <Chip size="small" label={`${item.width} × ${item.height}`} />}
-                    {localized && <Chip size="small" color="success" variant="outlined" label={t('favorites.localizedTag')} />}
-                    {item.localization_status === 'pending' && <Chip size="small" color="warning" variant="outlined" label={t('favorites.localizationPendingTag')} />}
-                    {item.localization_status === 'failed' && <Chip size="small" color="error" variant="outlined" label={t('favorites.localizationFailedTag')} />}
-                    {item.tags && item.tags.length > 0 && <Chip size="small" variant="outlined" label={t('favorites.tagsCount', { count: item.tags.length })} />}
-                  </Stack>
-                  {item.local_path && (
-                    <Typography variant="caption" color="text.secondary">
-                      {t('favorites.localizationSource')}: {truncateMiddle(item.local_path, 42)}
-                    </Typography>
-                  )}
-                  {item.localization_updated_at && (
-                    <Typography variant="caption" color="text.secondary">
-                      {t('favorites.localizationUpdatedAt', { time: formatTimestamp(item.localization_updated_at) ?? item.localization_updated_at })}
-                    </Typography>
-                  )}
-                  {localizedFileSize && (
-                    <Typography variant="caption" color="text.secondary">
-                      {t('favorites.localizationFileSize', { size: localizedFileSize })}
-                    </Typography>
-                  )}
-                  {item.localization_status === 'failed' && item.localization_message && (
-                    <Typography variant="caption" color="error.main">
-                      {t('favorites.localizationFailedMessage', { message: item.localization_message })}
-                    </Typography>
-                  )}
-                </Stack>
-              </CardContent>
-            </CardActionArea>
-            <CardActions sx={{ px: 2, pb: 2, pt: 0 }}>
-              <Stack spacing={1.25} sx={{ width: '100%' }}>
-                <TextField
-                  select
-                  size="small"
-                  fullWidth
-                  label={t('favorites.folderLabel')}
-                  value={item.folder_id}
-                  onChange={(event) => void onMoveItem(item.id, event.target.value)}
-                >
-                  {folders.map((folder) => (
-                    <MenuItem key={folder.id} value={folder.id}>
-                      {folder.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                  <Button size="small" variant="contained" onClick={() => onSetWallpaper(item)}>
-                    {t('gallery.setWallpaper')}
-                  </Button>
-                  {canLocalize && (
-                    <Button size="small" variant="outlined" onClick={() => onLocalizeItem(item.id)}>
-                      {localized ? t('favorites.relocalizeAction') : t('favorites.localizeAction')}
-                    </Button>
-                  )}
-                  {canLocalize && localized && (
-                    <Button size="small" color="warning" onClick={() => onResetLocalization(item.id)}>
-                      {t('favorites.resetLocalizationAction')}
-                    </Button>
-                  )}
-                  <Button size="small" onClick={() => onDownload(item)}>
-                    {t('gallery.download')}
-                  </Button>
-                  <Box sx={{ flex: 1 }} />
-                  <IconButton color={isFavorite(item) ? 'secondary' : 'default'} onClick={() => onToggleFavorite(item)}>
-                    <FavoriteRoundedIcon />
-                  </IconButton>
-                </Stack>
-              </Stack>
-            </CardActions>
-          </Card>
-        </Grid>
-        );
-      })}
-    </Grid>
-  );
-}
-
-function StorePanel({ tab, payload, resources, loading, onInstall, onDetail, t }: {
-  tab: number;
-  payload: Record<string, unknown> | undefined;
-  resources: StoreResource[];
-  loading: boolean;
-  onInstall: (resource: StoreResource) => void;
-  onDetail: (resource: StoreResource) => void;
-  t: TranslateFn;
-}) {
-  if (loading) {
-    return (
-      <Stack spacing={2} alignItems="center" sx={{ py: 6 }}>
-        <CircularProgress />
-        <Typography color="text.secondary">{t('store.loading')}</Typography>
-      </Stack>
-    );
-  }
-
-  if (resources.length > 0) {
-    return (
-      <Grid container spacing={2}>
-        {resources.map((resource) => {
-          const iconUrl = resource.icon_url || null;
-          return (
-            <Grid key={resource.id} size={{ xs: 12, md: 6, xl: 4 }}>
-              <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <CardContent sx={{ flex: 1 }}>
-                  <Stack spacing={1.5}>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
-                      {iconUrl ? (
-                        <Avatar variant="rounded" src={iconUrl} sx={{ width: 48, height: 48 }}>
-                          <WidgetsRoundedIcon />
-                        </Avatar>
-                      ) : (
-                        <Avatar variant="rounded" sx={{ width: 48, height: 48, bgcolor: 'primary.50', color: 'primary.main' }}>
-                          {resource.type === 'theme' ? <PaletteRoundedIcon /> : resource.type === 'wallpaper_source' ? <WallpaperRoundedIcon /> : <WidgetsRoundedIcon />}
-                        </Avatar>
-                      )}
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography variant="h6" noWrap>{resource.name}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          v{resource.version}{resource.author ? ` · ${resource.author.name}` : ''}
-                        </Typography>
-                      </Box>
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary" sx={{
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}>
-                      {resource.summary || t('store.noDescription')}
-                    </Typography>
-                    {resource.tags && resource.tags.length > 0 && (
-                      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                        {resource.tags.slice(0, 3).map((tag) => (
-                          <Chip key={tag} size="small" variant="outlined" label={tag} />
-                        ))}
-                      </Stack>
-                    )}
-                  </Stack>
-                </CardContent>
-                <CardActions sx={{ px: 2, pb: 2, pt: 0 }}>
-                  <Button size="small" variant="contained" onClick={() => onInstall(resource)}>
-                    {t('common.install')}
-                  </Button>
-                  <Button size="small" onClick={() => onDetail(resource)}>
-                    {t('store.detail.title')}
-                  </Button>
-                </CardActions>
-              </Card>
-            </Grid>
-          );
-        })}
-      </Grid>
-    );
-  }
-
-  if (!payload) {
-    return <EmptyState title={t('store.waitingTitle')} description={t('store.waitingDescription')} compact />;
-  }
-
-  return <EmptyState title={t('store.emptyTitle')} description={t('store.emptyDescription')} compact />;
-}

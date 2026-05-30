@@ -220,20 +220,18 @@ function defaultThemeSpec(mode: ThemeMode): ThemeSpec {
   return {
     mode,
     palette: defaultPalette(mode),
-    shape: {
-      border_radius: 22,
-    },
-    surface: {
-      blur: 20,
-      opacity: mode === 'dark' ? 0.76 : 0.82,
-      border_opacity: mode === 'dark' ? 0.2 : 0.12,
-      shadow_opacity: mode === 'dark' ? 0.35 : 0.14,
-    },
-    typography: {
-      font_family: mode === 'dark'
-        ? '"Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif'
-        : '"Segoe UI Variable", "Segoe UI", "Noto Sans SC", sans-serif',
-    },
+  shape: {
+    border_radius: 10,
+  },
+  surface: {
+    blur: 16,
+    opacity: mode === 'dark' ? 0.72 : 0.78,
+    border_opacity: mode === 'dark' ? 0.16 : 0.1,
+    shadow_opacity: mode === 'dark' ? 0.22 : 0.08,
+  },
+  typography: {
+    font_family: '-apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif',
+  },
     background: {
       kind: 'none',
       source: '',
@@ -727,17 +725,15 @@ export function buildMuiTheme(themeDocument: ThemeDocument): Theme {
         styleOverrides: {
           html: {
             height: '100%',
-            scrollbarGutter: 'stable',
           },
           body: {
-            minHeight: '100vh',
+            height: '100%',
             backgroundColor: 'transparent',
             color: palette.text_primary,
-            overflowY: 'scroll',
-            scrollbarGutter: 'stable',
+            overflow: 'hidden',
           },
           '#root': {
-            minHeight: '100vh',
+            height: '100%',
             backgroundColor: 'transparent',
             position: 'relative',
             isolation: 'isolate',
@@ -758,6 +754,7 @@ export function buildMuiTheme(themeDocument: ThemeDocument): Theme {
             backgroundColor: appBarBackground,
             backdropFilter: `blur(${surface.blur}px) saturate(1.15)`,
             borderBottom: `1px solid ${surfaceBorder}`,
+            boxShadow: 'none',
           },
         },
       },
@@ -772,7 +769,8 @@ export function buildMuiTheme(themeDocument: ThemeDocument): Theme {
             backgroundColor: elevatedSurface,
             borderColor: surfaceBorder,
             backdropFilter: `blur(${surface.blur}px) saturate(1.08)`,
-            boxShadow: `0 22px 60px ${shadowColor}`,
+            boxShadow: `0 4px 16px ${shadowColor}`,
+            transition: 'box-shadow 0.15s ease, border-color 0.15s ease',
           },
         },
       },
@@ -786,6 +784,7 @@ export function buildMuiTheme(themeDocument: ThemeDocument): Theme {
             backgroundColor: elevatedSurface,
             borderColor: surfaceBorder,
             backdropFilter: `blur(${surface.blur}px) saturate(1.08)`,
+            boxShadow: `0 2px 8px ${shadowColor}`,
           },
         },
       },
@@ -793,8 +792,9 @@ export function buildMuiTheme(themeDocument: ThemeDocument): Theme {
         styleOverrides: {
           paper: {
             backgroundImage: 'none',
-            backgroundColor: alpha(palette.background_paper, Math.min(0.98, surface.opacity + 0.12)),
+            backgroundColor: alpha(palette.background_paper, Math.min(0.96, surface.opacity + 0.08)),
             backdropFilter: `blur(${surface.blur + 4}px) saturate(1.15)`,
+            borderRight: `1px solid ${surfaceBorder}`,
           },
         },
       },
@@ -823,10 +823,17 @@ export function buildMuiTheme(themeDocument: ThemeDocument): Theme {
         },
         styleOverrides: {
           root: {
-            borderRadius: Math.max(10, shape.border_radius - 6),
+            borderRadius: Math.max(6, shape.border_radius - 4),
+            textTransform: 'none',
+            fontWeight: 600,
+            letterSpacing: '0',
           },
           contained: {
-            boxShadow: `0 12px 30px ${alpha(palette.primary, 0.26)}`,
+            boxShadow: `0 2px 8px ${alpha(palette.primary, 0.2)}`,
+          },
+          sizeSmall: {
+            padding: '4px 10px',
+            fontSize: '0.8125rem',
           },
         },
       },

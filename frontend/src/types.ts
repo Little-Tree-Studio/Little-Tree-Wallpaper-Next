@@ -546,3 +546,8 @@ export type BootstrapPayload = {
     current_wallpaper?: CurrentWallpaperInfo | null;
   };
 };
+
+export type ScreenBingQuality = `screen:${number}x${number}`;
+export type BingQuality = 'highDef' | 'ultraHighDef' | ScreenBingQuality;
+export type FavoriteLocalizationFilter = 'all' | 'localized' | 'remote' | 'failed';
+export type DownloadBehavior = 'directory' | 'prompt';
