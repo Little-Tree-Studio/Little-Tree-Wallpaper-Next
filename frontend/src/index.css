@@ -1,0 +1,21 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+/* Fix HeroUI Spinner: span is inline so width/height doesn't apply */
+.spinner {
+  display: inline-block;
+}
+
+.spinner > svg {
+  width: 100%;
+  height: 100%;
+}
