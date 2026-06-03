@@ -111,6 +111,24 @@ export interface AppSettings {
   storage: {
     download_directory: string;
   };
+  generate: {
+    providers: ImageProviderConfig[];
+    active_provider_id: string;
+    default_size: string;
+    default_n: number;
+    default_response_format: 'url' | 'b64_json';
+  };
+}
+
+export interface ImageProviderConfig {
+  id: string;
+  name: string;
+  format: 'openai' | 'volcano' | 'openai-compatible';
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  modelName?: string;
+  customHeaders?: Record<string, string>;
 }
 
 export type NavId = 'home' | 'resource' | 'generate' | 'sniff' | 'favorite' | 'store';

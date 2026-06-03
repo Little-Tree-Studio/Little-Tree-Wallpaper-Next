@@ -1,17 +1,22 @@
 import { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import {
   Card, Button, Switch, Input, Tabs, Separator,
 } from '@heroui/react';
-import { ArrowLeft } from 'lucide-react';
-import { getSettings, setSetting } from '@/api/backend';
-import type { AppSettings } from '@/types';
+import { ArrowLeft, FolderOpen, Plus, Trash2, Wand2 } from 'lucide-react';
+import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview } from '@/api/backend';
+import type { AppSettings, ImageProviderConfig } from '@/types';
+import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
 
 export default function Settings() {
+  const { tab } = useParams<{ tab?: string }>();
   const [settings, setLocalSettings] = useState<AppSettings | null>(null);
-  const [activeTab, setActiveTab] = useState('general');
+  const [activeTab, setActiveTab] = useState(tab || 'general');
+  const [storageOverview, setStorageOverview] = useState<any>(null);
 
   useEffect(() => {
     getSettings().then((s) => setLocalSettings(s as AppSettings));
+    getStorageOverview().then((s) => setStorageOverview(s));
   }, []);
 
   const update = (key: string, value: any) => {
@@ -51,6 +56,7 @@ export default function Settings() {
             <Tabs.Tab id="wallpaper">壁纸<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="content">内容<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="download">下载<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="generate">生成<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="sniff">嗅探<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="appearance">外观<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="about">关于<Tabs.Indicator /></Tabs.Tab>
@@ -146,17 +152,51 @@ export default function Settings() {
 
         <Tabs.Panel id="download">
           <Card className="space-y-4 p-4">
-            <Row label="下载位置">
-              <select
-                className="rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                value={settings.storage.download_directory ? 'custom' : 'default'}
-                onChange={(e) => update('storage.download_directory', e.target.value === 'custom' ? '' : '')}
-              >
-                <option value="default">系统下载目录</option>
-                <option value="custom">自定义</option>
-              </select>
-            </Row>
+            <Section title="下载目录">
+              <Row label="当前目录">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted truncate max-w-[200px]">
+                    {storageOverview?.download_directory || settings.storage.download_directory || '默认'}
+                  </span>
+                  <Button size="sm" variant="secondary" onPress={async () => {
+                    const result = await pickDownloadDirectory();
+                    if (result?.path) {
+                      await setDownloadDirectory(result.path);
+                      const s = await getStorageOverview();
+                      setStorageOverview(s);
+                      const newSettings = await getSettings();
+                      setLocalSettings(newSettings as AppSettings);
+                    }
+                  }}>
+                    <FolderOpen size={14} /> 选择
+                  </Button>
+                </div>
+              </Row>
+              {settings.storage.download_directory && (
+                <Row label="">
+                  <Button size="sm" variant="ghost" onPress={async () => {
+                    await setDownloadDirectory('');
+                    const s = await getStorageOverview();
+                    setStorageOverview(s);
+                    const newSettings = await getSettings();
+                    setLocalSettings(newSettings as AppSettings);
+                  }}>恢复默认</Button>
+                </Row>
+              )}
+            </Section>
+            <Separator />
+            <Section title="存储概览">
+              {storageOverview?.items?.map((item: any) => (
+                <Row key={item.id} label={item.title}>
+                  <span className="text-xs text-muted">{item.file_count || 0} 文件 / {(item.size_bytes / 1024 / 1024).toFixed(1)} MB</span>
+                </Row>
+              ))}
+            </Section>
           </Card>
+        </Tabs.Panel>
+
+        <Tabs.Panel id="generate">
+          <GenerateSettingsPanel settings={settings} onUpdate={update} />
         </Tabs.Panel>
 
         <Tabs.Panel id="sniff">
@@ -201,6 +241,232 @@ export default function Settings() {
         </Tabs.Panel>
       </Tabs>
     </div>
+  );
+}
+
+function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; onUpdate: (key: string, value: unknown) => void }) {
+  const [mdProviders, setMdProviders] = useState<import('@/api/generate').ModelsDevProvider[] | null>(null);
+  const [mdLoading, setMdLoading] = useState(false);
+  const [showAddBuiltin, setShowAddBuiltin] = useState(false);
+  const [showAddCustom, setShowAddCustom] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [builtinApiKey, setBuiltinApiKey] = useState('');
+  const [customName, setCustomName] = useState('');
+  const [customEndpoint, setCustomEndpoint] = useState('');
+  const [customApiKey, setCustomApiKey] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [customFormat, setCustomFormat] = useState<ImageProviderConfig['format']>('openai-compatible');
+
+  const providers: ImageProviderConfig[] = settings.generate?.providers || [];
+  const activeId = settings.generate?.active_provider_id || '';
+
+  const loadMd = async () => {
+    setMdLoading(true);
+    try {
+      const list = await fetchImageProviders();
+      setMdProviders(list);
+    } catch {
+      setMdProviders([]);
+    } finally {
+      setMdLoading(false);
+    }
+  };
+
+  const setProviders = (next: ImageProviderConfig[]) => {
+    onUpdate('generate.providers', next);
+  };
+
+  const removeProvider = (id: string) => {
+    const next = providers.filter((p) => p.id !== id);
+    setProviders(next);
+    if (activeId === id) {
+      onUpdate('generate.active_provider_id', next[0]?.id || '');
+    }
+  };
+
+  const ensureUniqueId = (baseId: string): string => {
+    let id = baseId;
+    let suffix = 1;
+    while (providers.some((p) => p.id === id)) {
+      id = `${baseId}-${suffix}`;
+      suffix++;
+    }
+    return id;
+  };
+
+  const insertProvider = (cfg: ImageProviderConfig) => {
+    const uniqueId = ensureUniqueId(cfg.id);
+    const finalCfg = { ...cfg, id: uniqueId };
+    const next = [...providers, finalCfg];
+    setProviders(next);
+    if (!activeId) onUpdate('generate.active_provider_id', uniqueId);
+    return finalCfg;
+  };
+
+  const addBuiltin = () => {
+    if (!selectedProvider || !selectedModel || !builtinApiKey) return;
+    const p = mdProviders?.find((x) => x.id === selectedProvider);
+    if (!p) return;
+    const cfg = parseProviderFromModelsDev(p, selectedModel, builtinApiKey);
+    insertProvider(cfg);
+    setShowAddBuiltin(false);
+    setSelectedProvider('');
+    setSelectedModel('');
+    setBuiltinApiKey('');
+  };
+
+  const addCustom = () => {
+    if (!customName || !customEndpoint || !customApiKey || !customModel) return;
+    const cfg: ImageProviderConfig = {
+      id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: customName,
+      format: customFormat,
+      endpoint: customEndpoint,
+      apiKey: customApiKey,
+      model: customModel,
+    };
+    insertProvider(cfg);
+    setShowAddCustom(false);
+    setCustomName('');
+    setCustomEndpoint('');
+    setCustomApiKey('');
+    setCustomModel('');
+  };
+
+  const currentMdProvider = mdProviders?.find((p) => p.id === selectedProvider);
+
+  return (
+    <Card className="space-y-4 p-4">
+      <Section title="已配置的提供商">
+        {providers.length === 0 && (
+          <p className="text-sm text-muted">尚未配置任何图片生成提供商</p>
+        )}
+        <div className="space-y-2">
+          {providers.map((p) => (
+            <div key={p.id} className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}>
+              <div className="flex items-center gap-3">
+                <input
+                  type="radio"
+                  name="active_provider"
+                  checked={activeId === p.id}
+                  onChange={() => onUpdate('generate.active_provider_id', p.id)}
+                  className="h-4 w-4"
+                />
+                <div>
+                  <div className="text-sm font-medium">{p.name}</div>
+                  <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
+                </div>
+              </div>
+              <Button isIconOnly variant="ghost" size="sm" onPress={() => removeProvider(p.id)}>
+                <Trash2 size={14} className="text-danger" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Separator />
+
+      <Section title="添加提供商">
+        <div className="flex gap-2">
+          <Button size="sm" variant="secondary" onPress={() => { setShowAddBuiltin(!showAddBuiltin); setShowAddCustom(false); if (!mdProviders) loadMd(); }}>
+            <Wand2 size={14} /> 从 models.dev 添加
+          </Button>
+          <Button size="sm" variant="secondary" onPress={() => { setShowAddCustom(!showAddCustom); setShowAddBuiltin(false); }}>
+            <Plus size={14} /> 自定义提供商
+          </Button>
+        </div>
+
+        {showAddBuiltin && (
+          <div className="mt-3 space-y-3 rounded-lg border border-border p-3">
+            {mdLoading && <p className="text-sm text-muted">加载中...</p>}
+            {mdProviders && (
+              <>
+                <div>
+                  <label className="mb-1 block text-xs text-muted">提供商</label>
+                  <select
+                    className="w-full rounded-md border border-border bg-surface px-2 py-1 text-sm"
+                    value={selectedProvider}
+                    onChange={(e) => { setSelectedProvider(e.target.value); setSelectedModel(''); }}
+                  >
+                    <option value="">选择提供商</option>
+                    {mdProviders.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name} ({p.models.length} 个模型)</option>
+                    ))}
+                  </select>
+                </div>
+                {currentMdProvider && (
+                  <div>
+                    <label className="mb-1 block text-xs text-muted">模型</label>
+                    <select
+                      className="w-full rounded-md border border-border bg-surface px-2 py-1 text-sm"
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                    >
+                      <option value="">选择模型</option>
+                      {currentMdProvider.models.map((m) => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <label className="mb-1 block text-xs text-muted">API Key</label>
+                  <Input
+                    type="password"
+                    fullWidth
+                    value={builtinApiKey}
+                    onChange={(e) => setBuiltinApiKey(e.target.value)}
+                    placeholder="输入 API Key"
+                  />
+                </div>
+                <Button size="sm" onPress={addBuiltin} isDisabled={!selectedProvider || !selectedModel || !builtinApiKey}>添加</Button>
+              </>
+            )}
+          </div>
+        )}
+
+        {showAddCustom && (
+          <div className="mt-3 space-y-3 rounded-lg border border-border p-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted">名称</label>
+              <Input fullWidth value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="例如：火山引擎" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted">格式</label>
+              <select
+                className="w-full rounded-md border border-border bg-surface px-2 py-1 text-sm"
+                value={customFormat}
+                onChange={(e) => setCustomFormat(e.target.value as ImageProviderConfig['format'])}
+              >
+                <option value="openai">OpenAI</option>
+                <option value="volcano">火山引擎</option>
+                <option value="openai-compatible">OpenAI 兼容</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted">端点 (Base URL)</label>
+              <Input
+                fullWidth
+                value={customEndpoint}
+                onChange={(e) => setCustomEndpoint(e.target.value)}
+                placeholder={customFormat === 'volcano' ? VOLCANO_PRESET.endpoint : OPENAI_PRESET.endpoint}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted">模型 ID</label>
+              <Input fullWidth value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="例如：gpt-image-1" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted">API Key</label>
+              <Input type="password" fullWidth value={customApiKey} onChange={(e) => setCustomApiKey(e.target.value)} placeholder="输入 API Key" />
+            </div>
+            <Button size="sm" onPress={addCustom} isDisabled={!customName || !customEndpoint || !customApiKey || !customModel}>添加</Button>
+          </div>
+        )}
+      </Section>
+    </Card>
   );
 }
 

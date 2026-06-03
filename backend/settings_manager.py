@@ -83,6 +83,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "im": {"mirror_preference": "mirror_first"},
     "store": {"use_custom_source": False, "custom_source_url": ""},
+    "generate": {
+        "providers": [],
+        "active_provider_id": "",
+        "default_size": "1024x1024",
+        "default_n": 1,
+        "default_response_format": "url",
+    },
 }
 
 class SettingsStore:
@@ -105,8 +112,11 @@ class SettingsStore:
             for key, value in defaults.items():
                 if key not in src:
                     src[key] = value
-                elif isinstance(value, dict) and isinstance(src.get(key), dict):
-                    set_defaults(src[key], value)
+                elif isinstance(value, dict):
+                    if not isinstance(src.get(key), dict):
+                        src[key] = value
+                    else:
+                        set_defaults(src[key], value)
         set_defaults(self._data, DEFAULT_SETTINGS)
 
     def save(self) -> None:

@@ -1,24 +1,32 @@
-import os
+from __future__ import annotations
+
 import json
+import os
+import sys
 import uuid
 import webbrowser
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
 from loguru import logger
 
-from .paths import get_data_dir, get_config_dir, get_cache_dir, ensure_dirs
-from .settings_manager import get_settings_store
-from .wallpaper import (
-    get_sys_wallpaper, set_wallpaper, get_bing_wallpaper,
-    get_spotlight_wallpapers, download_file, get_hitokoto,
-)
+from backend.paths import get_data_dir, get_config_dir, get_cache_dir, ensure_dirs
+from backend.settings_manager import get_settings_store
+from backend.services.sys_wallpaper import get_sys_wallpaper, set_wallpaper as set_sys_wallpaper
+from backend.services.bing import BingService
+from backend.services.spotlight import SpotlightService
+from backend.services.sniff import SniffService
 
 ensure_dirs()
+
 
 class BackendAPI:
     def __init__(self) -> None:
         self.store = get_settings_store()
+        self.bing_service = BingService()
+        self.spotlight_service = SpotlightService()
+        self.sniff_service = SniffService()
         self._ensure_favorites()
         self._ensure_history()
 
@@ -27,6 +35,12 @@ class BackendAPI:
 
     def _history_path(self) -> Path:
         return get_data_dir() / "wallpaper_history.json"
+
+    def _downloads_dir(self) -> Path:
+        raw = self.store.get("storage.download_directory")
+        if isinstance(raw, str) and raw.strip():
+            return Path(raw.strip())
+        return get_data_dir() / "downloads"
 
     def _ensure_favorites(self) -> None:
         path = self._favorites_path()
@@ -60,36 +74,134 @@ class BackendAPI:
     def _save_history(self, data: list[dict[str, Any]]) -> None:
         self._history_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _download_file_sync(self, url: str, save_dir: Path, filename: str | None = None, headers: dict[str, str] | None = None) -> str | None:
+        import requests
+        try:
+            h = dict(headers or {})
+            h.setdefault("User-Agent", self.store.get("sniff.user_agent", "Mozilla/5.0"))
+            resp = requests.get(url, headers=h, timeout=60, stream=True)
+            resp.raise_for_status()
+            save_dir.mkdir(parents=True, exist_ok=True)
+            if not filename:
+                cd = resp.headers.get("Content-Disposition", "")
+                if "filename=" in cd:
+                    filename = cd.split("filename=")[-1].strip('"')
+                else:
+                    filename = Path(url.split("?")[0].split("/")[-1]) or "download.jpg"
+            filepath = save_dir / filename
+            with open(filepath, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"Download failed: {e}")
+            return None
+
     def get_current_wallpaper(self) -> dict[str, str] | None:
         path = get_sys_wallpaper()
-        if path:
-            return {"path": path, "filename": Path(path).name}
-        return None
+        if not path:
+            return None
+        preview_url = self._build_preview_data_url(path)
+        return {
+            "path": path,
+            "filename": Path(path).name,
+            "preview_url": preview_url,
+        }
+
+    def _build_preview_data_url(self, image_path: str, max_size: int = 960) -> str | None:
+        try:
+            from PIL import Image
+            import io, base64
+            with Image.open(image_path) as img:
+                preview = img.copy()
+                preview.thumbnail((max_size, max_size))
+                if preview.mode not in {"RGB", "L"}:
+                    preview = preview.convert("RGB")
+                buffer = io.BytesIO()
+                preview.save(buffer, format="JPEG", quality=82, optimize=True)
+                encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+                return f"data:image/jpeg;base64,{encoded}"
+        except Exception as exc:
+            logger.debug("build preview data url failed: {}", exc)
+            return None
 
     def set_wallpaper(self, path: str) -> dict[str, Any]:
-        success = set_wallpaper(path)
-        if success:
+        try:
+            set_sys_wallpaper(path)
             self.add_to_history(path, Path(path).name, "set")
-        return {"success": success}
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to set wallpaper: {e}")
+            return {"success": False, "error": str(e)}
 
     def get_bing_wallpaper(self) -> dict[str, Any] | None:
-        ua = self.store.get("sniff.user_agent")
-        return get_bing_wallpaper(ua)
+        try:
+            items = self.bing_service.query_daily(
+                market=self.store.get("wallpaper.bing.market", "zh-CN"),
+                count=1,
+            )
+            if not items:
+                return None
+            item = items[0]
+            meta = item.get("metadata", {})
+            return {
+                "url": item.get("image_url", ""),
+                "title": item.get("title", ""),
+                "copyright": item.get("description", ""),
+                "startdate": meta.get("startdate", ""),
+            }
+        except Exception as e:
+            logger.error(f"Bing wallpaper error: {e}")
+            return None
 
     def get_spotlight_wallpapers(self) -> list[dict[str, Any]] | None:
-        ua = self.store.get("sniff.user_agent")
-        return get_spotlight_wallpapers(ua)
+        try:
+            items = self.spotlight_service.list_local_candidates(limit=20)
+            if not items:
+                return None
+            return [
+                {
+                    "url": item.get("image_url", ""),
+                    "title": item.get("title", ""),
+                    "copyright": item.get("description", ""),
+                }
+                for item in items
+            ]
+        except Exception as e:
+            logger.error(f"Spotlight error: {e}")
+            return None
 
-    def get_hitokoto(self, categories: list[str] | None = None) -> dict[str, Any] | None:
+    def get_hitokoto(self, categories: list[str] | None = None) -> dict[str, Any]:
+        import requests
         cfg = self.store.get("home_page.hitokoto", {})
         cats = categories or cfg.get("categories", [])
         region = cfg.get("region", "domestic")
-        return get_hitokoto(cats, region)
+        base = "https://v1.hitokoto.cn" if region == "domestic" else "https://international.v1.hitokoto.cn"
+        try:
+            params = {}
+            if cats:
+                for c in cats:
+                    params["c"] = c
+            resp = requests.get(base, params=params, timeout=10)
+            data = resp.json()
+            return {
+                "hitokoto": data.get("hitokoto", ""),
+                "from": data.get("from", ""),
+                "from_who": data.get("from_who"),
+            }
+        except Exception as e:
+            logger.warning(f"Hitokoto failed: {e}, returning default")
+            return {
+                "hitokoto": "今天也给桌面换一张像样的壁纸。",
+                "from": "",
+                "from_who": "Little Tree",
+            }
 
     def download_file(self, url: str, filename: str | None = None) -> str | None:
-        ua = self.store.get("sniff.user_agent")
-        save_dir = self.store.get("storage.download_directory") or str(get_data_dir() / "downloads")
-        return download_file(url, save_dir, filename, headers={"User-Agent": ua})
+        save_dir = self._downloads_dir()
+        ua = self.store.get("sniff.user_agent", "Mozilla/5.0")
+        return self._download_file_sync(url, save_dir, filename, headers={"User-Agent": ua})
 
     def copy_to_clipboard(self, text: str) -> None:
         try:
@@ -99,64 +211,25 @@ class BackendAPI:
             logger.error(f"Clipboard error: {e}")
 
     def save_file_dialog(self, data: str, filename: str) -> None:
-        # Simplified: save to downloads dir
-        save_dir = self.store.get("storage.download_directory") or str(get_data_dir() / "downloads")
-        os.makedirs(save_dir, exist_ok=True)
-        path = os.path.join(save_dir, filename)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(data)
+        save_dir = self._downloads_dir()
+        save_dir.mkdir(parents=True, exist_ok=True)
+        path = save_dir / filename
+        path.write_text(data, encoding="utf-8")
 
     def sniff_images(self, url: str) -> list[dict[str, Any]]:
-        # Simplified image sniffing
         try:
-            from urllib.parse import urljoin
-            import requests
-            from html.parser import HTMLParser
-
-            ua = self.store.get("sniff.user_agent")
-            timeout = self.store.get("sniff.timeout_seconds", 40)
-            headers = {"User-Agent": ua}
-            if self.store.get("sniff.use_source_as_referer", True):
-                headers["Referer"] = url
-            else:
-                ref = self.store.get("sniff.referer")
-                if ref:
-                    headers["Referer"] = ref
-
-            resp = requests.get(url, headers=headers, timeout=timeout)
-            content_type = resp.headers.get("Content-Type", "")
-            if content_type.startswith("image/"):
-                return [{"id": uuid.uuid4().hex, "url": url, "filename": Path(url).name or "image.jpg", "content_type": content_type}]
-
-            images = []
-            seen = set()
-
-            class ImgParser(HTMLParser):
-                def handle_starttag(self, tag, attrs):
-                    attr_dict = dict(attrs)
-                    src = None
-                    if tag == "img":
-                        src = attr_dict.get("data-src") or attr_dict.get("src")
-                    elif tag == "meta":
-                        prop = attr_dict.get("property", "")
-                        if prop in ("og:image", "twitter:image"):
-                            src = attr_dict.get("content")
-                    elif tag in ("source", "video"):
-                        src = attr_dict.get("src")
-                    if src:
-                        full = urljoin(url, src)
-                        if full not in seen:
-                            seen.add(full)
-                            images.append({
-                                "id": uuid.uuid4().hex,
-                                "url": full,
-                                "filename": Path(full).name or "image.jpg",
-                                "content_type": "",
-                            })
-
-            parser = ImgParser()
-            parser.feed(resp.text)
-            return images
+            ua = self.store.get("sniff.user_agent", "Mozilla/5.0")
+            timeout = int(self.store.get("sniff.timeout_seconds", 15))
+            items = self.sniff_service.sniff_images(url, user_agent=ua, timeout_seconds=timeout)
+            return [
+                {
+                    "id": item.get("id", uuid.uuid4().hex),
+                    "url": item.get("image_url", ""),
+                    "filename": Path(item.get("image_url", "")).name or "image.jpg",
+                    "content_type": "",
+                }
+                for item in items
+            ]
         except Exception as e:
             logger.error(f"Sniff error: {e}")
             return []
@@ -196,7 +269,6 @@ class BackendAPI:
         return folder
 
     def get_store_resources(self, type: str) -> list[dict[str, Any]]:
-        # Placeholder: return empty list
         return []
 
     def install_store_resource(self, resource: dict[str, Any]) -> None:
@@ -215,16 +287,23 @@ class BackendAPI:
     def set_setting(self, key: str, value: Any) -> None:
         self.store.set(key, value)
 
-    def get_history(self) -> list[dict[str, Any]]:
-        return self._load_history()
+    def get_history(self, max_preview_items: int = 20) -> list[dict[str, Any]]:
+        history = self._load_history()
+        for i, item in enumerate(history):
+            if i >= max_preview_items:
+                break
+            if not item.get("preview_url"):
+                item["preview_url"] = self._build_preview_data_url(item.get("path", ""), max_size=320)
+        return history
 
     def add_to_history(self, path: str, title: str, reason: str) -> None:
         history = self._load_history()
-        # Deduplicate by path
         history = [h for h in history if h.get("path") != path]
+        preview_url = self._build_preview_data_url(path, max_size=320)
         history.insert(0, {
             "path": path, "title": title, "reason": reason,
             "time": datetime.now().isoformat(),
+            "preview_url": preview_url,
         })
         history = history[:200]
         self._save_history(history)
@@ -288,4 +367,112 @@ class BackendAPI:
     def get_platform(self) -> str:
         return sys.platform
 
-import sys
+    # --- New API methods for enhanced functionality ---
+
+    def query_bing(self, category: str = "daily", market: str = "zh-CN", count: int = 8, quality: str = "highDef") -> list[dict[str, Any]]:
+        if category == "recent":
+            return self.bing_service.query_recent(market=market, count=count, quality=quality)
+        return self.bing_service.query_daily(market=market, count=count, quality=quality)
+
+    def query_spotlight(self, source: str = "local", limit: int = 20, market: str = "zh-CN") -> list[dict[str, Any]]:
+        if source == "online":
+            return self.spotlight_service.list_online_candidates(limit=limit, market=market)
+        return self.spotlight_service.list_local_candidates(limit=limit)
+
+    def bootstrap(self) -> dict[str, Any]:
+        home_bing = self.bing_service.query_daily(market="zh-CN", count=1)
+        quote = self.get_hitokoto()
+        return {
+            "settings": self.store.as_dict(),
+            "favorites": self._load_favorites(),
+            "history": self._load_history(),
+            "sources": [],
+            "plugins": [],
+            "runtime": {
+                "debug": {"enabled": False, "session_enabled": False, "open_devtools_on_start": True},
+                "window": {"hide_on_close": self.store.get("ui.hide_on_close", True), "minimize_to_tray": self.store.get("ui.minimize_to_tray", True)},
+            },
+            "home": {
+                "bing": home_bing[:1],
+                "spotlight": self.spotlight_service.list_local_candidates(limit=4),
+                "quote": {"text": quote.get("hitokoto", ""), "author": quote.get("from_who", ""), "source": quote.get("from", "")},
+                "current_wallpaper": self.get_current_wallpaper(),
+            },
+        }
+
+    def list_history(self) -> list[dict[str, Any]]:
+        return self._load_history()
+
+    def record_current_wallpaper(self) -> dict[str, Any] | None:
+        info = self.get_current_wallpaper()
+        if info and info.get("path"):
+            self.add_to_history(info["path"], info.get("filename", "当前壁纸"), "record")
+        return info
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        return {
+            "auto_change": {"enabled": False, "mode": "off", "running": False},
+            "debug": {"enabled": False, "session_enabled": False, "open_devtools_on_start": True},
+            "window": {"hide_on_close": self.store.get("ui.hide_on_close", True), "minimize_to_tray": self.store.get("ui.minimize_to_tray", True)},
+        }
+
+    def get_storage_overview(self) -> dict[str, Any]:
+        downloads_dir = self._downloads_dir()
+        total_size = 0
+        file_count = 0
+        if downloads_dir.exists():
+            for f in downloads_dir.rglob("*"):
+                if f.is_file():
+                    try:
+                        total_size += f.stat().st_size
+                        file_count += 1
+                    except OSError:
+                        pass
+        return {
+            "download_directory": str(downloads_dir),
+            "default_download_directory": str(get_data_dir() / "downloads"),
+            "items": [
+                {"id": "downloads", "title": "下载", "scope": "data", "size_bytes": total_size, "file_count": file_count, "optimize_supported": False},
+            ],
+        }
+
+    def pick_download_directory(self) -> dict[str, str] | None:
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            path = filedialog.askdirectory()
+            root.destroy()
+            if path:
+                return {"path": path}
+        except Exception as e:
+            logger.error(f"Pick directory error: {e}")
+        return None
+
+    def set_download_directory(self, directory: str | None = None) -> dict[str, Any]:
+        if directory:
+            self.store.set("storage.download_directory", directory)
+        else:
+            self.store.set("storage.download_directory", str(get_data_dir() / "downloads"))
+        return {
+            "settings": self.store.as_dict(),
+            "storage": self.get_storage_overview(),
+        }
+
+    def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        for key, value in updates.items():
+            self.store.set(key, value)
+        return self.store.as_dict()
+
+    def trigger_auto_change_now(self, plan_id: str | None = None) -> dict[str, Any]:
+        return {"enabled": False, "mode": "off", "running": False, "last_result": None}
+
+    def get_debug_log(self, lines: int = 240) -> dict[str, Any]:
+        return {"path": "", "content": "", "truncated": False, "lines": 0}
+
+    def open_debug_log_directory(self) -> dict[str, Any]:
+        return {"opened_path": str(get_data_dir())}
+
+    def open_debug_log_file(self) -> dict[str, Any]:
+        return {"opened_path": ""}

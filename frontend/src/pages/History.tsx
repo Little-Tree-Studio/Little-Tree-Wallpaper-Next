@@ -4,7 +4,7 @@ import { ArrowLeft, Image as ImageIcon, Clock } from 'lucide-react';
 import { getHistory, setWallpaper } from '@/api/backend';
 
 export default function History() {
-  const [history, setHistory] = useState<{ path: string; title: string; reason: string; time: string }[]>([]);
+  const [history, setHistory] = useState<{ path: string; title: string; reason: string; time: string; preview_url?: string }[]>([]);
 
   useEffect(() => {
     getHistory().then((h) => setHistory(h));
@@ -26,12 +26,16 @@ export default function History() {
         {history.map((item, idx) => (
           <Card key={idx} className="flex items-center gap-4 p-4">
             <div className="h-[80px] w-[120px] shrink-0 overflow-hidden rounded-lg bg-surface-secondary">
-              <img
-                src={`file://${item.path}`}
-                alt={item.title}
-                className="h-full w-full object-cover"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-              />
+              {item.preview_url ? (
+                <img
+                  src={item.preview_url}
+                  alt={item.title}
+                  className="h-full w-full object-cover"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-xs text-muted">无预览</div>
+              )}
             </div>
             <div className="flex-1">
               <div className="font-medium">{item.title}</div>

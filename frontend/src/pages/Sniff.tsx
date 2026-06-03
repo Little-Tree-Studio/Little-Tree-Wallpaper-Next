@@ -12,10 +12,14 @@ export default function Sniff() {
 
   const handleSniff = async () => {
     if (!url.trim()) return;
+    let target = url.trim();
+    if (!/^https?:\/\//i.test(target)) {
+      target = 'http://' + target;
+    }
     setLoading(true);
     setSelected(new Set());
     try {
-      const result = await sniffImages(url.trim());
+      const result = await sniffImages(target);
       setImages(result);
     } finally {
       setLoading(false);
@@ -67,7 +71,7 @@ export default function Sniff() {
       {selected.size > 0 && (
         <Card className="p-3">
           <div className="flex items-center gap-4">
-            <Badge>已选择 {selected.size} 张</Badge>
+            <Badge className="shrink-0 whitespace-nowrap">已选择 {selected.size} 张</Badge>
             <Button size="sm" variant="secondary" onPress={handleFavoriteSelected}><Heart size={14} /> 批量收藏</Button>
             <Button size="sm" variant="ghost" onPress={() => {
               const urls = selectedImages.map((i) => i.url).join('\n');
@@ -95,8 +99,8 @@ export default function Sniff() {
                 loading="lazy"
                 onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; }}
               />
-              <div className="absolute top-2 left-2">
-                {isSel ? <CheckSquare className="text-primary" size={20} /> : <Square className="text-white/70" size={20} />}
+              <div className="absolute top-2 left-2 flex h-5 w-5 items-center justify-center rounded-sm bg-white/30 backdrop-blur-sm">
+                {isSel ? <CheckSquare className="text-white drop-shadow" size={14} /> : <Square className="text-white drop-shadow" size={14} />}
               </div>
               <div className="absolute inset-x-0 bottom-0 flex gap-1 bg-black/60 p-1 opacity-0 transition-opacity group-hover:opacity-100">
                 <span onClick={(e) => { e.stopPropagation(); }}>

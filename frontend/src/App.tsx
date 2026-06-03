@@ -32,6 +32,7 @@ function App() {
           <Route path="favorite" element={<Favorite />} />
           <Route path="store" element={<Store />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="settings/:tab" element={<Settings />} />
           <Route path="history" element={<History />} />
         </Route>
       </Routes>
