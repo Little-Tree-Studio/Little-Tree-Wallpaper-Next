@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { Card, Button, Spinner } from '@heroui/react';
-import { RefreshCw, History, ImageIcon, Copy, Heart, FolderOutput, Monitor } from 'lucide-react';
+import { Card, Button, Skeleton } from '@heroui/react';
+import { RefreshCw, History, ImageIcon, Copy, Heart, FolderOutput, Monitor, Download, Save } from 'lucide-react';
 import {
-  getCurrentWallpaper, setWallpaper, getHitokoto,
-  copyToClipboard, downloadFile, addFavorite,
-  recordCurrentWallpaper, bootstrapCached, getBootstrapCache,
+  getCurrentWallpaper, setWallpaper, getHitokoto, getBingWallpaper,
+  copyToClipboard, addFavorite,
+  recordCurrentWallpaper, getBootstrapCache,
+  downloadWithProgress, saveAsWithProgress,
 } from '@/api/backend';
+import { useImageViewer } from '@/components/ImageViewer';
 import type { Hitokoto } from '@/types';
 
 export default function Home() {
@@ -13,44 +15,61 @@ export default function Home() {
   const [bing, setBing] = useState<any>(null);
   const [hitokoto, setHitokoto] = useState<Hitokoto | null>(null);
   const [wpLoading, setWpLoading] = useState(true);
+  const [bingLoading, setBingLoading] = useState(true);
   const [quoteLoading, setQuoteLoading] = useState(true);
   const mountedRef = useRef(false);
+  const { openViewer } = useImageViewer();
 
   useEffect(() => {
     if (mountedRef.current) return;
     mountedRef.current = true;
 
     const cache = getBootstrapCache();
-    if (cache) {
-      const cw = cache.home?.current_wallpaper;
+    if (cache?.home) {
+      const cw = cache.home.current_wallpaper;
       if (cw) {
         setWallpaperInfo({ path: cw.path || '', filename: cw.filename || '壁纸', preview_url: cw.preview_url });
+        setWpLoading(false);
       }
-      setWpLoading(false);
-      const b = cache.home?.bing?.[0];
-      if (b) setBing(b);
-      const q = cache.home?.quote;
+      const b = cache.home.bing?.[0];
+      if (b) {
+        setBing(b);
+        setBingLoading(false);
+      }
+      const q = cache.home.quote;
       if (q) {
         setHitokoto({ hitokoto: q.text || '', from: q.source || '', from_who: q.author || '' });
         setQuoteLoading(false);
-        return;
       }
     }
 
-    bootstrapCached().then((data) => {
-      const cw = data?.home?.current_wallpaper;
-      if (cw) {
-        setWallpaperInfo({ path: cw.path || '', filename: cw.filename || '壁纸', preview_url: cw.preview_url });
-      }
+    getCurrentWallpaper().then((wp) => {
+      if (wp) setWallpaperInfo(wp);
       setWpLoading(false);
-      const b = data?.home?.bing?.[0];
+    }).catch(() => setWpLoading(false));
+
+    getBingWallpaper().then((b) => {
       if (b) setBing(b);
-      const q = data?.home?.quote;
-      if (q) {
-        setHitokoto({ hitokoto: q.text || '', from: q.source || '', from_who: q.author || '' });
-      }
+      setBingLoading(false);
+    }).catch(() => setBingLoading(false));
+
+    getHitokoto().then((h) => {
+      if (h) setHitokoto(h);
       setQuoteLoading(false);
-    });
+    }).catch(() => setQuoteLoading(false));
+  }, []);
+
+  // Auto-refresh current wallpaper every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const wp = await getCurrentWallpaper();
+        setWallpaperInfo(wp);
+      } catch {
+        // ignore auto-refresh errors
+      }
+    }, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const refreshWallpaper = async () => {
@@ -75,11 +94,23 @@ export default function Home() {
 
   const handleSetBing = async () => {
     if (!bing?.image_url) return;
-    const path = await downloadFile(bing.image_url, 'bing_today.jpg');
+    const path = await downloadWithProgress(bing.image_url, 'bing_today.jpg');
     if (path) {
       await setWallpaper(path);
       await refreshWallpaper();
     }
+  };
+
+  const handleDownloadBing = async () => {
+    if (!bing?.image_url) return;
+    const safeName = (bing.title || 'bing').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    await downloadWithProgress(bing.image_url, `${safeName}.jpg`);
+  };
+
+  const handleSaveAsBing = async () => {
+    if (!bing?.image_url) return;
+    const safeName = (bing.title || 'bing').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    await saveAsWithProgress(bing.image_url, `${safeName}.jpg`);
   };
 
   const handleExport = async () => {
@@ -108,17 +139,43 @@ export default function Home() {
 
   const previewSrc = wallpaper?.preview_url || '';
 
+  const handleOpenCurrentViewer = () => {
+    if (!previewSrc) return;
+    openViewer([{
+      src: previewSrc,
+      title: wallpaper?.filename || '当前壁纸',
+      local_path: wallpaper?.path,
+      preview_url: previewSrc,
+      source_type: 'system',
+    }], 0, { disableSetWallpaper: true });
+  };
+
+  const handleOpenBingViewer = () => {
+    if (!bing?.image_url) return;
+    openViewer([{
+      src: bing.image_url,
+      title: bing.title || 'Bing 每日壁纸',
+      description: bing.description || '',
+      source_url: bing.image_url,
+      preview_url: bing.preview_url || bing.image_url,
+      source_type: 'bing',
+    }], 0, { disableSetWallpaper: true });
+  };
+
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <h1 className="text-2xl font-bold">当前壁纸</h1>
 
       <Card className="overflow-hidden">
         <div className="flex gap-6 p-6">
-          <div className="relative h-[200px] w-[320px] shrink-0 overflow-hidden rounded-xl bg-surface-secondary">
+          <div
+            className="relative h-[200px] w-[320px] shrink-0 overflow-hidden rounded-xl bg-surface-secondary cursor-pointer"
+            onClick={handleOpenCurrentViewer}
+          >
             {wpLoading ? (
-              <div className="flex h-full items-center justify-center"><Spinner /></div>
+              <Skeleton className="h-full w-full rounded-xl" />
             ) : previewSrc ? (
-              <img src={previewSrc} alt="当前壁纸" className="h-full w-full object-cover"
+              <img src={previewSrc} alt="当前壁纸" className="h-full w-full object-cover hover:scale-105 transition-transform"
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
               />
             ) : (
@@ -128,9 +185,13 @@ export default function Home() {
 
           <div className="flex flex-col gap-3">
             <div className="text-sm text-muted">
-              文件名: <span className="cursor-pointer text-foreground hover:underline" onClick={() => wallpaper?.path && copyToClipboard(wallpaper.path)}>
-                {wallpaper?.filename || '未知'}
-              </span>
+              {wpLoading ? (
+                <Skeleton className="h-4 w-48 rounded" />
+              ) : (
+                <>文件名: <span className="cursor-pointer text-foreground hover:underline" onClick={() => wallpaper?.path && copyToClipboard(wallpaper.path)}>
+                  {wallpaper?.filename || '未知'}
+                </span></>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" onPress={handleExport}><FolderOutput size={16} /> 复制路径</Button>
@@ -140,12 +201,25 @@ export default function Home() {
               <Button size="sm" variant="ghost" onPress={() => window.location.hash = '#/history'}><History size={16} /> 历史</Button>
             </div>
 
-            {bing && (
-              <div className="mt-2 rounded-lg bg-surface-secondary p-3">
-                <div className="text-sm font-medium">Bing 每日壁纸</div>
-                <div className="text-xs text-muted">{bing.title}</div>
+            {bingLoading ? (
+              <div className="mt-2 rounded-lg bg-surface-secondary p-3 space-y-2">
+                <Skeleton className="h-4 w-3/5 rounded" />
+                <Skeleton className="h-3 w-full rounded" />
                 <div className="mt-2 flex gap-2">
+                  <Skeleton className="h-8 w-20 rounded" />
+                  <Skeleton className="h-8 w-20 rounded" />
+                  <Skeleton className="h-8 w-24 rounded" />
+                </div>
+              </div>
+            ) : bing && (
+              <div className="mt-2 rounded-lg bg-surface-secondary p-3">
+                <div className="text-sm font-medium cursor-pointer hover:underline" onClick={handleOpenBingViewer}>{bing.title}</div>
+                <div className="text-xs text-muted">{bing.description}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
                   <Button size="sm" onPress={handleSetBing}><ImageIcon size={14} /> 设为壁纸</Button>
+                  <Button size="sm" variant="secondary" onPress={handleOpenBingViewer}><ImageIcon size={14} /> 查看</Button>
+                  <Button size="sm" variant="secondary" onPress={handleDownloadBing}><Download size={14} /> 下载</Button>
+                  <Button size="sm" variant="secondary" onPress={handleSaveAsBing}><Save size={14} /> 另存为</Button>
                   <Button size="sm" variant="ghost" onPress={() => copyToClipboard(bing.image_url)}><Copy size={14} /> 复制链接</Button>
                 </div>
               </div>
@@ -158,7 +232,11 @@ export default function Home() {
         <Card.Header><Card.Title>每日语句</Card.Title></Card.Header>
         <Card.Content className="space-y-2">
           {quoteLoading ? (
-            <Spinner size="sm" />
+            <div className="space-y-2">
+              <Skeleton className="h-5 w-full rounded" />
+              <Skeleton className="h-5 w-4/5 rounded" />
+              <Skeleton className="h-4 w-1/3 rounded" />
+            </div>
           ) : hitokoto?.hitokoto ? (
             <>
               <p className="text-lg leading-relaxed">{hitokoto.hitokoto}</p>

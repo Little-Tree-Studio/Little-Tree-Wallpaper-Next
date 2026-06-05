@@ -9,6 +9,7 @@ export default function Sniff() {
   const [images, setImages] = useState<SniffedImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [hasSearched, setHasSearched] = useState(false);
 
   const handleSniff = async () => {
     if (!url.trim()) return;
@@ -18,6 +19,7 @@ export default function Sniff() {
     }
     setLoading(true);
     setSelected(new Set());
+    setHasSearched(true);
     try {
       const result = await sniffImages(target);
       setImages(result);
@@ -65,7 +67,7 @@ export default function Sniff() {
           fullWidth
         />
         <Button onPress={handleSniff} isPending={loading}><Search size={16} /> 开始嗅探</Button>
-        <Button variant="ghost" onPress={() => { setUrl(''); setImages([]); setSelected(new Set()); }}>清空</Button>
+        <Button variant="ghost" onPress={() => { setUrl(''); setImages([]); setSelected(new Set()); setHasSearched(false); }}>清空</Button>
       </div>
 
       {selected.size > 0 && (
@@ -118,7 +120,7 @@ export default function Sniff() {
         })}
       </div>
 
-      {!loading && images.length === 0 && url && (
+      {!loading && images.length === 0 && hasSearched && (
         <div className="py-10 text-center text-muted">未找到图片</div>
       )}
     </div>

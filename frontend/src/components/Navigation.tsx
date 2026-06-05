@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Home, Image, Wand2, Search, Star, Store, Settings,
+  Home, Image, Wand2, Search, Star, Store, Settings, Wrench,
 } from 'lucide-react';
 import { Button } from '@heroui/react';
 
@@ -17,6 +17,7 @@ const items: NavItem[] = [
   { id: 'sniff', label: '嗅探', icon: Search },
   { id: 'favorite', label: '收藏', icon: Star },
   { id: 'store', label: '商店', icon: Store },
+  { id: 'tools', label: '工具', icon: Wrench },
 ];
 
 interface NavigationProps {
@@ -28,34 +29,35 @@ export default function Navigation({ activeId, onChange }: NavigationProps) {
   const [hovered, setHovered] = useState<string | null>(null);
 
   return (
-    <nav className="flex w-20 flex-col items-center gap-2 border-r border-border bg-surface-secondary py-4">
-      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground font-bold">
-        树
+    <nav className="flex w-16 flex-col items-center gap-2 border-r border-border bg-surface-secondary py-3">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg overflow-hidden">
+        <img src="./logo.png" alt="小树壁纸" className="h-full w-full object-cover" />
       </div>
 
         {items.map((item) => {
           const isActive = item.id === activeId;
           const Icon = item.icon;
           return (
-          <button
+          <Button
             key={item.id}
-            onClick={() => onChange(item.id)}
+            variant="ghost"
+            onPress={() => onChange(item.id)}
             onMouseEnter={() => setHovered(item.id)}
             onMouseLeave={() => setHovered(null)}
             className={`
-              group relative flex h-12 w-12 flex-col items-center justify-center rounded-xl transition-all
-              ${isActive ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-surface-tertiary hover:text-foreground'}
+              group relative flex h-12 w-12 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-0 transition-all
+              ${isActive ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:bg-surface-tertiary hover:text-foreground'}
             `}
-            title={item.label}
+            aria-label={item.label}
           >
-            <Icon size={22} strokeWidth={isActive ? 2.5 : 2} />
-            <span className="mt-0.5 text-[10px]">{item.label}</span>
+            <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+            <span className="text-[11px] leading-none">{item.label}</span>
             {hovered === item.id && !isActive && (
               <span className="absolute left-full ml-2 rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md whitespace-nowrap">
                 {item.label}
               </span>
             )}
-          </button>
+          </Button>
         );
       })}
 
@@ -63,8 +65,7 @@ export default function Navigation({ activeId, onChange }: NavigationProps) {
         <Button
           isIconOnly
           variant="ghost"
-          size="sm"
-          className="rounded-xl"
+          className="h-11 w-11 rounded-lg text-muted-foreground hover:bg-surface-tertiary hover:text-foreground"
           onPress={() => onChange('settings')}
           aria-label="设置"
         >

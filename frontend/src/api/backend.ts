@@ -1,3 +1,4 @@
+import { toast } from '@heroui/react';
 import type {
   WallpaperInfo,
   BingWallpaper,
@@ -8,6 +9,8 @@ import type {
   SniffedImage,
   StoreResource,
   AppSettings,
+  IntelligentMarketSource,
+  IntelligentMarketHealthUpdate,
 } from '@/types';
 
 async function waitForApi(): Promise<void> {
@@ -81,8 +84,217 @@ export async function copyToClipboard(text: string): Promise<void> {
   return call('copy_to_clipboard', text);
 }
 
-export async function saveFileDialog(data: string, filename: string): Promise<void> {
+export async function saveFileDialog(data: string, filename: string): Promise<string | null> {
   return call('save_file_dialog', data, filename);
+}
+
+export async function saveBase64ToDownloads(data: string, filename: string): Promise<string | null> {
+  return call('save_base64_file', data, filename);
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function fetchBlobWithProgress(
+  url: string,
+  onProgress: (percent: number | null, received: number, total: number | null) => void
+): Promise<Blob> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const total = Number(res.headers.get('content-length')) || null;
+  const reader = res.body!.getReader();
+  const chunks: BlobPart[] = [];
+  let received = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    onProgress(total ? Math.round((received / total) * 100) : null, received, total);
+  }
+
+  return new Blob(chunks);
+}
+
+export async function downloadWithProgress(url: string, filename: string): Promise<string | null> {
+  let loadingId = toast('正在下载…', { isLoading: true, timeout: 0 });
+
+  try {
+    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+      toast.close(loadingId);
+      const desc = percent !== null
+        ? `已下载 ${percent}%`
+        : `已下载 ${(received / 1024).toFixed(1)} KB`;
+      loadingId = toast('正在下载…', { isLoading: true, timeout: 0, description: desc });
+    });
+
+    toast.close(loadingId);
+    const data = await blobToBase64(blob);
+    const path = await saveBase64ToDownloads(data, filename);
+    if (path) {
+      toast.success('下载完成', { timeout: 3000 });
+    } else {
+      toast.danger('保存失败', { timeout: 0 });
+    }
+    return path;
+  } catch (e) {
+    toast.close(loadingId);
+    toast.danger('下载失败，请重试', { timeout: 0 });
+    return null;
+  }
+}
+
+export async function saveAsWithProgress(url: string, filename: string): Promise<string | null> {
+  if (url.startsWith('data:')) {
+    const path = await saveFileDialog(url, filename);
+    if (path) {
+      toast.success('保存成功', { timeout: 3000 });
+    } else {
+      toast.info('已取消保存', { timeout: 0 });
+    }
+    return path;
+  }
+
+  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+
+  try {
+    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+      toast.close(loadingId);
+      const desc = percent !== null
+        ? `已下载 ${percent}%`
+        : `已下载 ${(received / 1024).toFixed(1)} KB`;
+      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
+    });
+
+    toast.close(loadingId);
+    const data = await blobToBase64(blob);
+    const path = await saveFileDialog(data, filename);
+    if (path) {
+      toast.success('保存成功', { timeout: 3000 });
+    } else {
+      toast.info('已取消保存', { timeout: 0 });
+    }
+    return path;
+  } catch (e) {
+    toast.close(loadingId);
+    toast.danger('拉取数据失败，请重试', { timeout: 0 });
+    return null;
+  }
+}
+
+/**
+ * 与 saveAsWithProgress 相同的拉取数据流程，但下载完成后将文件设为系统壁纸。
+ * 如果是本地路径（localPath）则直接设为壁纸，跳过下载。
+ */
+export async function setWallpaperWithProgress(
+  url: string,
+  filename: string,
+  localPath?: string | null,
+): Promise<string | null> {
+  if (localPath) {
+    try {
+      await setWallpaper(localPath);
+      toast.success('已设为壁纸', { timeout: 3000 });
+      return localPath;
+    } catch {
+      toast.danger('设为壁纸失败', { timeout: 0 });
+      return null;
+    }
+  }
+
+  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+
+  try {
+    let data: string;
+    if (url.startsWith('data:')) {
+      data = url;
+    } else {
+      const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+        toast.close(loadingId);
+        const desc = percent !== null
+          ? `已下载 ${percent}%`
+          : `已下载 ${(received / 1024).toFixed(1)} KB`;
+        loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
+      });
+      data = await blobToBase64(blob);
+    }
+
+    toast.close(loadingId);
+    loadingId = toast('正在应用壁纸…', { isLoading: true, timeout: 0 });
+    const path = await saveBase64ToDownloads(data, filename);
+    if (!path) {
+      toast.close(loadingId);
+      toast.danger('保存临时文件失败', { timeout: 0 });
+      return null;
+    }
+    await setWallpaper(path);
+    toast.close(loadingId);
+    toast.success('已设为壁纸', { timeout: 3000 });
+    return path;
+  } catch {
+    toast.close(loadingId);
+    toast.danger('拉取数据失败，请重试', { timeout: 0 });
+    return null;
+  }
+}
+
+/**
+ * 使用系统默认应用打开图片。
+ * 如果有本地路径直接打开；否则先拉取数据保存到下载目录再打开。
+ */
+export async function openWithSystemWithProgress(
+  url: string,
+  filename: string,
+  localPath?: string | null,
+): Promise<string | null> {
+  if (localPath) {
+    try {
+      await openFile(localPath);
+      return localPath;
+    } catch {
+      toast.danger('打开失败', { timeout: 0 });
+      return null;
+    }
+  }
+
+  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+
+  try {
+    let data: string;
+    if (url.startsWith('data:')) {
+      data = url;
+    } else {
+      const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+        toast.close(loadingId);
+        const desc = percent !== null
+          ? `已下载 ${percent}%`
+          : `已下载 ${(received / 1024).toFixed(1)} KB`;
+        loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
+      });
+      data = await blobToBase64(blob);
+    }
+
+    toast.close(loadingId);
+    const path = await saveBase64ToDownloads(data, filename);
+    if (!path) {
+      toast.danger('保存临时文件失败', { timeout: 0 });
+      return null;
+    }
+    await openFile(path);
+    return path;
+  } catch {
+    toast.close(loadingId);
+    toast.danger('拉取数据失败，请重试', { timeout: 0 });
+    return null;
+  }
 }
 
 export async function sniffImages(url: string): Promise<SniffedImage[]> {
@@ -149,6 +361,10 @@ export async function openFolder(path: string): Promise<void> {
   return call('open_folder', path);
 }
 
+export async function openFile(path: string): Promise<void> {
+  return call('open_file', path);
+}
+
 export async function openUrl(url: string): Promise<void> {
   return call('open_url', url);
 }
@@ -179,17 +395,23 @@ export async function queryBing(
   category: string = 'daily',
   market: string = 'zh-CN',
   count: number = 8,
-  quality: string = 'highDef'
+  quality: string = 'highDef',
+  forceRefresh: boolean = false
 ): Promise<any[]> {
-  return call('query_bing', category, market, count, quality);
+  return call('query_bing', category, market, count, quality, forceRefresh);
 }
 
 export async function querySpotlight(
   source: string = 'local',
   limit: number = 20,
-  market: string = 'zh-CN'
+  market: string = 'zh-CN',
+  forceRefresh: boolean = false
 ): Promise<any[]> {
-  return call('query_spotlight', source, limit, market);
+  return call('query_spotlight', source, limit, market, forceRefresh);
+}
+
+export async function clearSourceCache(source?: 'bing' | 'spotlight'): Promise<{ cleared: string[] }> {
+  return call('clear_source_cache', source);
 }
 
 export async function listHistory(): Promise<any[]> {
@@ -234,4 +456,22 @@ export async function openDebugLogDirectory(): Promise<any> {
 
 export async function openDebugLogFile(): Promise<any> {
   return call('open_debug_log_file');
+}
+
+export async function listIntelligentMarketSources(force: boolean = false): Promise<IntelligentMarketSource[]> {
+  return call('list_intelligent_market_sources', force);
+}
+
+export async function checkIntelligentMarketSourcesHealth(
+  sourceIds?: string[],
+  force: boolean = false
+): Promise<IntelligentMarketHealthUpdate[]> {
+  return call('check_intelligent_market_sources_health', sourceIds, force);
+}
+
+export async function executeIntelligentMarketSource(
+  sourceId: string,
+  parameters: Record<string, unknown> = {}
+): Promise<any[]> {
+  return call('execute_intelligent_market_source', sourceId, parameters);
 }

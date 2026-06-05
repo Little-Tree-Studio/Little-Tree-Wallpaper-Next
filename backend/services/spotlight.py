@@ -11,15 +11,42 @@ import requests
 from PIL import Image
 
 from backend.models import WallpaperItem
+from backend.services.cache import ResponseCache
 
 
 class SpotlightService:
     online_endpoint = "https://fd.api.iris.microsoft.com/v4/api/selection"
 
-    def list_candidates(self, limit: int = 20) -> list[dict]:
-        return self.list_local_candidates(limit=limit)
+    # Local Assets folder scan is expensive (PIL opens every file) but the
+    # folder changes only when Windows pushes new spotlight images, so keep a
+    # short TTL. Online payload rotates a few times per day so a longer TTL
+    # is safe.
+    _cache = ResponseCache("spotlight", default_ttl=600.0)
+    _local_ttl = 600.0
+    _online_ttl = 21600.0
 
-    def list_local_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_candidates(self, limit: int = 20, force_refresh: bool = False) -> list[dict]:
+        return self.list_local_candidates(limit=limit, force_refresh=force_refresh)
+
+    def list_local_candidates(
+        self, limit: int = 20, force_refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        cache_key = f"local:{limit}"
+        if not force_refresh:
+            cached = self._cache.get(cache_key, ttl=self._local_ttl)
+            if cached is not None:
+                return cached
+
+        items = self._scan_local_assets(limit=limit)
+        if items or force_refresh:
+            self._cache.set(cache_key, items)
+        else:
+            stale = self._cache.get_stale(cache_key)
+            if stale is not None:
+                return stale
+        return items
+
+    def _scan_local_assets(self, limit: int) -> list[dict[str, Any]]:
         if os.name != "nt":
             return []
 
@@ -59,25 +86,38 @@ class SpotlightService:
         return items
 
     def list_online_candidates(
-        self, limit: int = 20, market: str = "zh-CN"
+        self, limit: int = 20, market: str = "zh-CN", force_refresh: bool = False
     ) -> list[dict[str, Any]]:
-        response = requests.get(
-            self.online_endpoint,
-            params={
-                "placement": "88000820",
-                "bcnt": 4,
-                "country": "CN",
-                "locale": market,
-                "fmt": "json",
-            },
-            timeout=20,
-            headers={
-                "User-Agent": "LittleTreeWallpaperNext/0.1.0",
-                "Accept-Language": market,
-            },
-        )
-        response.raise_for_status()
-        payload = response.json().get("batchrsp", {})
+        cache_key = f"online:{limit}:{market}"
+        if not force_refresh:
+            cached = self._cache.get(cache_key, ttl=self._online_ttl)
+            if cached is not None:
+                return cached
+
+        try:
+            response = requests.get(
+                self.online_endpoint,
+                params={
+                    "placement": "88000820",
+                    "bcnt": 4,
+                    "country": "CN",
+                    "locale": market,
+                    "fmt": "json",
+                },
+                timeout=20,
+                headers={
+                    "User-Agent": "LittleTreeWallpaperNext/0.1.0",
+                    "Accept-Language": market,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json().get("batchrsp", {})
+        except Exception:
+            stale = self._cache.get_stale(cache_key)
+            if stale is not None:
+                return stale
+            raise
+
         items: list[dict[str, Any]] = []
         for entry in payload.get("items", []):
             raw_item = entry.get("item", "")
@@ -113,6 +153,7 @@ class SpotlightService:
             )
             if len(items) >= limit:
                 break
+        self._cache.set(cache_key, items)
         return items
 
     def _absolute_url(self, url: str) -> str:

@@ -1,5 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { ScrollShadow } from '@heroui/react';
 import Navigation from './Navigation';
+import Watermark from './Watermark';
 
 export default function Layout() {
   const location = useLocation();
@@ -14,6 +16,7 @@ export default function Layout() {
     if (p.startsWith('/favorite')) return 'favorite';
     if (p.startsWith('/store')) return 'store';
     if (p.startsWith('/settings')) return 'settings';
+    if (p.startsWith('/tools')) return 'tools';
     return 'home';
   };
 
@@ -24,9 +27,12 @@ export default function Layout() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <Navigation activeId={getActiveNav()} onChange={handleNavChange} />
-      <main className="flex-1 overflow-auto p-6">
-        <Outlet />
+      <main className="flex flex-1 flex-col overflow-hidden p-6">
+        <ScrollShadow className="flex-1" hideScrollBar>
+          <Outlet />
+        </ScrollShadow>
       </main>
+      <Watermark />
     </div>
   );
 }

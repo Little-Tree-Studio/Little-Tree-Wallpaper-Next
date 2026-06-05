@@ -132,3 +132,47 @@ export interface ImageProviderConfig {
 }
 
 export type NavId = 'home' | 'resource' | 'generate' | 'sniff' | 'favorite' | 'store';
+
+export interface IntelligentMarketParameter {
+  key: string;
+  name?: string | null;
+  type: string;
+  required?: boolean;
+  friendly_name?: string;
+  default_value?: unknown;
+  options?: unknown[] | null;
+  friendly_options?: string[];
+  min_value?: number | null;
+  max_value?: number | null;
+  split_str?: string | null;
+  enabled?: boolean;
+}
+
+export interface IntelligentMarketSource {
+  id: string;
+  category: string;
+  file_path: string;
+  friendly_name: string;
+  intro?: string;
+  icon?: string | null;
+  link: string;
+  method: string;
+  api_core_version: string;
+  parameters: IntelligentMarketParameter[];
+  raw_url?: string;
+  html_url?: string;
+  health_status?: 'healthy' | 'unknown' | 'unhealthy' | string;
+  health_message?: string | null;
+  health_checked_at?: string | null;
+  health_status_code?: number | null;
+  health_probe_url?: string | null;
+}
+
+export interface IntelligentMarketHealthUpdate {
+  id: string;
+  health_status?: 'healthy' | 'unknown' | 'unhealthy' | string;
+  health_message?: string | null;
+  health_checked_at?: string | null;
+  health_status_code?: number | null;
+  health_probe_url?: string | null;
+}

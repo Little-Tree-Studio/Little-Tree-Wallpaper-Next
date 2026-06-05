@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  Card, Button, Switch, Input, Tabs, Separator,
+  Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
 } from '@heroui/react';
 import { ArrowLeft, FolderOpen, Plus, Trash2, Wand2 } from 'lucide-react';
 import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview } from '@/api/backend';
+import { useThemeContext } from '@/components/ThemeProvider';
 import type { AppSettings, ImageProviderConfig } from '@/types';
 import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
 
@@ -67,23 +68,31 @@ export default function Settings() {
           <Card className="space-y-4 p-4">
             <Section title="主页内容">
               <Row label="语句来源">
-                <select
-                  className="rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                  value={settings.home_page.source}
-                  onChange={(e) => update('home_page.source', e.target.value)}
+                <ComboBox
+                  className="w-40"
+                  selectedKey={settings.home_page.source}
+                  onSelectionChange={(key) => update('home_page.source', String(key))}
                 >
-                  <option value="hitokoto">一言</option>
-                  <option value="zhaoyu">诏预</option>
-                  <option value="custom">自定义</option>
-                </select>
+                  <ComboBox.InputGroup>
+                    <Input />
+                    <ComboBox.Trigger />
+                  </ComboBox.InputGroup>
+                  <ComboBox.Popover>
+                    <ListBox>
+                      <ListBox.Item id="hitokoto" textValue="一言">一言</ListBox.Item>
+                      <ListBox.Item id="zhaoyu" textValue="诏预">诏预</ListBox.Item>
+                      <ListBox.Item id="custom" textValue="自定义">自定义</ListBox.Item>
+                    </ListBox>
+                  </ComboBox.Popover>
+                </ComboBox>
               </Row>
-              <Row label="显示作者"><Switch isSelected={settings.home_page.show_author} onChange={(v) => update('home_page.show_author', v)} /></Row>
-              <Row label="显示来源"><Switch isSelected={settings.home_page.show_source} onChange={(v) => update('home_page.show_source', v)} /></Row>
+              <Row label="显示作者"><Switch aria-label="显示作者" isSelected={settings.home_page.show_author} onChange={(v) => update('home_page.show_author', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="显示来源"><Switch aria-label="显示来源" isSelected={settings.home_page.show_source} onChange={(v) => update('home_page.show_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             </Section>
             <Separator />
             <Section title="开机与后台">
-              <Row label="开机后自动隐藏到后台"><Switch isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)} /></Row>
-              <Row label="开机自启动"><Switch isSelected={settings.startup.auto_start} onChange={(v) => update('startup.auto_start', v)} /></Row>
+              <Row label="开机后自动隐藏到后台"><Switch aria-label="开机后自动隐藏到后台" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="开机自启动"><Switch aria-label="开机自启动" isSelected={settings.startup.auto_start} onChange={(v) => update('startup.auto_start', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             </Section>
           </Card>
         </Tabs.Panel>
@@ -91,18 +100,26 @@ export default function Settings() {
         <Tabs.Panel id="wallpaper">
           <Card className="space-y-4 p-4">
             <Section title="自动更换">
-              <Row label="启用"><Switch isSelected={settings.wallpaper.auto_change.enabled} onChange={(v) => update('wallpaper.auto_change.enabled', v)} /></Row>
+              <Row label="启用"><Switch aria-label="启用" isSelected={settings.wallpaper.auto_change.enabled} onChange={(v) => update('wallpaper.auto_change.enabled', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
               <Row label="模式">
-                <select
-                  className="rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                  value={settings.wallpaper.auto_change.mode}
-                  onChange={(e) => update('wallpaper.auto_change.mode', e.target.value)}
+                <ComboBox
+                  className="w-40"
+                  selectedKey={settings.wallpaper.auto_change.mode}
+                  onSelectionChange={(key) => update('wallpaper.auto_change.mode', String(key))}
                 >
-                  <option value="off">关闭</option>
-                  <option value="interval">间隔</option>
-                  <option value="schedule">定时</option>
-                  <option value="slideshow">轮播</option>
-                </select>
+                  <ComboBox.InputGroup>
+                    <Input />
+                    <ComboBox.Trigger />
+                  </ComboBox.InputGroup>
+                  <ComboBox.Popover>
+                    <ListBox>
+                      <ListBox.Item id="off" textValue="关闭">关闭</ListBox.Item>
+                      <ListBox.Item id="interval" textValue="间隔">间隔</ListBox.Item>
+                      <ListBox.Item id="schedule" textValue="定时">定时</ListBox.Item>
+                      <ListBox.Item id="slideshow" textValue="轮播">轮播</ListBox.Item>
+                    </ListBox>
+                  </ComboBox.Popover>
+                </ComboBox>
               </Row>
               {settings.wallpaper.auto_change.mode === 'interval' && (
                 <Row label="间隔">
@@ -112,31 +129,39 @@ export default function Settings() {
                     value={String(settings.wallpaper.auto_change.interval.value)}
                     onChange={(e) => update('wallpaper.auto_change.interval.value', Number(e.target.value))}
                   />
-                  <select
-                    className="rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                    value={settings.wallpaper.auto_change.interval.unit}
-                    onChange={(e) => update('wallpaper.auto_change.interval.unit', e.target.value)}
+                  <ComboBox
+                    className="w-24"
+                    selectedKey={settings.wallpaper.auto_change.interval.unit}
+                    onSelectionChange={(key) => update('wallpaper.auto_change.interval.unit', String(key))}
                   >
-                    <option value="seconds">秒</option>
-                    <option value="minutes">分</option>
-                    <option value="hours">时</option>
-                  </select>
+                    <ComboBox.InputGroup>
+                      <Input />
+                      <ComboBox.Trigger />
+                    </ComboBox.InputGroup>
+                    <ComboBox.Popover>
+                      <ListBox>
+                        <ListBox.Item id="seconds" textValue="秒">秒</ListBox.Item>
+                        <ListBox.Item id="minutes" textValue="分">分</ListBox.Item>
+                        <ListBox.Item id="hours" textValue="时">时</ListBox.Item>
+                      </ListBox>
+                    </ComboBox.Popover>
+                  </ComboBox>
                 </Row>
               )}
             </Section>
             <Separator />
             <Section title="历史记录">
-              <Row label="自动保存历史壁纸副本"><Switch isSelected={settings.wallpaper.history_save_copy} onChange={(v) => update('wallpaper.history_save_copy', v)} /></Row>
+              <Row label="自动保存历史壁纸副本"><Switch aria-label="自动保存历史壁纸副本" isSelected={settings.wallpaper.history_save_copy} onChange={(v) => update('wallpaper.history_save_copy', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             </Section>
           </Card>
         </Tabs.Panel>
 
         <Tabs.Panel id="content">
           <Card className="space-y-4 p-4">
-            <Row label="显示 NSFW 内容"><Switch isSelected={settings.wallpaper.allow_NSFW} onChange={(v) => update('wallpaper.allow_NSFW', v)} /></Row>
+            <Row label="显示 NSFW 内容"><Switch aria-label="显示 NSFW 内容" isSelected={settings.wallpaper.allow_NSFW} onChange={(v) => update('wallpaper.allow_NSFW', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             <Separator />
             <Section title="商店源">
-              <Row label="使用自定义源"><Switch isSelected={settings.store.use_custom_source} onChange={(v) => update('store.use_custom_source', v)} /></Row>
+              <Row label="使用自定义源"><Switch aria-label="使用自定义源" isSelected={settings.store.use_custom_source} onChange={(v) => update('store.use_custom_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
               {settings.store.use_custom_source && (
                 <Row label="自定义源 URL">
                   <Input
@@ -207,7 +232,7 @@ export default function Settings() {
             <Row label="默认 Referer">
               <Input fullWidth value={settings.sniff.referer} onChange={(e) => update('sniff.referer', e.target.value)} />
             </Row>
-            <Row label="自动使用输入链接作为 Referer"><Switch isSelected={settings.sniff.use_source_as_referer} onChange={(v) => update('sniff.use_source_as_referer', v)} /></Row>
+            <Row label="自动使用输入链接作为 Referer"><Switch aria-label="自动使用输入链接作为 Referer" isSelected={settings.sniff.use_source_as_referer} onChange={(v) => update('sniff.use_source_as_referer', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             <Row label="超时时间 (秒)">
               <Input type="number" className="w-24" value={String(settings.sniff.timeout_seconds)} onChange={(e) => update('sniff.timeout_seconds', Number(e.target.value))} />
             </Row>
@@ -215,19 +240,7 @@ export default function Settings() {
         </Tabs.Panel>
 
         <Tabs.Panel id="appearance">
-          <Card className="space-y-4 p-4">
-            <Row label="界面主题">
-              <select
-                className="rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                value={settings.ui.theme}
-                onChange={(e) => update('ui.theme', e.target.value)}
-              >
-                <option value="system">跟随系统</option>
-                <option value="light">浅色</option>
-                <option value="dark">深色</option>
-              </select>
-            </Row>
-          </Card>
+          <AppearanceSettingsPanel settings={settings} onUpdate={update} />
         </Tabs.Panel>
 
         <Tabs.Panel id="about">
@@ -342,28 +355,32 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
         {providers.length === 0 && (
           <p className="text-sm text-muted">尚未配置任何图片生成提供商</p>
         )}
-        <div className="space-y-2">
-          {providers.map((p) => (
-            <div key={p.id} className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}>
-              <div className="flex items-center gap-3">
-                <input
-                  type="radio"
-                  name="active_provider"
-                  checked={activeId === p.id}
-                  onChange={() => onUpdate('generate.active_provider_id', p.id)}
-                  className="h-4 w-4"
-                />
-                <div>
-                  <div className="text-sm font-medium">{p.name}</div>
-                  <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
-                </div>
-              </div>
-              <Button isIconOnly variant="ghost" size="sm" onPress={() => removeProvider(p.id)}>
-                <Trash2 size={14} className="text-danger" />
-              </Button>
-            </div>
-          ))}
-        </div>
+            <RadioGroup
+              value={activeId}
+              onChange={(v) => onUpdate('generate.active_provider_id', v)}
+              className="space-y-2"
+            >
+              {providers.map((p) => (
+                <Radio
+                  key={p.id}
+                  value={p.id}
+                  className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}
+                >
+                  <div className="flex flex-1 items-center gap-3">
+                    <Radio.Control>
+                      <Radio.Indicator />
+                    </Radio.Control>
+                    <Radio.Content>
+                      <div className="text-sm font-medium">{p.name}</div>
+                      <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
+                    </Radio.Content>
+                  </div>
+                  <Button isIconOnly variant="ghost" size="sm" onPress={() => removeProvider(p.id)}>
+                    <Trash2 size={14} className="text-danger" />
+                  </Button>
+                </Radio>
+              ))}
+            </RadioGroup>
       </Section>
 
       <Separator />
@@ -384,35 +401,53 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
             {mdProviders && (
               <>
                 <div>
-                  <label className="mb-1 block text-xs text-muted">提供商</label>
-                  <select
-                    className="w-full rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                    value={selectedProvider}
-                    onChange={(e) => { setSelectedProvider(e.target.value); setSelectedModel(''); }}
+                  <Label className="mb-1 block text-xs text-muted">提供商</Label>
+                  <ComboBox
+                    className="w-full"
+                    selectedKey={selectedProvider || null}
+                    onSelectionChange={(key) => { setSelectedProvider(String(key || '')); setSelectedModel(''); }}
                   >
-                    <option value="">选择提供商</option>
-                    {mdProviders.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name} ({p.models.length} 个模型)</option>
-                    ))}
-                  </select>
+                    <ComboBox.InputGroup>
+                      <Input placeholder="选择提供商" />
+                      <ComboBox.Trigger />
+                    </ComboBox.InputGroup>
+                    <ComboBox.Popover>
+                      <ListBox>
+                        {mdProviders.map((p) => (
+                          <ListBox.Item key={p.id} id={p.id} textValue={`${p.name} (${p.models.length} 个模型)`}>
+                            {p.name} ({p.models.length} 个模型)
+                          </ListBox.Item>
+                        ))}
+                      </ListBox>
+                    </ComboBox.Popover>
+                  </ComboBox>
                 </div>
                 {currentMdProvider && (
                   <div>
-                    <label className="mb-1 block text-xs text-muted">模型</label>
-                    <select
-                      className="w-full rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
+                    <Label className="mb-1 block text-xs text-muted">模型</Label>
+                    <ComboBox
+                      className="w-full"
+                      selectedKey={selectedModel || null}
+                      onSelectionChange={(key) => setSelectedModel(String(key || ''))}
                     >
-                      <option value="">选择模型</option>
-                      {currentMdProvider.models.map((m) => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </select>
+                      <ComboBox.InputGroup>
+                        <Input placeholder="选择模型" />
+                        <ComboBox.Trigger />
+                      </ComboBox.InputGroup>
+                      <ComboBox.Popover>
+                        <ListBox>
+                          {currentMdProvider.models.map((m) => (
+                            <ListBox.Item key={m.id} id={m.id} textValue={m.name}>
+                              {m.name}
+                            </ListBox.Item>
+                          ))}
+                        </ListBox>
+                      </ComboBox.Popover>
+                    </ComboBox>
                   </div>
                 )}
                 <div>
-                  <label className="mb-1 block text-xs text-muted">API Key</label>
+                  <Label className="mb-1 block text-xs text-muted">API Key</Label>
                   <Input
                     type="password"
                     fullWidth
@@ -430,23 +465,31 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
         {showAddCustom && (
           <div className="mt-3 space-y-3 rounded-lg border border-border p-3">
             <div>
-              <label className="mb-1 block text-xs text-muted">名称</label>
+              <Label className="mb-1 block text-xs text-muted">名称</Label>
               <Input fullWidth value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="例如：火山引擎" />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-muted">格式</label>
-              <select
-                className="w-full rounded-md border border-border bg-surface px-2 py-1 text-sm"
-                value={customFormat}
-                onChange={(e) => setCustomFormat(e.target.value as ImageProviderConfig['format'])}
+              <Label className="mb-1 block text-xs text-muted">格式</Label>
+              <ComboBox
+                className="w-full"
+                selectedKey={customFormat}
+                onSelectionChange={(key) => setCustomFormat(String(key) as ImageProviderConfig['format'])}
               >
-                <option value="openai">OpenAI</option>
-                <option value="volcano">火山引擎</option>
-                <option value="openai-compatible">OpenAI 兼容</option>
-              </select>
+                <ComboBox.InputGroup>
+                  <Input />
+                  <ComboBox.Trigger />
+                </ComboBox.InputGroup>
+                <ComboBox.Popover>
+                  <ListBox>
+                    <ListBox.Item id="openai" textValue="OpenAI">OpenAI</ListBox.Item>
+                    <ListBox.Item id="volcano" textValue="火山引擎">火山引擎</ListBox.Item>
+                    <ListBox.Item id="openai-compatible" textValue="OpenAI 兼容">OpenAI 兼容</ListBox.Item>
+                  </ListBox>
+                </ComboBox.Popover>
+              </ComboBox>
             </div>
             <div>
-              <label className="mb-1 block text-xs text-muted">端点 (Base URL)</label>
+              <Label className="mb-1 block text-xs text-muted">端点 (Base URL)</Label>
               <Input
                 fullWidth
                 value={customEndpoint}
@@ -455,17 +498,51 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-muted">模型 ID</label>
+              <Label className="mb-1 block text-xs text-muted">模型 ID</Label>
               <Input fullWidth value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="例如：gpt-image-1" />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-muted">API Key</label>
+              <Label className="mb-1 block text-xs text-muted">API Key</Label>
               <Input type="password" fullWidth value={customApiKey} onChange={(e) => setCustomApiKey(e.target.value)} placeholder="输入 API Key" />
             </div>
             <Button size="sm" onPress={addCustom} isDisabled={!customName || !customEndpoint || !customApiKey || !customModel}>添加</Button>
           </div>
         )}
       </Section>
+    </Card>
+  );
+}
+
+function AppearanceSettingsPanel({ settings, onUpdate }: { settings: AppSettings; onUpdate: (key: string, value: unknown) => void }) {
+  const { setTheme } = useThemeContext();
+
+  const handleThemeChange = (key: React.Key | null) => {
+    const next = String(key || 'system') as 'system' | 'light' | 'dark';
+    setTheme(next);
+    onUpdate('ui.theme', next);
+  };
+
+  return (
+    <Card className="space-y-4 p-4">
+      <Row label="界面主题">
+        <ComboBox
+          className="w-40"
+          selectedKey={settings.ui.theme}
+          onSelectionChange={handleThemeChange}
+        >
+          <ComboBox.InputGroup>
+            <Input />
+            <ComboBox.Trigger />
+          </ComboBox.InputGroup>
+          <ComboBox.Popover>
+            <ListBox>
+              <ListBox.Item id="system" textValue="跟随系统">跟随系统</ListBox.Item>
+              <ListBox.Item id="light" textValue="浅色">浅色</ListBox.Item>
+              <ListBox.Item id="dark" textValue="深色">深色</ListBox.Item>
+            </ListBox>
+          </ComboBox.Popover>
+        </ComboBox>
+      </Row>
     </Card>
   );
 }

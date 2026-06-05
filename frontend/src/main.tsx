@@ -1,6 +1,7 @@
 import { StrictMode, useState, useEffect, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Loader2, AlertTriangle, Sprout } from 'lucide-react';
+import { Button, ProgressBar } from '@heroui/react';
 import './index.css';
 import App from './App';
 
@@ -73,12 +74,15 @@ function BridgeLoader() {
             <div className="text-sm text-muted">
               已等待 {(elapsed / 1000).toFixed(1)}s / {(BRIDGE_TIMEOUT_MS / 1000).toFixed(0)}s
             </div>
-            <div className="h-1.5 w-48 overflow-hidden rounded-full bg-surface-secondary">
-              <div
-                className="h-full rounded-full bg-primary transition-all"
-                style={{ width: `${Math.min(100, (elapsed / BRIDGE_TIMEOUT_MS) * 100)}%` }}
-              />
-            </div>
+            <ProgressBar
+              aria-label="连接进度"
+              className="w-48"
+              value={Math.min(100, (elapsed / BRIDGE_TIMEOUT_MS) * 100)}
+            >
+              <ProgressBar.Track>
+                <ProgressBar.Fill />
+              </ProgressBar.Track>
+            </ProgressBar>
           </>
         ) : (
           <>
@@ -89,12 +93,7 @@ function BridgeLoader() {
             <div className="max-w-xs text-center text-sm text-muted">
               前端无法连接到 pywebview 后端。请确认应用是通过桌面宿主（Python）启动的，而不是直接在浏览器中打开。
             </div>
-            <button
-              onClick={() => window.location.reload()}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
-            >
-              重新连接
-            </button>
+            <Button onPress={() => window.location.reload()}>重新连接</Button>
           </>
         )}
       </div>

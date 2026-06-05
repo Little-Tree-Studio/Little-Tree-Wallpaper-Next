@@ -17,6 +17,7 @@ from backend.services.sys_wallpaper import get_sys_wallpaper, set_wallpaper as s
 from backend.services.bing import BingService
 from backend.services.spotlight import SpotlightService
 from backend.services.sniff import SniffService
+from backend.services.intelligent_market import IntelligentMarketService
 
 ensure_dirs()
 
@@ -27,6 +28,10 @@ class BackendAPI:
         self.bing_service = BingService()
         self.spotlight_service = SpotlightService()
         self.sniff_service = SniffService()
+        self.im_service = IntelligentMarketService(
+            cache_dir=get_cache_dir(),
+            settings_store=self.store,
+        )
         self._ensure_favorites()
         self._ensure_history()
 
@@ -210,11 +215,50 @@ class BackendAPI:
         except Exception as e:
             logger.error(f"Clipboard error: {e}")
 
-    def save_file_dialog(self, data: str, filename: str) -> None:
-        save_dir = self._downloads_dir()
-        save_dir.mkdir(parents=True, exist_ok=True)
-        path = save_dir / filename
-        path.write_text(data, encoding="utf-8")
+    def save_file_dialog(self, data: str, filename: str) -> str | None:
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            import base64
+            root = tk.Tk()
+            root.withdraw()
+            path = filedialog.asksaveasfilename(
+                defaultextension=".jpg",
+                initialfile=filename,
+                filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif"), ("All files", "*.*")],
+            )
+            root.destroy()
+            if not path:
+                return None
+            # data may be a data URI like data:image/jpeg;base64,/9j/4AAQ...
+            content = data
+            if content.startswith("data:"):
+                header, b64 = content.split(",", 1)
+                content = base64.b64decode(b64)
+            else:
+                content = content.encode("utf-8")
+            Path(path).write_bytes(content)
+            return str(path)
+        except Exception:
+            return None
+
+    def save_base64_file(self, data: str, filename: str) -> str | None:
+        try:
+            import base64
+            save_dir = self._downloads_dir()
+            save_dir.mkdir(parents=True, exist_ok=True)
+            filepath = save_dir / filename
+            content = data
+            if content.startswith("data:"):
+                header, b64 = content.split(",", 1)
+                content = base64.b64decode(b64)
+            else:
+                content = content.encode("utf-8")
+            filepath.write_bytes(content)
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"Save base64 file error: {e}")
+            return None
 
     def sniff_images(self, url: str) -> list[dict[str, Any]]:
         try:
@@ -274,6 +318,31 @@ class BackendAPI:
     def install_store_resource(self, resource: dict[str, Any]) -> None:
         logger.info(f"Installing {resource}")
 
+    def list_intelligent_market_sources(self, force: bool = False) -> list[dict[str, Any]]:
+        try:
+            return self.im_service.list_sources(force=force)
+        except Exception as e:
+            logger.error(f"list_intelligent_market_sources error: {e}")
+            return []
+
+    def check_intelligent_market_sources_health(
+        self, source_ids: list[str] | None = None, force: bool = False
+    ) -> list[dict[str, Any]]:
+        try:
+            return self.im_service.check_sources_health(source_ids=source_ids, force=force)
+        except Exception as e:
+            logger.error(f"check_intelligent_market_sources_health error: {e}")
+            return []
+
+    def execute_intelligent_market_source(
+        self, source_id: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        try:
+            return self.im_service.execute_source(source_id, parameters or {})
+        except Exception as e:
+            logger.error(f"execute_intelligent_market_source error: {e}")
+            return []
+
     def get_settings(self) -> dict[str, Any]:
         return self.store.as_dict()
 
@@ -318,6 +387,10 @@ class BackendAPI:
             os.system(f'open "{path}"')
         else:
             os.system(f'xdg-open "{path}"')
+
+    def open_file(self, path: str) -> None:
+        # 使用系统默认应用打开文件（在 Windows 上 os.startfile 既可打开文件也可打开目录）
+        self.open_folder(path)
 
     def open_url(self, url: str) -> None:
         webbrowser.open(url)
@@ -369,15 +442,49 @@ class BackendAPI:
 
     # --- New API methods for enhanced functionality ---
 
-    def query_bing(self, category: str = "daily", market: str = "zh-CN", count: int = 8, quality: str = "highDef") -> list[dict[str, Any]]:
+    def query_bing(
+        self,
+        category: str = "daily",
+        market: str = "zh-CN",
+        count: int = 8,
+        quality: str = "highDef",
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
         if category == "recent":
-            return self.bing_service.query_recent(market=market, count=count, quality=quality)
-        return self.bing_service.query_daily(market=market, count=count, quality=quality)
+            return self.bing_service.query_recent(
+                market=market, count=count, quality=quality, force_refresh=force_refresh
+            )
+        return self.bing_service.query_daily(
+            market=market, count=count, quality=quality, force_refresh=force_refresh
+        )
 
-    def query_spotlight(self, source: str = "local", limit: int = 20, market: str = "zh-CN") -> list[dict[str, Any]]:
+    def query_spotlight(
+        self,
+        source: str = "local",
+        limit: int = 20,
+        market: str = "zh-CN",
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
         if source == "online":
-            return self.spotlight_service.list_online_candidates(limit=limit, market=market)
-        return self.spotlight_service.list_local_candidates(limit=limit)
+            return self.spotlight_service.list_online_candidates(
+                limit=limit, market=market, force_refresh=force_refresh
+            )
+        return self.spotlight_service.list_local_candidates(
+            limit=limit, force_refresh=force_refresh
+        )
+
+    def clear_source_cache(self, source: str | None = None) -> dict[str, Any]:
+        """Drop cached Bing/Spotlight responses so the next call refetches."""
+        cleared: list[str] = []
+        if source in (None, "bing"):
+            from backend.services.bing import BingService
+            BingService._cache.clear()
+            cleared.append("bing")
+        if source in (None, "spotlight"):
+            from backend.services.spotlight import SpotlightService
+            SpotlightService._cache.clear()
+            cleared.append("spotlight")
+        return {"cleared": cleared}
 
     def bootstrap(self) -> dict[str, Any]:
         home_bing = self.bing_service.query_daily(market="zh-CN", count=1)

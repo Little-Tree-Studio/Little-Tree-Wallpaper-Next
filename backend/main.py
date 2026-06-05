@@ -17,7 +17,12 @@ logger.add(get_cache_dir() / "logs" / "app_{time}.log", rotation="00:00", retent
 def main() -> None:
     frontend_dir = BASE_DIR / "frontend" / "dist"
     index_html = frontend_dir / "index.html"
-    
+    # pywebview on Windows requires an .ico file; fall back to .png for other
+    # platforms that accept it.
+    icon_path = frontend_dir / "logo.ico"
+    if not icon_path.exists():
+        icon_path = frontend_dir / "logo.png"
+
     # If dist doesn't exist, warn and try dev mode or create minimal
     if not index_html.exists():
         logger.warning(f"Frontend build not found at {index_html}. Please run 'npm run build' in frontend/")
@@ -39,7 +44,7 @@ def main() -> None:
         min_size=(800, 600),
         text_select=True,
     )
-    webview.start(debug=True)
+    webview.start(debug=True, icon=str(icon_path) if icon_path.exists() else None)
 
 if __name__ == "__main__":
     main()

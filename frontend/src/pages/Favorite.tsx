@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  Card, Button, Input, Badge, Modal, Spinner,
+  Card, Button, Input, Badge, Modal, Spinner, Label,
 } from '@heroui/react';
 import {
   FolderPlus, Pencil, Trash2, ImageIcon,
@@ -125,11 +125,11 @@ export default function Favorite() {
             <h3 className="mb-4 text-lg font-bold">编辑收藏</h3>
             <div className="space-y-3">
               <div>
-                <label className="text-sm">标题</label>
+                <Label className="text-sm">标题</Label>
                 <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
               </div>
               <div>
-                <label className="text-sm">标签 (用逗号分隔)</label>
+                <Label className="text-sm">标签 (用逗号分隔)</Label>
                 <Input value={editTags} onChange={(e) => setEditTags(e.target.value)} />
               </div>
               <div className="flex justify-end gap-2">

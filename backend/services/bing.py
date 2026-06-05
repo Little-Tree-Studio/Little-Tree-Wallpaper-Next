@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 import requests
 
 from backend.models import WallpaperItem
+from backend.services.cache import ResponseCache
 
 
 class BingService:
@@ -27,17 +28,43 @@ class BingService:
         "ultraHighDef": "UHD.jpg",
     }
 
+    # Bing daily image rotates once per day; recent gallery shifts a few times
+    # per day. Use long TTLs and let the refresh button bypass them.
+    _cache = ResponseCache("bing", default_ttl=21600.0)
+    _daily_ttl = 86400.0
+    _recent_ttl = 21600.0
+
     def query_daily(
         self,
         market: str = "zh-CN",
         count: int = 8,
         quality: str = "highDef",
+        force_refresh: bool = False,
     ) -> list[dict[str, Any]]:
         normalized_quality = self._normalize_quality(quality)
-        image = self._get_daily_wallpaper(market)
+        cache_key = f"daily:{market}:{normalized_quality}"
+        if not force_refresh:
+            # 每日壁纸按"本地自然日"判断新鲜度：跨过 0:00 后强制重新拉取，
+            # 避免前一天 23:00 的缓存把今天的图也覆盖成昨天的。
+            cached = self._cache.get_same_day(cache_key, ttl=self._daily_ttl)
+            if cached is not None:
+                return cached
+
+        try:
+            image = self._get_daily_wallpaper(market)
+        except Exception:
+            stale = self._cache.get_stale(cache_key)
+            if stale is not None:
+                return stale
+            raise
         if not image:
+            stale = self._cache.get_stale(cache_key)
+            if stale is not None:
+                return stale
             return []
-        return [self._normalize_daily_item(image, normalized_quality)]
+        items = [self._normalize_daily_item(image, normalized_quality)]
+        self._cache.set(cache_key, items)
+        return items
 
     def query_recent(
         self,
@@ -45,27 +72,43 @@ class BingService:
         count: int = 8,
         quality: str = "highDef",
         ssd: str | None = None,
+        force_refresh: bool = False,
     ) -> list[dict[str, Any]]:
         normalized_quality = self._normalize_quality(quality)
-        response = requests.get(
-            self.gallery_endpoint,
-            params={
-                "format": "json",
-                "ssd": ssd or datetime.utcnow().strftime("%Y%m%d"),
-                "mkt": market,
-            },
-            timeout=20,
-            headers={
-                "User-Agent": "LittleTreeWallpaperNext/0.1.0",
-                "Accept-Language": market,
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
+        effective_count = max(1, min(count, 20))
+        cache_key = f"recent:{market}:{normalized_quality}:{effective_count}"
+        if not force_refresh:
+            cached = self._cache.get(cache_key, ttl=self._recent_ttl)
+            if cached is not None:
+                return cached
+
+        try:
+            response = requests.get(
+                self.gallery_endpoint,
+                params={
+                    "format": "json",
+                    "ssd": ssd or datetime.utcnow().strftime("%Y%m%d"),
+                    "mkt": market,
+                },
+                timeout=20,
+                headers={
+                    "User-Agent": "LittleTreeWallpaperNext/0.1.0",
+                    "Accept-Language": market,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            stale = self._cache.get_stale(cache_key)
+            if stale is not None:
+                return stale
+            raise
+
         gallery = payload.get("data", {})
         items: list[dict[str, Any]] = []
-        for image in gallery.get("images", [])[: max(1, min(count, 20))]:
+        for image in gallery.get("images", [])[:effective_count]:
             items.append(self._normalize_recent_item(image, normalized_quality))
+        self._cache.set(cache_key, items)
         return items
 
     def _normalize_daily_item(

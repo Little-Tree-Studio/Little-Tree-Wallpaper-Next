@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Card, Button, Input,
+  Card, Button, Input, ComboBox, ListBox, TextArea, NumberField,
 } from '@heroui/react';
 import { Wand2, Download, Image as ImageIcon, Loader2, Trash2, Settings } from 'lucide-react';
 import { getSetting, downloadFile, setWallpaper, addToHistory } from '@/api/backend';
@@ -136,21 +136,31 @@ export default function Generate() {
               </Button>
             </div>
           ) : (
-            <select
-              className="ml-auto rounded-md border border-border bg-surface px-2 py-1 text-sm"
-              value={activeProviderId}
-              onChange={(e) => setActiveProviderId(e.target.value)}
+            <ComboBox
+              className="ml-auto w-48"
+              selectedKey={activeProviderId || null}
+              onSelectionChange={(key) => setActiveProviderId(String(key || ''))}
             >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+              <ComboBox.InputGroup>
+                <Input />
+                <ComboBox.Trigger />
+              </ComboBox.InputGroup>
+              <ComboBox.Popover>
+                <ListBox>
+                  {providers.map((p) => (
+                    <ListBox.Item key={p.id} id={p.id} textValue={p.name}>
+                      {p.name}
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </ComboBox.Popover>
+            </ComboBox>
           )}
         </div>
 
         <div>
-          <textarea
-            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-primary resize-none"
+          <TextArea
+            className="w-full"
             rows={3}
             placeholder="描述你想要生成的图片..."
             value={prompt}
@@ -161,27 +171,39 @@ export default function Generate() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted">尺寸</span>
-            <select
-              className="rounded-md border border-border bg-surface px-2 py-1 text-sm"
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
+            <ComboBox
+              className="w-32"
+              selectedKey={size}
+              onSelectionChange={(key) => setSize(String(key))}
             >
-              {sizeOptions.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-              {sizeOptions.length === 0 && <option value={size}>{size}</option>}
-            </select>
+              <ComboBox.InputGroup>
+                <Input />
+                <ComboBox.Trigger />
+              </ComboBox.InputGroup>
+              <ComboBox.Popover>
+                <ListBox>
+                  {sizeOptions.map((s) => (
+                    <ListBox.Item key={s} id={s} textValue={s}>{s}</ListBox.Item>
+                  ))}
+                  {sizeOptions.length === 0 && <ListBox.Item id={size} textValue={size}>{size}</ListBox.Item>}
+                </ListBox>
+              </ComboBox.Popover>
+            </ComboBox>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted">数量</span>
-            <Input
-              type="number"
-              min={1}
-              max={4}
-              className="w-16"
-              value={String(n)}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setN(Math.max(1, Math.min(4, Number(e.target.value) || 1)))}
-            />
+            <NumberField
+              minValue={1}
+              maxValue={4}
+              value={n}
+              onChange={(value) => setN(value ?? 1)}
+            >
+              <NumberField.Group>
+                <NumberField.DecrementButton />
+                <NumberField.Input className="w-16" />
+                <NumberField.IncrementButton />
+              </NumberField.Group>
+            </NumberField>
           </div>
           <Button
             className="ml-auto"

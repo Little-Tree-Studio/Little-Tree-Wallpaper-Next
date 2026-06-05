@@ -6,3 +6,5 @@ __pycache__/
 .env
 *.log
 .playwright-mcp/
+AGENTS.md
+test-viewer.png
