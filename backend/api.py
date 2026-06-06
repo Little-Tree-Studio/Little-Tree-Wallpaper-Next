@@ -278,6 +278,37 @@ class BackendAPI:
             logger.error(f"Sniff error: {e}")
             return []
 
+    def search_baidu_images(self, text: str, index: int = 0, size: int = 30) -> list[dict[str, Any]]:
+        """调用百度图片搜索接口返回图片列表。"""
+        import requests
+        import urllib.parse
+        if not text:
+            return []
+        uri = (
+            "https://m.baidu.com/sf/vsearch/image/search/wisesearchresult?"
+            f"word={urllib.parse.quote(text)}&pn={index}&rn={size}"
+        )
+        headers = {"User-Agent": self.store.get("sniff.user_agent", "Mozilla/5.0")}
+        try:
+            resp = requests.get(uri, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            return [
+                {
+                    "src": p.get("thumbnailUrl"),
+                    "ori": p.get("objurl"),
+                    "url": p.get("fromUrl"),
+                    "title": p.get("oriTitle"),
+                    "width": p.get("width"),
+                    "height": p.get("height"),
+                    "hex": p.get("shituToken"),
+                }
+                for p in data.get("linkData", [])
+            ]
+        except Exception as e:
+            logger.error(f"Baidu image search error: {e}")
+            return []
+
     def get_favorites(self) -> dict[str, Any]:
         return self._load_favorites()
 

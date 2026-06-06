@@ -301,6 +301,10 @@ export async function sniffImages(url: string): Promise<SniffedImage[]> {
   return call('sniff_images', url);
 }
 
+export async function searchBaiduImages(text: string, index: number = 0, size: number = 30): Promise<SniffedImage[]> {
+  return call('search_baidu_images', text, index, size);
+}
+
 export async function getFavorites(): Promise<{ folders: FavoriteFolder[]; items: FavoriteItem[] }> {
   return call('get_favorites');
 }

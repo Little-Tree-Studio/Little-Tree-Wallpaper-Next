@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Home, Image, Wand2, Search, Star, Store, Settings, Wrench,
+  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe,
 } from 'lucide-react';
 import { Button } from '@heroui/react';
 
@@ -14,6 +14,7 @@ const items: NavItem[] = [
   { id: 'home', label: '首页', icon: Home },
   { id: 'resource', label: '资源', icon: Image },
   { id: 'generate', label: '生成', icon: Wand2 },
+  { id: 'search', label: '搜索', icon: Globe },
   { id: 'sniff', label: '嗅探', icon: Search },
   { id: 'favorite', label: '收藏', icon: Star },
   { id: 'store', label: '商店', icon: Store },

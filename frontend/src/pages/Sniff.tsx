@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Card, Button, Input, Spinner, Badge } from '@heroui/react';
-import { Search, ImageIcon, Heart, Download, Copy, CheckSquare, Square } from 'lucide-react';
+import { Card, Button, Input, Spinner, Chip, Tooltip } from '@heroui/react';
+import { Search, ImageIcon, Heart, Download, Copy, CheckSquare, Square, Eye } from 'lucide-react';
 import { sniffImages, setWallpaper, downloadFile, copyToClipboard, addFavorite } from '@/api/backend';
+import { useImageViewer } from '@/components/ImageViewer';
 import type { SniffedImage } from '@/types';
 
 export default function Sniff() {
@@ -10,6 +11,7 @@ export default function Sniff() {
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [hasSearched, setHasSearched] = useState(false);
+  const { openViewer } = useImageViewer();
 
   const handleSniff = async () => {
     if (!url.trim()) return;
@@ -40,6 +42,16 @@ export default function Sniff() {
   const handleSetWallpaper = async (img: SniffedImage) => {
     const path = await downloadFile(img.url, img.filename);
     if (path) await setWallpaper(path);
+  };
+
+  const handleView = (startIndex: number) => {
+    const items = images.map((i) => ({
+      src: i.url,
+      title: i.filename,
+      source_url: i.url,
+      source_type: 'sniff',
+    }));
+    openViewer(items, startIndex);
   };
 
   const handleFavoriteSelected = async () => {
@@ -73,7 +85,7 @@ export default function Sniff() {
       {selected.size > 0 && (
         <Card className="p-3">
           <div className="flex items-center gap-4">
-            <Badge className="shrink-0 whitespace-nowrap">已选择 {selected.size} 张</Badge>
+            <Chip className="shrink-0 whitespace-nowrap">已选择 {selected.size} 张</Chip>
             <Button size="sm" variant="secondary" onPress={handleFavoriteSelected}><Heart size={14} /> 批量收藏</Button>
             <Button size="sm" variant="ghost" onPress={() => {
               const urls = selectedImages.map((i) => i.url).join('\n');
@@ -86,7 +98,7 @@ export default function Sniff() {
       {loading && <div className="flex justify-center py-10"><Spinner size="sm" /></div>}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {images.map((img) => {
+        {images.map((img, idx) => {
           const isSel = selected.has(img.id);
           return (
             <div
@@ -106,13 +118,28 @@ export default function Sniff() {
               </div>
               <div className="absolute inset-x-0 bottom-0 flex gap-1 bg-black/60 p-1 opacity-0 transition-opacity group-hover:opacity-100">
                 <span onClick={(e) => { e.stopPropagation(); }}>
-                  <Button size="sm" variant="tertiary" className="h-7 min-w-0 px-2 text-xs" onPress={() => handleSetWallpaper(img)}><ImageIcon size={12} /> 壁纸</Button>
+                  <Tooltip delay={0}>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => handleView(idx)} aria-label="查看"><Eye size={14} /></Button>
+                    <Tooltip.Content><p>查看</p></Tooltip.Content>
+                  </Tooltip>
                 </span>
                 <span onClick={(e) => { e.stopPropagation(); }}>
-                  <Button size="sm" variant="tertiary" className="h-7 min-w-0 px-2 text-xs" onPress={() => addFavorite({ folder_id: 'default', title: img.filename, description: '', tags: [], preview_url: img.url, local_path: null, source_type: 'sniff', source_url: img.url })}><Heart size={12} /></Button>
+                  <Tooltip delay={0}>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => handleSetWallpaper(img)} aria-label="设为壁纸"><ImageIcon size={14} /></Button>
+                    <Tooltip.Content><p>设为壁纸</p></Tooltip.Content>
+                  </Tooltip>
                 </span>
                 <span onClick={(e) => { e.stopPropagation(); }}>
-                  <Button size="sm" variant="tertiary" className="h-7 min-w-0 px-2 text-xs" onPress={() => downloadFile(img.url, img.filename)}><Download size={12} /></Button>
+                  <Tooltip delay={0}>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => addFavorite({ folder_id: 'default', title: img.filename, description: '', tags: [], preview_url: img.url, local_path: null, source_type: 'sniff', source_url: img.url })} aria-label="收藏"><Heart size={14} /></Button>
+                    <Tooltip.Content><p>收藏</p></Tooltip.Content>
+                  </Tooltip>
+                </span>
+                <span onClick={(e) => { e.stopPropagation(); }}>
+                  <Tooltip delay={0}>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => downloadFile(img.url, img.filename)} aria-label="下载"><Download size={14} /></Button>
+                    <Tooltip.Content><p>下载</p></Tooltip.Content>
+                  </Tooltip>
                 </span>
               </div>
             </div>

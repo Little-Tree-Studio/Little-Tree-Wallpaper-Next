@@ -81,7 +81,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "zhaoyu": {"catalog": "all", "theme": "all", "author": "all"},
         "custom": {"items": []},
     },
-    "im": {"mirror_preference": "mirror_first"},
+    "im": {"mirror_preference": "mirror_first", "show_disclaimer": True},
     "store": {"use_custom_source": False, "custom_source_url": ""},
     "generate": {
         "providers": [],

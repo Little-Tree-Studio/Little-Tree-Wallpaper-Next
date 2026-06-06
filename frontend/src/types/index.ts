@@ -118,6 +118,10 @@ export interface AppSettings {
     default_n: number;
     default_response_format: 'url' | 'b64_json';
   };
+  im?: {
+    mirror_preference?: string;
+    show_disclaimer?: boolean;
+  };
 }
 
 export interface ImageProviderConfig {

@@ -370,10 +370,11 @@ class IntelligentMarketService:
             )
             if cached_path is not None:
                 metadata.setdefault("original_url", image_url)
+                local_path = str(cached_path)
                 item = {
                     **item,
-                    "image_url": str(cached_path),
-                    "preview_url": str(cached_path),
+                    "image_url": local_path,
+                    "preview_url": self._build_preview_value(local_path),
                     "metadata": metadata,
                 }
             else:
@@ -656,10 +657,18 @@ class IntelligentMarketService:
                     "health_status_code": status,
                     "health_probe_url": probe_url,
                 }
-            if status in {401, 403}:
+            if status == 401:
                 return {
                     "health_status": "unknown",
-                    "health_message": error or "需要鉴权或被上游拦截",
+                    "health_message": error or "需要鉴权",
+                    "health_checked_at": health_checked_at,
+                    "health_status_code": status,
+                    "health_probe_url": probe_url,
+                }
+            if status == 403:
+                return {
+                    "health_status": "unhealthy",
+                    "health_message": error or "被上游拦截 (HTTP 403)",
                     "health_checked_at": health_checked_at,
                     "health_status_code": status,
                     "health_probe_url": probe_url,
@@ -1031,10 +1040,19 @@ class IntelligentMarketService:
     def _build_preview_value(self, image_value: str) -> str:
         raw = str(image_value or "").strip()
         if not raw:
+            logger.debug("_build_preview_value: empty input")
             return raw
         candidate = Path(raw)
         if candidate.is_file():
-            return self._build_preview_data_url(candidate) or raw
+            logger.debug("_build_preview_value: converting local file to base64: {}", candidate)
+            data_url = self._build_preview_data_url(candidate)
+            if data_url:
+                logger.debug("_build_preview_value: base64 success, length={}", len(data_url))
+                return data_url
+            # never return raw local path to frontend (webview blocks file://)
+            logger.warning("_build_preview_value: failed to build preview data url for {}", candidate)
+            return ""
+        logger.debug("_build_preview_value: not a local file, returning as-is: {}", raw[:100])
         return raw
 
     def _build_preview_data_url(self, image_path: Path) -> str | None:
@@ -1048,9 +1066,37 @@ class IntelligentMarketService:
                 buffer = io.BytesIO()
                 preview.save(buffer, format="JPEG", quality=82, optimize=True)
                 encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+                logger.debug("preview built via Pillow, size={} bytes", len(encoded))
                 return f"data:image/jpeg;base64,{encoded}"
         except Exception as exc:
-            logger.debug("build intelligent market preview failed: {}", exc)
+            logger.debug("preview Pillow failed for {}: {}", image_path, exc)
+
+        # fallback: raw file base64 (for formats Pillow can't handle or corrupt files)
+        try:
+            data = image_path.read_bytes()
+            if not data:
+                logger.warning("preview raw fallback: empty file {}", image_path)
+                return None
+            # Cap fallback to 2MB to avoid massive data URLs
+            if len(data) > 2_000_000:
+                logger.warning("preview raw fallback: file too large {} ({} bytes), skipping", image_path, len(data))
+                return None
+            ext = image_path.suffix.lower()
+            mime_map = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+                ".avif": "image/avif",
+            }
+            mime = mime_map.get(ext, "image/jpeg")
+            encoded = base64.b64encode(data).decode("ascii")
+            logger.debug("preview built via raw fallback, size={} bytes", len(encoded))
+            return f"data:{mime};base64,{encoded}"
+        except Exception as exc2:
+            logger.debug("preview raw fallback failed for {}: {}", image_path, exc2)
             return None
 
     def _save_image_bytes(

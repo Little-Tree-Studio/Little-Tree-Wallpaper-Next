@@ -3,6 +3,7 @@ import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Resource from '@/pages/Resource';
 import Generate from '@/pages/Generate';
+import Search from '@/pages/Search';
 import Sniff from '@/pages/Sniff';
 import Favorite from '@/pages/Favorite';
 import Store from '@/pages/Store';
@@ -24,6 +25,7 @@ function App() {
             <Route index element={<Home />} />
             <Route path="resource" element={<Resource />} />
             <Route path="generate" element={<Generate />} />
+            <Route path="search" element={<Search />} />
             <Route path="sniff" element={<Sniff />} />
             <Route path="favorite" element={<Favorite />} />
             <Route path="store" element={<Store />} />
