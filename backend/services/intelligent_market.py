@@ -6,6 +6,7 @@ import io
 import json
 import mimetypes
 import re
+import ssl
 import time
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,21 @@ import aiohttp
 from loguru import logger
 from aiohttp import ClientResponseError
 from PIL import Image
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    """Create an SSL context using certifi CA bundle, falling back to system defaults."""
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        return ctx
+    except Exception:
+        pass
+    try:
+        ctx = ssl.create_default_context()
+        return ctx
+    except Exception as exc:
+        raise RuntimeError("无法创建 SSL 上下文，请检查系统证书配置") from exc
 
 
 DEFAULT_IM_REPO_OWNER = "IntelliMarkets"
@@ -180,6 +196,22 @@ class IntelligentMarketService:
         self._sources_cache: dict[str, dict[str, Any]] = {}
         self._sources_cache_timestamp = 0.0
         self._health_cache: dict[str, dict[str, Any]] = {}
+        self._ssl_context = _get_ssl_context()
+        self._connector: aiohttp.TCPConnector | None = None
+
+    def _create_session(self) -> aiohttp.ClientSession:
+        if self._connector is None:
+            self._connector = aiohttp.TCPConnector(ssl=self._ssl_context)
+        return aiohttp.ClientSession(
+            connector=self._connector,
+            timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECONDS),
+            headers={"User-Agent": "LittleTreeWallpaperNext/2.0"},
+        )
+
+    def close(self) -> None:
+        if self._connector is not None:
+            self._connector.close()
+            self._connector = None
 
     @property
     def cache_dir(self) -> Path:
@@ -229,10 +261,7 @@ class IntelligentMarketService:
         ):
             return list(self._sources_cache.values())
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECONDS),
-            headers={"User-Agent": "LittleTreeWallpaperNext/2.0"},
-        ) as session:
+        async with self._create_session() as session:
             tree_payload = await self._fetch_market_tree(session)
             json_paths = self._extract_json_paths(tree_payload)
 
@@ -281,10 +310,7 @@ class IntelligentMarketService:
         if not targets:
             return []
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECONDS),
-            headers={"User-Agent": "LittleTreeWallpaperNext/2.0"},
-        ) as session:
+        async with self._create_session() as session:
             results = await self._apply_health_statuses(
                 session,
                 sources=targets,
@@ -314,10 +340,7 @@ class IntelligentMarketService:
             raise ValueError("未找到指定的 Intelligent Market 图片源")
 
         request_info = self._build_request(source, parameters)
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECONDS),
-            headers={"User-Agent": "LittleTreeWallpaperNext/2.0"},
-        ) as session:
+        async with self._create_session() as session:
             async with session.request(
                 request_info["method"],
                 request_info["url"],

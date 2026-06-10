@@ -13,6 +13,7 @@ import {
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import IntelliMarketsPanel from '@/components/IntelliMarketsPanel';
+import WallpaperSourcesPanel from '@/components/WallpaperSourcesPanel';
 
 function formatBingDate(item: any, category: string): string {
   if (category === 'daily') return '今日';
@@ -405,7 +406,7 @@ export default function Resource() {
         </Tabs.Panel>
 
         <Tabs.Panel id="sources">
-          <div className="text-muted">壁纸源功能需要导入 .ltws 文件。请在设置 {'>'} 内容中管理壁纸源。</div>
+          <WallpaperSourcesPanel />
         </Tabs.Panel>
       </Tabs>
     </div>

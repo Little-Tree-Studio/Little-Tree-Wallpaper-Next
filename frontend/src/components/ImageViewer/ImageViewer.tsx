@@ -411,7 +411,7 @@ export default function ImageViewer() {
                 }`}
               >
                 <img
-                  src={item.preview_url || item.src}
+                  src={item.src || item.preview_url}
                   alt={item.title || ''}
                   className="h-14 w-24 object-cover"
                   loading="lazy"

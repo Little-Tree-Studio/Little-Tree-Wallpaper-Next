@@ -476,10 +476,8 @@ export default function IntelliMarketsPanel() {
                           <Select
                             key={key}
                             selectedKey={String(paramValues[key] ?? '')}
-                            onSelectionChange={(keys) => {
-                              const val = keys
-                                ? Array.from(keys as unknown as Iterable<string>)[0]
-                                : undefined;
+                            onSelectionChange={(k) => {
+                              const val = k ? String(k) : '';
                               setParamValues((c) => ({ ...c, [key]: val }));
                             }}
                           >

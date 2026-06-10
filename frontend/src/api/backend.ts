@@ -373,10 +373,6 @@ export async function openUrl(url: string): Promise<void> {
   return call('open_url', url);
 }
 
-export async function getWallpaperSources(): Promise<{ id: string; name: string; enabled: boolean }[]> {
-  return call('get_wallpaper_sources');
-}
-
 export async function selectLocalImage(): Promise<string | null> {
   return call('select_local_image');
 }
@@ -387,6 +383,10 @@ export async function exportFavorites(folderId?: string): Promise<string> {
 
 export async function importFavorites(path: string): Promise<void> {
   return call('import_favorites', path);
+}
+
+export async function getLocalImageBase64(path: string): Promise<string | null> {
+  return call('get_local_image_base64', path);
 }
 
 // --- Enhanced API methods ---
@@ -478,4 +478,230 @@ export async function executeIntelligentMarketSource(
   parameters: Record<string, unknown> = {}
 ): Promise<any[]> {
   return call('execute_intelligent_market_source', sourceId, parameters);
+}
+
+// --- Wallpaper Source API ---
+
+export interface WallpaperSource {
+  identifier: string;
+  name: string;
+  version: string;
+  description?: string;
+  details?: string;
+  logo?: string;
+  footer_text?: string;
+  enabled?: boolean;
+  source_kind?: string;
+  is_builtin?: boolean;
+  can_delete?: boolean;
+  invalid?: boolean;
+  error?: string;
+  categories?: WallpaperSourceCategory[];
+  category_groups?: WallpaperSourceCategoryGroup[];
+  apis?: WallpaperSourceApi[];
+}
+
+export interface WallpaperSourceCategory {
+  id: string;
+  name: string;
+  category?: string;
+  subcategory?: string;
+  subsubcategory?: string;
+  icon?: string;
+  description?: string;
+}
+
+export interface WallpaperSourceCategoryGroup {
+  name: string;
+  category_ids: string[];
+}
+
+export interface WallpaperSourceApi {
+  name: string;
+  description?: string;
+  logo?: string;
+  categories?: string[];
+  parameters?: WallpaperSourceApiParameter[];
+  request?: {
+    url?: string;
+    method?: string;
+    timeout_seconds?: number;
+    interval_seconds?: number;
+    body?: string;
+    body_type?: string;
+    headers?: Record<string, string>;
+  };
+  response?: {
+    format?: string;
+    type?: string;
+  };
+  mapping?: {
+    items?: string;
+    item_mapping?: Record<string, string>;
+  };
+  post_process?: Record<string, string>;
+  validation?: {
+    required_fields?: string[];
+    field_patterns?: any[];
+    quality_rules?: any[];
+  };
+  error_handling?: {
+    http_codes?: any[];
+    on_empty_response?: string;
+    on_mapping_failed?: string;
+    fallback_to?: string;
+  };
+  cache?: {
+    enabled?: boolean;
+    ttl_seconds?: number;
+    key_template?: string;
+  };
+  static_list?: { urls?: string[] };
+  static_dict?: { items?: any[] };
+}
+
+export interface WallpaperSourceApiParameter {
+  key: string;
+  label?: string;
+  type?: string;
+  default?: any;
+  choices?: string[];
+  hidden?: boolean;
+  description?: string;
+  placeholder?: string;
+  min_length?: number;
+  max_length?: number;
+}
+
+export interface WallpaperSourceCreatorPayload {
+  source: {
+    identifier: string;
+    name: string;
+    version: string;
+    description?: string;
+    details?: string;
+    logo?: string;
+    footer_text?: string;
+    merge?: {
+      enabled?: boolean;
+      strategy?: string;
+      priority?: number;
+      metadata_source?: string;
+      allow_metadata_override?: boolean;
+    };
+  };
+  config: {
+    request: {
+      global_interval_seconds?: number;
+      timeout_seconds?: number;
+      max_concurrent?: number;
+      skip_ssl_verify?: boolean;
+      user_agent?: string;
+      headers?: Array<{ key: string; value: string }>;
+      retry?: {
+        max_attempts?: number;
+        backoff_base?: number;
+        initial_delay_ms?: number;
+      };
+      cache?: {
+        enabled?: boolean;
+        default_ttl_seconds?: number;
+        max_memory_mb?: number;
+      };
+      variables?: Array<{ key: string; value: string }>;
+    };
+  };
+  categories: {
+    template?: { icon?: string; category?: string };
+    categories: WallpaperSourceCategory[];
+    category_groups?: WallpaperSourceCategoryGroup[];
+    level_icons?: {
+      category?: Array<{ key: string; value: string }>;
+      subcategory?: Array<{ key: string; value: string }>;
+      subsubcategory?: Array<{ key: string; value: string }>;
+    };
+  };
+  apis: Array<{
+    name: string;
+    description?: string;
+    logo?: string;
+    categories?: string[];
+    parameters?: WallpaperSourceApiParameter[];
+    request?: {
+      url?: string;
+      method?: string;
+      timeout_seconds?: number;
+      interval_seconds?: number;
+      body?: string;
+      body_type?: string;
+      headers?: Array<{ key: string; value: string }>;
+    };
+    response?: { format?: string; type?: string };
+    mapping?: { items?: string; item_mapping?: Array<{ key: string; value: string }> };
+    post_process?: Array<{ key: string; value: string }>;
+    validation?: {
+      required_fields?: string[];
+      field_patterns?: any[];
+      quality_rules?: any[];
+    };
+    error_handling?: {
+      http_codes?: any[];
+      on_empty_response?: string;
+      on_mapping_failed?: string;
+      fallback_to?: string;
+    };
+    cache?: { enabled?: boolean; ttl_seconds?: number; key_template?: string };
+    static_list_urls?: string[];
+    static_dict_items?: any[];
+  }>;
+}
+
+export type WallpaperSourceExternalExportFormat = 'apicore_v1' | 'apicore_v2' | 'openapi_3_2';
+
+export interface WallpaperSourceExportOptions {
+  openapi?: {
+    servers?: string[];
+    tags_by_api?: Record<string, string[]>;
+  };
+}
+
+export async function getWallpaperSources(): Promise<WallpaperSource[]> {
+  return call('get_wallpaper_sources');
+}
+
+export async function setWallpaperSourceEnabled(sourceId: string, enabled: boolean): Promise<WallpaperSource> {
+  return call('set_wallpaper_source_enabled', sourceId, enabled);
+}
+
+export async function deleteWallpaperSource(sourceId: string): Promise<{ deleted: boolean; identifier: string }> {
+  return call('delete_wallpaper_source', sourceId);
+}
+
+export async function executeWallpaperSource(sourceId: string, apiName: string, parameters?: Record<string, unknown>): Promise<any[]> {
+  return call('execute_wallpaper_source', sourceId, apiName, parameters);
+}
+
+export async function pickAndImportSource(): Promise<WallpaperSource | null> {
+  return call('pick_and_import_source');
+}
+
+export async function importWallpaperSourceAsDraft(): Promise<WallpaperSourceCreatorPayload | null> {
+  return call('import_wallpaper_source_as_draft');
+}
+
+export async function createWallpaperSource(payload: WallpaperSourceCreatorPayload): Promise<WallpaperSource> {
+  return call('create_wallpaper_source', payload);
+}
+
+export async function exportWallpaperSource(sourceId: string, suggestedName?: string): Promise<{ saved_path: string } | null> {
+  return call('export_wallpaper_source', sourceId, suggestedName);
+}
+
+export async function exportWallpaperSourcePayload(
+  payload: WallpaperSourceCreatorPayload,
+  exportFormat: WallpaperSourceExternalExportFormat,
+  suggestedName?: string,
+  exportOptions?: WallpaperSourceExportOptions
+): Promise<{ saved_path: string } | null> {
+  return call('export_wallpaper_source_payload', payload, exportFormat, suggestedName, exportOptions);
 }

@@ -2,9 +2,13 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
+  Accordion, Link, Table,
 } from '@heroui/react';
-import { ArrowLeft, FolderOpen, Plus, Trash2, Wand2 } from 'lucide-react';
-import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview } from '@/api/backend';
+import {
+  ArrowLeft, FolderOpen, Plus, Trash2, Wand2, ChevronDown, Heart, Package,
+  Copyright, FileText, Shield, ExternalLink,
+} from 'lucide-react';
+import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl } from '@/api/backend';
 import { useThemeContext } from '@/components/ThemeProvider';
 import type { AppSettings, ImageProviderConfig } from '@/types';
 import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
@@ -244,13 +248,7 @@ export default function Settings() {
         </Tabs.Panel>
 
         <Tabs.Panel id="about">
-          <Card className="space-y-4 p-6 text-center">
-            <div className="text-3xl font-bold">小树壁纸 Next</div>
-            <div className="text-muted">v2.0.0</div>
-            <div className="text-sm text-muted">Copyright 2025 Little Tree Studio</div>
-            <Separator />
-            <p className="text-sm text-muted">一款桌面壁纸管理应用，支持多种壁纸来源、自动更换、收藏管理等功能。</p>
-          </Card>
+          <AboutPanel />
         </Tabs.Panel>
       </Tabs>
     </div>
@@ -544,6 +542,393 @@ function AppearanceSettingsPanel({ settings, onUpdate }: { settings: AppSettings
         </ComboBox>
       </Row>
     </Card>
+  );
+}
+
+function AboutPanel() {
+  const handleOpenUrl = (url: string) => {
+    openUrl(url);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-6 text-center">
+        <div className="mb-2 flex justify-center">
+          <img src="./logo.png" alt="小树壁纸" className="h-16 w-16 rounded-xl object-cover" />
+        </div>
+        <div className="text-2xl font-bold">小树壁纸 Next</div>
+        <div className="text-muted">v2.0.0</div>
+        <Separator className="my-4" />
+        <p className="text-sm text-muted">
+          一款桌面壁纸管理应用，支持多种壁纸来源、AI 生成、自动更换、收藏管理等功能。
+        </p>
+      </Card>
+
+      <Accordion variant="surface">
+        <Accordion.Item id="sponsors">
+          <Accordion.Heading>
+            <Accordion.Trigger>
+              <Heart size={16} className="text-danger shrink-0" />
+              <span>赞助</span>
+              <Accordion.Indicator>
+                <ChevronDown size={16} />
+              </Accordion.Indicator>
+            </Accordion.Trigger>
+          </Accordion.Heading>
+          <Accordion.Panel>
+            <Accordion.Body>
+              <div className="space-y-3 text-sm text-muted">
+                <p>感谢以下支持者对小树壁纸的赞助与支持：</p>
+                <Table variant="secondary">
+                  <Table.ScrollContainer>
+                    <Table.Content aria-label="赞助者名单">
+                      <Table.Header>
+                        <Table.Column isRowHeader>赞助者</Table.Column>
+                        <Table.Column>金额</Table.Column>
+                      </Table.Header>
+                      <Table.Body>
+                        <Table.Row>
+                          <Table.Cell className="font-medium">炫饭的芙芙</Table.Cell>
+                          <Table.Cell className="text-danger font-medium">520￥ 👑</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>*匿名赞助*</Table.Cell>
+                          <Table.Cell>66￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>Giampaolo-zzp</Table.Cell>
+                          <Table.Cell>50￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>Kyle</Table.Cell>
+                          <Table.Cell>30￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>昊阳（漩涡7人）</Table.Cell>
+                          <Table.Cell>8.88￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>蔡亩</Table.Cell>
+                          <Table.Cell>6￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>小苗</Table.Cell>
+                          <Table.Cell>6￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>Zero</Table.Cell>
+                          <Table.Cell>6￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>遮天s忏悔</Table.Cell>
+                          <Table.Cell>5.91￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>青山如岱</Table.Cell>
+                          <Table.Cell>5￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>LYC(luis)</Table.Cell>
+                          <Table.Cell>1￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>Cu_32767</Table.Cell>
+                          <Table.Cell>0.91￥</Table.Cell>
+                        </Table.Row>                        
+                        <Table.Row>
+                          <Table.Cell>wzr</Table.Cell>
+                          <Table.Cell>0.01￥</Table.Cell>
+                        </Table.Row>
+                        <Table.Row>
+                          <Table.Cell>Furuya</Table.Cell>
+                          <Table.Cell>0.01￥</Table.Cell>
+                        </Table.Row>
+                      </Table.Body>
+                    </Table.Content>
+                  </Table.ScrollContainer>
+                </Table>
+                <p>您的支持是我们持续改进的动力。</p>
+              </div>
+            </Accordion.Body>
+          </Accordion.Panel>
+        </Accordion.Item>
+
+        <Accordion.Item id="acknowledgements">
+          <Accordion.Heading>
+            <Accordion.Trigger>
+              <Shield size={16} className="text-primary shrink-0" />
+              <span>鸣谢</span>
+              <Accordion.Indicator>
+                <ChevronDown size={16} />
+              </Accordion.Indicator>
+            </Accordion.Trigger>
+          </Accordion.Heading>
+          <Accordion.Panel>
+            <Accordion.Body>
+              <div className="space-y-3 text-sm text-muted">
+                <p>小树壁纸的开发离不开以下优秀开源项目与服务的支持：</p>
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>壁纸源服务：小树壁纸资源中心</li>
+                  <li>壁纸源市场：IntelliMarkets</li>
+                  <li>搜索服务：百度图片</li>
+                  <li>AI 图片生成：各 AI 提供商</li>
+                  <li>UI 组件库：HeroUI</li>
+                </ul>
+              </div>
+            </Accordion.Body>
+          </Accordion.Panel>
+        </Accordion.Item>
+
+        <Accordion.Item id="dependencies">
+          <Accordion.Heading>
+            <Accordion.Trigger>
+              <Package size={16} className="text-accent shrink-0" />
+              <span>依赖说明</span>
+              <Accordion.Indicator>
+                <ChevronDown size={16} />
+              </Accordion.Indicator>
+            </Accordion.Trigger>
+          </Accordion.Heading>
+          <Accordion.Panel>
+            <Accordion.Body>
+              <div className="space-y-4 text-sm text-muted">
+                <p>本项目使用了大量优秀的开源软件，以下列出所有直接及间接依赖及其许可证信息：</p>
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">前端运行时与框架</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react@19.2.6 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-dom@19.2.6 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-router@7.16.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-router-dom@7.16.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">scheduler@0.27.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">use-sync-external-store@1.6.0 (MIT)</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">UI 组件与样式</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/react@3.1.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/styles@3.1.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwindcss@4.3.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@tailwindcss/vite@4.3.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwind-merge@3.4.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwind-variants@3.2.2 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tw-animate-css@1.4.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lucide-react@0.460.0 (ISC)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">clsx@2.1.1 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">input-otp@1.4.2 (MIT)</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">React Aria / Adobe Spectrum (Apache-2.0)</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-aria@3.48.0</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-aria-components@1.17.0</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-stately@3.46.0</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@adobe/react-spectrum@3.47.1</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-aria/*</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-stately/*</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-types/*</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-spectrum/*</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@spectrum-icons/*</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@internationalized/*</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@swc/helpers@0.5.23</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">Radix UI (MIT)</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-avatar@1.1.11</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-primitive@2.1.4</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-slot@1.2.4</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-context@1.1.3</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-compose-refs@1.1.2</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-use-*@1.1.1</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">构建工具</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">vite@6.4.2 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@vitejs/plugin-react@4.7.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">esbuild@0.25.12 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">rollup@4.60.4 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">typescript@5.9.3 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@babel/*@7.29.7 (MIT)</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">前端其他依赖</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">postcss@8.5.15 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">nanoid@3.3.12 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tslib@2.8.1 (0BSD)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lightningcss@1.32.0 (MPL-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">caniuse-lite@1.0.30 (CC-BY-4.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">source-map-js@1.2.1 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">intl-messageformat@10.7.18 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-transition-group@4.4.5 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@formatjs/*@2.x (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@jridgewell/* (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@types/* (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@rolldown/pluginutils (MIT)</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">后端 (Python)</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pywebview@6.2.1 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">requests@2.34.2 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">platformdirs@4.10.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pillow@12.2.0 (HPND)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">psutil@7.2.2 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pystray@0.19.5 (LGPL-3.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pyperclip@1.11.0 (BSD)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">loguru@0.7.3 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiohttp@3.14.0 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">certifi@2026.5.20 (MPL-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiohappyeyeballs@2.6.2 (PSF-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiosignal@1.4.0 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">attrs@26.1.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">bottle@0.13.4 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">cffi@2.0.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">charset-normalizer@3.4.7 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">clr-loader@0.3.1 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">colorama@0.4.6 (BSD)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">frozenlist@1.8.0 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">idna@3.18 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">multidict@6.7.1 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">propcache@0.5.2 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">proxy-tools@0.1.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pycparser@3.0 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pythonnet@3.1.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">six@1.17.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">typing-extensions@4.15.0 (PSF-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">urllib3@2.7.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">win32-setctime@1.2.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">yarl@1.24.2 (Apache-2.0)</span>
+                  </div>
+                </div>
+
+                <p className="text-xs">
+                  完整依赖列表及精确版本请参阅项目源码中的 package.json、package-lock.json、pyproject.toml 及 uv.lock。
+                  前端共 140+ 个包，后端共 30 个包。
+                </p>
+              </div>
+            </Accordion.Body>
+          </Accordion.Panel>
+        </Accordion.Item>
+
+        <Accordion.Item id="copyright">
+          <Accordion.Heading>
+            <Accordion.Trigger>
+              <Copyright size={16} className="text-muted shrink-0" />
+              <span>版权说明</span>
+              <Accordion.Indicator>
+                <ChevronDown size={16} />
+              </Accordion.Indicator>
+            </Accordion.Trigger>
+          </Accordion.Heading>
+          <Accordion.Panel>
+            <Accordion.Body>
+              <div className="space-y-3 text-sm text-muted">
+                <p>Copyright 2026 Little Tree Studio. 保留所有权利。</p>
+                <Separator />
+                <p>本软件按"原样"提供，不提供任何明示或暗示的担保。</p>
+                <div className="space-y-1 rounded-md bg-surface-tertiary p-3">
+                  <p className="font-medium text-foreground">第三方数据声明</p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    <li>部分壁纸源由小树壁纸资源中心、IntelliMarkets-壁纸源市场提供</li>
+                    <li>部分搜索功能由百度图片提供</li>
+                    <li>生成功能由对应 AI 提供商提供</li>
+                    <li>壁纸源的数据由对应壁纸源负责</li>
+                  </ul>
+                </div>
+                <p>
+                  更多详见
+                  <Link
+                    className="ml-1 inline-flex items-center gap-0.5"
+                    onPress={() => handleOpenUrl('https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/')}
+                  >
+                    小树壁纸用户协议
+                    <ExternalLink size={12} />
+                  </Link>
+                </p>
+                <p className="text-xs">
+                  当您使用本软件时，即表示您接受小树壁纸用户协议及第三方数据提供方条款。
+                </p>
+              </div>
+            </Accordion.Body>
+          </Accordion.Panel>
+        </Accordion.Item>
+
+        <Accordion.Item id="third-party">
+          <Accordion.Heading>
+            <Accordion.Trigger>
+              <FileText size={16} className="text-success shrink-0" />
+              <span>第三方数据提供商条款</span>
+              <Accordion.Indicator>
+                <ChevronDown size={16} />
+              </Accordion.Indicator>
+            </Accordion.Trigger>
+          </Accordion.Heading>
+          <Accordion.Panel>
+            <Accordion.Body>
+              <div className="space-y-3 text-sm text-muted">
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">IntelliMarkets</p>
+                  <p className="text-xs">
+                    壁纸源市场服务条款：
+                    <Link
+                      className="ml-1 inline-flex items-center gap-0.5 break-all"
+                      onPress={() => handleOpenUrl('https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md')}
+                    >
+                      https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md
+                      <ExternalLink size={12} />
+                    </Link>
+                  </p>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">小树壁纸用户协议</p>
+                  <p className="text-xs">
+                    <Link
+                      className="inline-flex items-center gap-0.5 break-all"
+                      onPress={() => handleOpenUrl('https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/')}
+                    >
+                      https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/
+                      <ExternalLink size={12} />
+                    </Link>
+                  </p>
+                </div>
+                <p className="text-xs text-muted">
+                  当您使用本软件时，即表示您接受小树壁纸用户协议及第三方数据提供方条款。
+                </p>
+              </div>
+            </Accordion.Body>
+          </Accordion.Panel>
+        </Accordion.Item>
+      </Accordion>
+    </div>
   );
 }
 

@@ -18,6 +18,7 @@ from backend.services.bing import BingService
 from backend.services.spotlight import SpotlightService
 from backend.services.sniff import SniffService
 from backend.services.intelligent_market import IntelligentMarketService
+from backend.services.ltws import LTWSService
 
 ensure_dirs()
 
@@ -32,6 +33,12 @@ class BackendAPI:
             cache_dir=get_cache_dir(),
             settings_store=self.store,
         )
+        self.ltws_service = LTWSService(
+            sources_dir=get_data_dir() / "wallpaper_sources",
+            cache_dir=get_cache_dir(),
+            builtin_examples_dir=get_data_dir() / "builtin" / "ltws",
+            settings=self.store,
+        )
         self._ensure_favorites()
         self._ensure_history()
 
@@ -40,6 +47,33 @@ class BackendAPI:
 
     def _history_path(self) -> Path:
         return get_data_dir() / "wallpaper_history.json"
+
+    @staticmethod
+    def _show_file_dialog(
+        dialog_type: str,
+        filetypes: list[tuple[str, str]],
+        defaultextension: str | None = None,
+        initialfile: str | None = None,
+    ) -> str | None:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            if dialog_type == "open":
+                path = filedialog.askopenfilename(filetypes=filetypes)
+            elif dialog_type == "save":
+                kwargs: dict[str, Any] = {"filetypes": filetypes}
+                if defaultextension:
+                    kwargs["defaultextension"] = defaultextension
+                if initialfile:
+                    kwargs["initialfile"] = initialfile
+                path = filedialog.asksaveasfilename(**kwargs)
+            else:
+                return None
+            return path if path else None
+        finally:
+            root.destroy()
 
     def _downloads_dir(self) -> Path:
         raw = self.store.get("storage.download_directory")
@@ -51,7 +85,7 @@ class BackendAPI:
         path = self._favorites_path()
         if not path.exists():
             default = {
-                "folders": [{"id": "default", "name": "全部", "description": "", "order": 0}],
+                "folders": [{"id": "default", "name": "默认收藏夹", "description": "", "order": 0}],
                 "items": [],
             }
             path.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -63,7 +97,14 @@ class BackendAPI:
 
     def _load_favorites(self) -> dict[str, Any]:
         try:
-            return json.loads(self._favorites_path().read_text(encoding="utf-8"))
+            data = json.loads(self._favorites_path().read_text(encoding="utf-8"))
+            # Migrate old default folder name from "全部" to "默认收藏夹"
+            for folder in data.get("folders", []):
+                if folder.get("id") == "default" and folder.get("name") == "全部":
+                    folder["name"] = "默认收藏夹"
+                    self._save_favorites(data)
+                    break
+            return data
         except Exception:
             return {"folders": [], "items": []}
 
@@ -427,7 +468,114 @@ class BackendAPI:
         webbrowser.open(url)
 
     def get_wallpaper_sources(self) -> list[dict[str, Any]]:
-        return []
+        try:
+            return self.ltws_service.list_sources()
+        except Exception as e:
+            logger.error(f"get_wallpaper_sources error: {e}")
+            return []
+
+    def set_wallpaper_source_enabled(self, source_id: str, enabled: bool) -> dict[str, Any]:
+        try:
+            return self.ltws_service.set_source_enabled(source_id, enabled)
+        except Exception as e:
+            logger.error(f"set_wallpaper_source_enabled error: {e}")
+            return {"error": str(e)}
+
+    def delete_wallpaper_source(self, source_id: str) -> dict[str, Any]:
+        try:
+            return self.ltws_service.delete_source(source_id)
+        except Exception as e:
+            logger.error(f"delete_wallpaper_source error: {e}")
+            return {"error": str(e)}
+
+    def execute_wallpaper_source(self, source_id: str, api_name: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        try:
+            return self.ltws_service.execute_api(source_id, api_name, parameters or {})
+        except Exception as e:
+            logger.error(f"execute_wallpaper_source error: {e}")
+            return []
+
+    def pick_and_import_source(self) -> dict[str, Any] | None:
+        try:
+            path = self._show_file_dialog(
+                "open",
+                filetypes=[("Wallpaper Source", "*.ltws *.json *.toml *.yaml *.yml")],
+            )
+            if not path:
+                return None
+            return self.ltws_service.import_source(path)
+        except Exception as e:
+            logger.error(f"pick_and_import_source error: {e}")
+            return None
+
+    def import_wallpaper_source_as_draft(self) -> dict[str, Any] | None:
+        try:
+            path = self._show_file_dialog(
+                "open",
+                filetypes=[("APICORE / OpenAPI", "*.json *.toml *.yaml *.yml")],
+            )
+            if not path:
+                return None
+            return self.ltws_service.import_source_as_payload(path)
+        except Exception as e:
+            logger.error(f"import_wallpaper_source_as_draft error: {e}")
+            return None
+
+    def create_wallpaper_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self.ltws_service.create_source(payload)
+        except Exception as e:
+            logger.error(f"create_wallpaper_source error: {e}")
+            return {"error": str(e)}
+
+    def export_wallpaper_source(self, source_id: str, suggested_name: str | None = None) -> dict[str, Any] | None:
+        try:
+            import re
+            base_name = re.sub(r'[\\/:*?"<>|]+', '-', suggested_name or source_id).strip().strip('.')
+            if not base_name:
+                base_name = 'wallpaper-source'
+            if not base_name.lower().endswith('.ltws'):
+                base_name = f'{base_name}.ltws'
+            path = self._show_file_dialog(
+                "save",
+                filetypes=[("Wallpaper Source Package", "*.ltws")],
+                defaultextension=".ltws",
+                initialfile=base_name,
+            )
+            if not path:
+                return None
+            return self.ltws_service.export_source(source_id, path)
+        except Exception as e:
+            logger.error(f"export_wallpaper_source error: {e}")
+            return None
+
+    def export_wallpaper_source_payload(self, payload: dict[str, Any], export_format: str, suggested_name: str | None = None, export_options: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        try:
+            import re
+            normalized_format = str(export_format or "").strip().lower()
+            if normalized_format == "apicore_v1":
+                default_name = f"{suggested_name or 'wallpaper-source'}.json"
+                file_types = [("APICORE v1", "*.json")]
+            elif normalized_format == "apicore_v2":
+                default_name = f"{suggested_name or 'wallpaper-source'}.json"
+                file_types = [("APICORE v2", "*.json *.yaml *.yml *.toml")]
+            elif normalized_format == "openapi_3_2":
+                default_name = f"{suggested_name or 'wallpaper-source'}.yaml"
+                file_types = [("OpenAPI 3.2", "*.yaml *.yml *.json")]
+            else:
+                return None
+            base_name = re.sub(r'[\\/:*?"<>|]+', '-', default_name).strip().strip('.')
+            path = self._show_file_dialog(
+                "save",
+                filetypes=file_types,
+                initialfile=base_name,
+            )
+            if not path:
+                return None
+            return self.ltws_service.export_payload(payload, normalized_format, path, export_options)
+        except Exception as e:
+            logger.error(f"export_wallpaper_source_payload error: {e}")
+            return None
 
     def select_local_image(self) -> str | None:
         try:
@@ -464,6 +612,24 @@ class BackendAPI:
             if not any(f["id"] == folder["id"] for f in current["folders"]):
                 current["folders"].append(folder)
         self._save_favorites(current)
+
+    def get_local_image_base64(self, image_path: str) -> str | None:
+        try:
+            path = Path(image_path).resolve()
+            safe_roots = {
+                Path(get_data_dir()).resolve(),
+                Path(get_cache_dir()).resolve(),
+            }
+            download_dir = self.store.get("download_directory")
+            if download_dir:
+                safe_roots.add(Path(download_dir).resolve())
+            if not any(str(path).startswith(str(root)) for root in safe_roots):
+                logger.warning(f"get_local_image_base64 blocked path outside safe directories: {path}")
+                return None
+            return self._build_preview_data_url(image_path)
+        except Exception as exc:
+            logger.debug("get_local_image_base64 failed: {}", exc)
+            return None
 
     def get_version(self) -> str:
         return "2.0.0"
@@ -520,11 +686,16 @@ class BackendAPI:
     def bootstrap(self) -> dict[str, Any]:
         home_bing = self.bing_service.query_daily(market="zh-CN", count=1)
         quote = self.get_hitokoto()
+        try:
+            sources = self.ltws_service.list_sources()
+        except Exception as e:
+            logger.error(f"bootstrap sources error: {e}")
+            sources = []
         return {
             "settings": self.store.as_dict(),
             "favorites": self._load_favorites(),
             "history": self._load_history(),
-            "sources": [],
+            "sources": sources,
             "plugins": [],
             "runtime": {
                 "debug": {"enabled": False, "session_enabled": False, "open_devtools_on_start": True},
