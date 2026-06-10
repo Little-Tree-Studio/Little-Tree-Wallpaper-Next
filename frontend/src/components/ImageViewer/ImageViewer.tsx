@@ -393,6 +393,16 @@ export default function ImageViewer() {
         )}
       </div>
 
+      {/* Copyright */}
+      {currentItem.copyright && (
+        <div
+          className="px-4 py-1.5 text-center text-xs text-white/50"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {currentItem.copyright}
+        </div>
+      )}
+
       {/* Thumbnails */}
       {showThumbnails && items.length > 1 && (
         <div

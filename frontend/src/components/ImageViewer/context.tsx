@@ -8,6 +8,7 @@ export interface ImageViewerItem {
   source_type?: string;
   local_path?: string | null;
   preview_url?: string;
+  copyright?: string;
 }
 
 export interface ImageViewerOptions {

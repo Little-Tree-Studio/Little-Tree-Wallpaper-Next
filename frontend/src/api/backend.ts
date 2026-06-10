@@ -595,6 +595,7 @@ export interface WallpaperSourceCreatorPayload {
       global_interval_seconds?: number;
       timeout_seconds?: number;
       max_concurrent?: number;
+      max_response_size_mb?: number;
       skip_ssl_verify?: boolean;
       user_agent?: string;
       headers?: Array<{ key: string; value: string }>;
@@ -636,19 +637,48 @@ export interface WallpaperSourceCreatorPayload {
       body_type?: string;
       headers?: Array<{ key: string; value: string }>;
     };
-    response?: { format?: string; type?: string };
-    mapping?: { items?: string; item_mapping?: Array<{ key: string; value: string }> };
-    post_process?: Array<{ key: string; value: string }>;
+    response?: { format?: string; type?: string; charset?: string };
+    mapping?: { items?: string; fields?: Record<string, string> };
+    pagination?: {
+      strategy?: string;
+      max_pages?: number;
+      page_size?: number;
+      concurrency?: number;
+      delay_ms?: number;
+      merge_results?: boolean;
+      param_name?: string;
+      start_value?: number;
+      increment?: number;
+      cursor_path?: string;
+      cursor_param?: string;
+      cursor_in?: string;
+      stop_on_missing?: boolean;
+      initial_cursor?: string;
+      next_selector?: string;
+      attr?: string;
+    };
+    post_process?: {
+      filter?: string;
+      merge?: Record<string, string>;
+    };
     validation?: {
       required_fields?: string[];
-      field_patterns?: any[];
-      quality_rules?: any[];
+      constraints?: Array<{
+        path: string;
+        regex?: string;
+        min_length?: number;
+        max_length?: number;
+        min?: number;
+        max?: number;
+        action: string;
+      }>;
     };
     error_handling?: {
-      http_codes?: any[];
+      on_http_4xx?: string;
+      on_http_5xx?: string;
       on_empty_response?: string;
-      on_mapping_failed?: string;
-      fallback_to?: string;
+      on_mapping_failure?: string;
+      fallback_api?: string;
     };
     cache?: { enabled?: boolean; ttl_seconds?: number; key_template?: string };
     static_list_urls?: string[];
