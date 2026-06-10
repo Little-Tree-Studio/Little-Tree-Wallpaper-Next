@@ -673,6 +673,7 @@ function AboutPanel() {
                   <li>搜索服务：百度图片</li>
                   <li>AI 图片生成：各 AI 提供商</li>
                   <li>UI 组件库：HeroUI</li>
+                  <li>图标库：Lucide</li>
                 </ul>
               </div>
             </Accordion.Body>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Card, Button, Tabs, ComboBox, Input, Label, ListBox,
-  Drawer, Switch, TextArea, TextField, FieldError, Modal, Accordion, toast,
+  Drawer, Switch, TextArea, TextField, FieldError, Description, Modal, Accordion, toast,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Heart, Copy, RefreshCw,
@@ -211,20 +211,37 @@ function parsePathExpression(expr: string): PathGenState {
   return state;
 }
 
-const PIPE_OPTIONS = [
-  { name: 'prepend', label: '前缀', args: 1, placeholder: 'https://' },
-  { name: 'append', label: '后缀', args: 1, placeholder: '?w=1920' },
-  { name: 'replace', label: '替换', args: 2, placeholder: '查找,替换' },
-  { name: 'regexExtract', label: '正则提取', args: 1, placeholder: '/\\d+/' },
-  { name: 'toInt', label: '转整数', args: 0 },
-  { name: 'toFloat', label: '转浮点', args: 0 },
-  { name: 'truncate', label: '截断', args: 1, placeholder: '20' },
-  { name: 'dateFormat', label: '日期格式化', args: 1, placeholder: 'YYYY-MM-DD' },
-  { name: 'attr', label: '取属性', args: 1, placeholder: 'src' },
-  { name: 'text', label: '取文本', args: 0 },
-  { name: 'html', label: '取HTML', args: 0 },
-  { name: 'clean', label: '清理空白', args: 0 },
+const PIPE_CATEGORIES = [
+  {
+    label: '字符串',
+    options: [
+      { name: 'prepend', label: '前缀', args: 1, placeholder: 'https://', desc: '在前添加字符串' },
+      { name: 'append', label: '后缀', args: 1, placeholder: '?w=1920', desc: '在后添加字符串' },
+      { name: 'replace', label: '替换', args: 2, placeholder: '查找,替换', desc: '正则替换' },
+      { name: 'regexExtract', label: '正则提取', args: 1, placeholder: '/\\d+/', desc: '正则提取首个捕获组' },
+      { name: 'truncate', label: '截断', args: 1, placeholder: '20', desc: '截断到指定长度' },
+      { name: 'clean', label: '清理空白', args: 0, desc: '去除多余空白' },
+    ],
+  },
+  {
+    label: '类型转换',
+    options: [
+      { name: 'toInt', label: '转整数', args: 0, desc: '转为整数' },
+      { name: 'toFloat', label: '转浮点', args: 0, desc: '转为浮点数' },
+      { name: 'dateFormat', label: '日期格式化', args: 1, placeholder: 'YYYY-MM-DD', desc: '格式化日期' },
+    ],
+  },
+  {
+    label: 'HTML DOM',
+    options: [
+      { name: 'attr', label: '取属性', args: 1, placeholder: 'src', desc: '取 DOM 属性' },
+      { name: 'text', label: '取文本', args: 0, desc: '提取文本内容' },
+      { name: 'html', label: '取HTML', args: 0, desc: '提取 innerHTML' },
+    ],
+  },
 ];
+
+const PIPE_OPTIONS = PIPE_CATEGORIES.flatMap((c) => c.options);
 
 const PRESET_PATHS = [
   { label: '通用列表', segments: [{ type: 'property' as const, key: 'data' }, { type: 'property' as const, key: 'list' }, { type: 'wildcard' as const }], pipes: [] },
@@ -233,6 +250,7 @@ const PRESET_PATHS = [
   { label: 'Results', segments: [{ type: 'property' as const, key: 'results' }, { type: 'wildcard' as const }], pipes: [] },
   { label: '根数组', segments: [{ type: 'wildcard' as const }], pipes: [] },
   { label: '嵌套数据', segments: [{ type: 'property' as const, key: 'response' }, { type: 'property' as const, key: 'data' }, { type: 'wildcard' as const }], pipes: [] },
+  { label: '单图', segments: [{ type: 'property' as const, key: 'data' }], pipes: [] },
 ];
 
 const PRESET_IMAGE_PATHS = [
@@ -345,7 +363,8 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
 
   /* 创建器状态 */
   const [showCreator, setShowCreator] = useState(false);
-  const [creatorTab, setCreatorTab] = useState('basic');
+  const [creatorStep, setCreatorStep] = useState(1);
+  const [creatorTab, setCreatorTab] = useState('categories');
   const [showValidation, setShowValidation] = useState(false);
   const [creatorPayload, setCreatorPayload] = useState<WallpaperSourceCreatorPayload>({
     source: { identifier: '', name: '', version: '1.0.0' },
@@ -353,6 +372,9 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     categories: { categories: [{ id: 'default', name: '默认分类' }] },
     apis: [],
   });
+
+  /* API 折叠状态 */
+  const [apiExpanded, setApiExpanded] = useState<Set<number>>(new Set());
 
   /* 路径生成器状态 */
   const [pathGenOpen, setPathGenOpen] = useState(false);
@@ -362,6 +384,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
   const [jsonTree, setJsonTree] = useState<JsonTreeNode | null>(null);
   const [jsonTreeExpanded, setJsonTreeExpanded] = useState<Set<string>>(new Set());
   const [jsonTreeSelected, setJsonTreeSelected] = useState('');
+  const [editPipeIdx, setEditPipeIdx] = useState<number>(-1);
 
   const { openViewer } = useImageViewer();
 
@@ -370,25 +393,50 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     const errors: { basic: Record<string, string>; categories: string; apis: Record<number, Record<string, string>>; apisGeneral: string } =
       { basic: {}, categories: '', apis: {}, apisGeneral: '' };
 
-    if (!creatorPayload.source.identifier.trim()) errors.basic.identifier = '标识符为必填项';
-    else if (!/^[a-z0-9._]+$/.test(creatorPayload.source.identifier)) errors.basic.identifier = '只能包含小写字母、数字、点和下划线';
+    const id = creatorPayload.source.identifier.trim();
+    if (!id) errors.basic.identifier = '标识符为必填项';
+    else if (!/^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$/.test(id)) errors.basic.identifier = '应为反向域名格式，如 com.example.wallpaper';
+
     if (!creatorPayload.source.name.trim()) errors.basic.name = '名称为必填项';
-    if (!creatorPayload.source.version.trim()) errors.basic.version = '版本为必填项';
-    else if (!/^\d+\.\d+\.\d+/.test(creatorPayload.source.version)) errors.basic.version = '版本格式应为 主.次.修订';
+
+    const ver = creatorPayload.source.version.trim();
+    if (!ver) errors.basic.version = '版本为必填项';
+    else if (!/^\d+\.\d+\.\d+$/.test(ver)) errors.basic.version = '版本格式应为 主.次.修订，如 1.0.0';
 
     const cats = creatorPayload.categories?.categories || [];
     if (cats.length === 0) errors.categories = '请至少添加一个分类';
-    else if (cats.some((c) => !c.id.trim() || !c.name.trim())) errors.categories = '每个分类的 ID 和名称都必须填写';
+    else {
+      const catIds = cats.map((c) => c.id.trim());
+      const catNames = cats.map((c) => c.name.trim());
+      if (catIds.some((id) => !id)) errors.categories = '每个分类的 ID 都必须填写';
+      else if (catNames.some((n) => !n)) errors.categories = '每个分类的名称都必须填写';
+      else if (new Set(catIds).size !== catIds.length) errors.categories = '分类 ID 不能重复';
+    }
 
     const apis = creatorPayload.apis || [];
     if (apis.length === 0) errors.apisGeneral = '请至少添加一个 API';
     else {
+      const apiNames = apis.map((a) => a.name.trim()).filter(Boolean);
+      if (new Set(apiNames).size !== apiNames.length) errors.apisGeneral = 'API 名称不能重复';
+
       apis.forEach((api, idx) => {
         const e: Record<string, string> = {};
         if (!api.name.trim()) e.name = 'API 名称为必填项';
         if (!api.categories?.length || api.categories.some((c) => !c.trim())) e.category = '必须绑定至少一个分类';
-        if (!api.request?.url?.trim()) e.url = '请求 URL 为必填项';
+
+        const url = api.request?.url?.trim() || '';
+        if (!url) e.url = '请求 URL 为必填项';
+        else if (!/^https?:\/\/.+/.test(url)) e.url = 'URL 格式不正确，应以 http:// 或 https:// 开头';
+
         if (!api.response?.format?.trim()) e.format = '响应格式为必填项';
+
+        const itemsPath = api.mapping?.items?.trim() || '';
+        if (!itemsPath) e.items = '条目路径为必填项';
+        else if (!itemsPath.startsWith('$')) e.items = '条目路径应以 $ 开头';
+
+        const imagePath = api.mapping?.fields?.image?.trim() || '';
+        if (!imagePath) e.image = '图片字段映射为必填项';
+
         if (Object.keys(e).length > 0) errors.apis[idx] = e;
       });
     }
@@ -396,12 +444,13 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     const hasBasic = Object.keys(errors.basic).length > 0;
     const hasCat = !!errors.categories;
     const hasApi = !!errors.apisGeneral || Object.keys(errors.apis).length > 0;
-    return { errors, isValid: !hasBasic && !hasCat && !hasApi, tabErrors: { basic: hasBasic, categories: hasCat, api: hasApi } };
+    const hasContent = hasCat || hasApi;
+    return { errors, isValid: !hasBasic && !hasContent, hasBasic, hasContent, tabErrors: { basic: hasBasic, categories: hasCat, api: hasApi } };
   }, [creatorPayload]);
 
   const validation = useMemo(() => {
     if (showValidation) return rawValidation;
-    return { errors: { basic: {}, categories: '', apis: {}, apisGeneral: '' }, isValid: true, tabErrors: { basic: false, categories: false, api: false } };
+    return { errors: { basic: {}, categories: '', apis: {}, apisGeneral: '' }, isValid: true, hasBasic: false, hasContent: false, tabErrors: { basic: false, categories: false, api: false } };
   }, [rawValidation, showValidation]);
 
   /* ───── 生命周期 ───── */
@@ -510,7 +559,12 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
   /* ───── 路径生成器 ───── */
   const openPathGen = (fieldKey: string, apiIndex: number) => {
     setPathGenTarget({ fieldKey, apiIndex });
-    const expr = creatorPayload.apis?.[apiIndex]?.mapping?.fields?.[fieldKey] || '';
+    let expr = '';
+    if (fieldKey === 'items') {
+      expr = creatorPayload.apis?.[apiIndex]?.mapping?.items || '';
+    } else {
+      expr = creatorPayload.apis?.[apiIndex]?.mapping?.fields?.[fieldKey] || '';
+    }
     setPathGenState(parsePathExpression(expr));
     setPathGenOpen(true);
   };
@@ -520,10 +574,17 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     const { fieldKey, apiIndex } = pathGenTarget;
     const expr = buildPathExpression(pathGenState);
     const next = [...(creatorPayload.apis || [])];
-    next[apiIndex] = {
-      ...next[apiIndex],
-      mapping: { ...next[apiIndex].mapping, fields: { ...next[apiIndex].mapping?.fields, [fieldKey]: expr } },
-    };
+    if (fieldKey === 'items') {
+      next[apiIndex] = {
+        ...next[apiIndex],
+        mapping: { ...next[apiIndex].mapping, items: expr },
+      };
+    } else {
+      next[apiIndex] = {
+        ...next[apiIndex],
+        mapping: { ...next[apiIndex].mapping, fields: { ...next[apiIndex].mapping?.fields, [fieldKey]: expr } },
+      };
+    }
     setCreatorPayload((prev) => ({ ...prev, apis: next }));
     setPathGenOpen(false);
   };
@@ -540,7 +601,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     <div className="space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
         <Button size="sm" variant="secondary" onPress={handleImport}><Upload size={14} /> 导入</Button>
-        <Button size="sm" variant="secondary" onPress={() => { setShowValidation(false); setShowCreator(true); }}><Plus size={14} /> 创建</Button>
+        <Button size="sm" variant="secondary" onPress={() => { setShowValidation(false); setCreatorStep(1); setCreatorTab('categories'); setShowCreator(true); }}><Plus size={14} /> 创建</Button>
         <Button size="sm" variant="ghost" onPress={loadSources} isDisabled={loading}>
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> 刷新
         </Button>
@@ -688,17 +749,22 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
             <Drawer.Dialog>
               <Drawer.Header><Drawer.Heading>创建壁纸源</Drawer.Heading></Drawer.Header>
               <Drawer.Body>
-                <Tabs selectedKey={creatorTab} onSelectionChange={(k) => setCreatorTab(String(k))}>
-                  <Tabs.ListContainer>
-                    <Tabs.List>
-                      <Tabs.Tab id="basic"><span className="flex items-center gap-1">基本信息{validation.tabErrors.basic && <span className="h-2 w-2 rounded-full bg-danger inline-block" />}</span><Tabs.Indicator /></Tabs.Tab>
-                      <Tabs.Tab id="categories"><span className="flex items-center gap-1">分类{validation.tabErrors.categories && <span className="h-2 w-2 rounded-full bg-danger inline-block" />}</span><Tabs.Indicator /></Tabs.Tab>
-                      <Tabs.Tab id="api"><span className="flex items-center gap-1">API{validation.tabErrors.api && <span className="h-2 w-2 rounded-full bg-danger inline-block" />}</span><Tabs.Indicator /></Tabs.Tab>
-                    </Tabs.List>
-                  </Tabs.ListContainer>
+                {/* 面包屑导航 */}
+                <div className="flex items-center gap-3 mb-4 pb-3 border-b border-border">
+                  <div className={`flex items-center gap-2 ${creatorStep === 1 ? 'text-primary font-medium' : 'text-muted'}`}>
+                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${creatorStep === 1 ? 'bg-accent text-accent-foreground' : 'bg-surface-tertiary text-foreground'}`}>1</span>
+                    <span className="text-sm">基本信息</span>
+                  </div>
+                  <span className="text-muted text-sm">›</span>
+                  <div className={`flex items-center gap-2 ${creatorStep === 2 ? 'text-primary font-medium' : 'text-muted'}`}>
+                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${creatorStep === 2 ? 'bg-accent text-accent-foreground' : 'bg-surface-tertiary text-foreground'}`}>2</span>
+                    <span className="text-sm">内容设置</span>
+                  </div>
+                </div>
 
-                  {/* ─── 基本信息 ─── */}
-                  <Tabs.Panel id="basic">
+                {creatorStep === 1 ? (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-medium text-muted mb-2">基本信息</h3>
                     <div className="space-y-3">
                       <TextField isInvalid={!!validation.errors.basic.identifier}>
                         <Label>标识符 (反向域名格式)</Label>
@@ -811,11 +877,20 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                         </Accordion.Item>
                       </Accordion>
                     </div>
-                  </Tabs.Panel>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <Tabs selectedKey={creatorTab} onSelectionChange={(k) => setCreatorTab(String(k))}>
+                      <Tabs.ListContainer>
+                        <Tabs.List>
+                          <Tabs.Tab id="categories"><span className="flex items-center gap-1">分类{validation.tabErrors.categories && <span className="h-2 w-2 rounded-full bg-danger inline-block" />}</span><Tabs.Indicator /></Tabs.Tab>
+                          <Tabs.Tab id="api"><span className="flex items-center gap-1">API{validation.tabErrors.api && <span className="h-2 w-2 rounded-full bg-danger inline-block" />}</span><Tabs.Indicator /></Tabs.Tab>
+                        </Tabs.List>
+                      </Tabs.ListContainer>
 
-                  {/* ─── 分类 ─── */}
-                  <Tabs.Panel id="categories">
-                    <div className="space-y-3">
+                      {/* ─── 分类 ─── */}
+                      <Tabs.Panel id="categories">
+                        <div className="space-y-3">
                       {validation.errors.categories && <div className="text-sm text-danger">{validation.errors.categories}</div>}
                       {(creatorPayload.categories?.categories || []).map((cat, idx) => (
                         <div key={idx} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
@@ -858,22 +933,47 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                         const e = validation.errors.apis[idx] || {};
                         const cats = (creatorPayload.categories?.categories || []).map((c) => ({ id: c.id, name: c.name || c.id }));
                         return (
-                          <Card key={idx} className="p-3 space-y-2">
-                            {/* 名称 + 删除 */}
-                            <div className="flex items-center justify-between">
-                              <TextField className="w-48" isInvalid={!!e.name}>
-                                <Input className="h-8 text-sm" value={api.name}
-                                  onChange={(ev) => updateApi(idx, { name: ev.target.value })} placeholder="API名称"
-                                />
-                                <FieldError>{e.name}</FieldError>
-                              </TextField>
-                              <Button isIconOnly variant="ghost" size="sm" onPress={() => {
-                                const next = (creatorPayload.apis || []).filter((_, i) => i !== idx);
-                                setCreatorPayload((p) => ({ ...p, apis: next }));
-                              }}><Trash2 size={14} /></Button>
+                          <div key={idx} className="rounded-lg border border-border bg-surface p-0 overflow-hidden">
+                            {/* API 标题栏（可点击展开/折叠） */}
+                            <div
+                              className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface-secondary transition-colors"
+                              onClick={() => {
+                                setApiExpanded((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(idx)) next.delete(idx);
+                                  else next.add(idx);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                {apiExpanded.has(idx) ? <ChevronDown size={14} className="text-muted shrink-0" /> : <ChevronRight size={14} className="text-muted shrink-0" />}
+                                <span className="text-sm font-medium truncate">{api.name || '未命名接口'}</span>
+                                {Object.keys(e).length > 0 && <span className="h-2 w-2 rounded-full bg-danger shrink-0" />}
+                              </div>
+                              <div onClick={(e) => e.stopPropagation()}>
+                                <Button isIconOnly variant="ghost" size="sm" className="h-6 w-6"
+                                  onPress={() => {
+                                    const next = (creatorPayload.apis || []).filter((_, i) => i !== idx);
+                                    setCreatorPayload((p) => ({ ...p, apis: next }));
+                                  }}
+                                ><Trash2 size={14} /></Button>
+                              </div>
                             </div>
 
-                            {/* 描述 / Logo */}
+                            {/* 折叠内容 */}
+                            {apiExpanded.has(idx) && (
+                              <div className="px-3 pb-3 space-y-2 border-t border-border">
+                                {/* 名称 */}
+                                <TextField className="pt-2" isInvalid={!!e.name}>
+                                  <Label className="text-xs text-muted">API 名称</Label>
+                                  <Input className="h-8 text-sm" value={api.name}
+                                    onChange={(ev) => updateApi(idx, { name: ev.target.value })} placeholder="API名称"
+                                  />
+                                  <FieldError>{e.name}</FieldError>
+                                </TextField>
+
+                                {/* 描述 / Logo */}
                             <TextField>
                               <Label className="text-xs text-muted">描述</Label>
                               <Input className="h-8 text-sm" value={api.description || ''}
@@ -946,22 +1046,22 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                             <div className="space-y-1">
                               <Label className="text-xs text-muted">请求头</Label>
                               {(api.request?.headers || []).map((h, hi) => (
-                                <div key={hi} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-                                  <Input className="h-7 text-xs" value={h.key}
+                                <div key={hi} className="flex items-center gap-2">
+                                  <Input className="h-7 text-xs flex-1 min-w-0" value={h.key}
                                     onChange={(ev) => {
                                       const next = [...(api.request?.headers || [])];
                                       next[hi] = { ...next[hi], key: ev.target.value };
                                       updateApi(idx, { request: { ...api.request, headers: next } });
                                     }} placeholder="Key"
                                   />
-                                  <Input className="h-7 text-xs" value={h.value}
+                                  <Input className="h-7 text-xs flex-1 min-w-0" value={h.value}
                                     onChange={(ev) => {
                                       const next = [...(api.request?.headers || [])];
                                       next[hi] = { ...next[hi], value: ev.target.value };
                                       updateApi(idx, { request: { ...api.request, headers: next } });
                                     }} placeholder="Value"
                                   />
-                                  <Button isIconOnly variant="ghost" size="sm" className="h-7 w-7"
+                                  <Button isIconOnly variant="ghost" size="sm" className="h-7 w-7 shrink-0"
                                     onPress={() => {
                                       const next = (api.request?.headers || []).filter((_, i) => i !== hi);
                                       updateApi(idx, { request: { ...api.request, headers: next } });
@@ -1002,8 +1102,10 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                             {e.format && <div className="text-sm text-danger">{e.format}</div>}
 
                             {/* Mapping Fields */}
-                            <TextField>
+                            <TextField isInvalid={!!e.items}>
                               <Label className="text-xs text-muted">条目路径 (items)</Label>
+                              <Description className="text-[10px] text-muted"
+>指定如何从响应中提取壁纸条目列表的路径表达式，如 $.data.list[*]</Description>
                               <div className="flex items-start gap-2">
                                 <Input className="h-8 text-sm flex-1" value={api.mapping?.items || ''}
                                   onChange={(ev) => updateApi(idx, { mapping: { ...api.mapping, items: ev.target.value } })}
@@ -1011,13 +1113,15 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                 />
                                 <Button isIconOnly variant="ghost" size="sm" className="mt-0.5" onPress={() => openPathGen('items', idx)}><Wand2 size={14} /></Button>
                               </div>
+                              <FieldError>{e.items}</FieldError>
                             </TextField>
 
                             <div className="space-y-2">
                               <Label className="text-xs text-muted">字段映射 (fields)</Label>
+                              <Description className="text-[10px] text-muted">定义从每个条目中提取哪些字段，image 字段必填</Description>
                               {MAPPING_FIELD_KEYS.map((field) => (
                                 <div key={field.key} className="flex items-start gap-2">
-                                  <TextField className="flex-1">
+                                  <TextField className="flex-1" isInvalid={field.key === 'image' && !!e.image}>
                                     <Label className="text-xs text-muted">{field.label}{field.required && <span className="text-danger"> *</span>}</Label>
                                     <Input className="h-8 text-sm"
                                       value={api.mapping?.fields?.[field.key] || ''}
@@ -1026,6 +1130,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                       })}
                                       placeholder={`${field.key} 路径`}
                                     />
+                                    {field.key === 'image' && <FieldError>{e.image}</FieldError>}
                                   </TextField>
                                   <Button isIconOnly variant="ghost" size="sm" className="mt-5"
                                     onPress={() => openPathGen(field.key, idx)}><Wand2 size={14} /></Button>
@@ -1142,6 +1247,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                 <Accordion.Panel><Accordion.Body><div className="space-y-2">
                                   <TextField>
                                     <Label className="text-xs text-muted">过滤表达式</Label>
+                                    <Description className="text-[10px] text-muted">使用路径条件过滤映射后的条目列表，不符合条件的条目将被丢弃</Description>
                                     <Input className="h-8 text-sm" value={api.post_process?.filter || ''}
                                       onChange={(ev) => updateApi(idx, { post_process: { ...api.post_process, filter: ev.target.value } })}
                                       placeholder="$.[?(@.width >= 1920)]"
@@ -1149,6 +1255,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                   </TextField>
                                   <div className="space-y-1">
                                     <Label className="text-xs text-muted">合并字段</Label>
+                                    <Description className="text-[10px] text-muted">为每个条目添加或覆盖固定字段，常用于标注数据来源</Description>
                                     {(Object.entries(api.post_process?.merge || {})).map(([k, v], mi) => (
                                       <div key={mi} className="grid grid-cols-[1fr_1fr_auto] gap-2">
                                         <Input className="h-7 text-xs" value={k}
@@ -1305,7 +1412,9 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                       onChange={(ev) => updateApi(idx, { cache: { ...api.cache, ttl_seconds: Number(ev.target.value) } })}
                                       placeholder="TTL (秒)"
                                     /></TextField>
-                                    <TextField><Input className="h-8 text-sm"
+                                    <TextField>
+                                      <Description className="text-[10px] text-muted">{'支持 {{变量}} 模板，如 bing_{{mkt}}_{{date_iso}}'}</Description>
+                                      <Input className="h-8 text-sm"
                                       value={api.cache?.key_template || ''}
                                       onChange={(ev) => updateApi(idx, { cache: { ...api.cache, key_template: ev.target.value } })}
                                       placeholder="缓存键模板"
@@ -1314,10 +1423,13 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                 </div></Accordion.Body></Accordion.Panel>
                               </Accordion.Item>
                             </Accordion>
-                          </Card>
+                              </div>
+                            )}
+                          </div>
                         );
                       })}
                       <Button size="sm" variant="secondary" onPress={() => {
+                        const newIdx = creatorPayload.apis?.length || 0;
                         setCreatorPayload((p) => ({
                           ...p,
                           apis: [...(p.apis || []), {
@@ -1328,20 +1440,34 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                             mapping: { items: '', fields: { image: '' } },
                           }],
                         }));
+                        setApiExpanded((prev) => new Set(prev).add(newIdx));
                       }}>
                         <Plus size={14} /> 添加API
                       </Button>
                     </div>
                   </Tabs.Panel>
                 </Tabs>
-              </Drawer.Body>
-              <Drawer.Footer>
+              </div>
+            )}
+          </Drawer.Body>
+          <Drawer.Footer>
+            {creatorStep === 1 ? (
+              <>
                 <Button variant="ghost" onPress={() => setShowCreator(false)}>取消</Button>
+                <Button onPress={() => {
+                  setShowValidation(true);
+                  if (rawValidation.hasBasic) return;
+                  setCreatorStep(2);
+                  setShowValidation(false);
+                }}>下一步</Button>
+              </>
+            ) : (
+              <>
+                <Button variant="ghost" onPress={() => { setCreatorStep(1); setShowValidation(false); }}>上一步</Button>
                 <Button onPress={async () => {
-                  if (!showValidation) setShowValidation(true);
-                  if (!rawValidation.isValid) {
-                    if (rawValidation.tabErrors.basic) setCreatorTab('basic');
-                    else if (rawValidation.tabErrors.categories) setCreatorTab('categories');
+                  setShowValidation(true);
+                  if (rawValidation.hasContent) {
+                    if (rawValidation.tabErrors.categories) setCreatorTab('categories');
                     else if (rawValidation.tabErrors.api) setCreatorTab('api');
                     return;
                   }
@@ -1349,13 +1475,16 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                     await createWallpaperSource(creatorPayload);
                     setShowCreator(false);
                     setShowValidation(false);
+                    setCreatorStep(1);
                     await loadSources();
                   } catch (e) {
                     console.error('Create source failed', e);
                     alert('创建失败: ' + (e instanceof Error ? e.message : String(e)));
                   }
-                }}>创建</Button>
-              </Drawer.Footer>
+                }}>完成</Button>
+              </>
+            )}
+          </Drawer.Footer>
             </Drawer.Dialog>
           </Drawer.Content>
         </Drawer.Backdrop>
@@ -1381,7 +1510,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
 
                   <div>
                     <Label className="text-xs text-muted mb-1 block">快速预设</Label>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <div className="flex flex-wrap gap-2">
                       {(pathGenTarget?.fieldKey === 'items' ? PRESET_PATHS : PRESET_IMAGE_PATHS).map((p, i) => (
                         <Button key={i} size="sm" variant="secondary"
                           onPress={() => setPathGenState({ mode: 'json', segments: p.segments, cssSelector: '', pipes: p.pipes || [] })}
@@ -1395,7 +1524,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                     <div className="space-y-2">
                       <Label className="text-xs text-muted block">JSON 样本（粘贴 API 响应以可视化选择路径）</Label>
                       <TextArea
-                        className="min-h-[200px] text-xs font-mono"
+                        className="min-h-[200px] text-xs font-mono w-full"
                         value={jsonSample}
                         onChange={(e) => setJsonSample(e.target.value)}
                         placeholder={`{\n  "data": {\n    "list": [\n      { "url": "https://...", "title": "..." }\n    ]\n  }\n}`}
@@ -1530,42 +1659,103 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                     </TextField>
                   )}
 
+                  {/* 管道函数 */}
                   <div className="space-y-2">
                     <Label className="text-xs text-muted">管道函数（可选）</Label>
-                    {pathGenState.pipes.map((pipe, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <ComboBox selectedKey={pipe.name}
-                          onSelectionChange={(k) => {
-                            const name = String(k);
-                            const opt = PIPE_OPTIONS.find((o) => o.name === name);
-                            const next = [...pathGenState.pipes];
-                            next[idx] = { name, args: opt ? Array(opt.args).fill('') : [] };
-                            setPathGenState((s) => ({ ...s, pipes: next }));
-                          }}
-                        >
-                          <ComboBox.InputGroup><Input className="h-7 w-28 text-xs" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                          <ComboBox.Popover><ListBox>
-                            {PIPE_OPTIONS.map((o) => <ListBox.Item key={o.name} id={o.name} textValue={o.label}>{o.label}</ListBox.Item>)}
-                          </ListBox></ComboBox.Popover>
-                        </ComboBox>
-                        {pipe.args.map((arg, ai) => (
-                          <Input key={ai} className="h-7 w-32 text-xs" value={arg}
-                            onChange={(e) => {
-                              const next = [...pathGenState.pipes];
-                              next[idx] = { ...pipe, args: pipe.args.map((a, i) => i === ai ? e.target.value : a) };
-                              setPathGenState((s) => ({ ...s, pipes: next }));
-                            }}
-                            placeholder={PIPE_OPTIONS.find((o) => o.name === pipe.name)?.placeholder}
-                          />
-                        ))}
-                        <Button isIconOnly variant="ghost" size="sm" className="h-6 w-6"
-                          onPress={() => setPathGenState((s) => ({ ...s, pipes: s.pipes.filter((_, i) => i !== idx) }))}
-                        ><Trash2 size={12} /></Button>
+
+                    {/* 已添加的管道函数列表 */}
+                    {pathGenState.pipes.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 rounded-lg border border-border bg-surface-secondary p-2">
+                        {pathGenState.pipes.map((pipe, idx) => {
+                          const opt = PIPE_OPTIONS.find((o) => o.name === pipe.name);
+                          const label = pipe.args.length > 0
+                            ? `${opt?.label || pipe.name}(${pipe.args.map((a) => a ? JSON.stringify(a) : '').join(', ')})`
+                            : (opt?.label || pipe.name);
+                          const isEditing = editPipeIdx === idx;
+                          return (
+                            <div
+                              key={idx}
+                              className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs cursor-pointer transition-colors ${
+                                isEditing ? 'bg-accent text-accent-foreground' : 'bg-accent/10 text-accent'
+                              }`}
+                              onClick={() => setEditPipeIdx(isEditing ? -1 : idx)}
+                            >
+                              <span>{label}</span>
+                              <button
+                                className={`ml-0.5 ${isEditing ? 'text-accent-foreground/70 hover:text-accent-foreground' : 'text-accent/60 hover:text-accent'}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPathGenState((s) => {
+                                    const filtered = s.pipes.filter((_, i) => i !== idx);
+                                    return { ...s, pipes: filtered };
+                                  });
+                                  if (editPipeIdx === idx) setEditPipeIdx(-1);
+                                  else if (editPipeIdx > idx) setEditPipeIdx(editPipeIdx - 1);
+                                }}
+                              >×</button>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
-                    <Button size="sm" variant="secondary" className="h-7 text-xs"
-                      onPress={() => setPathGenState((s) => ({ ...s, pipes: [...s.pipes, { name: 'prepend', args: [''] }] }))}
-                    ><Plus size={12} /> 添加函数</Button>
+                    )}
+
+                    {/* 按类别添加管道函数 */}
+                    <div className="space-y-2 rounded-lg border border-border bg-surface-secondary p-2">
+                      {PIPE_CATEGORIES.map((cat) => (
+                        <div key={cat.label}>
+                          <div className="text-[10px] text-muted uppercase tracking-wider mb-1">{cat.label}</div>
+                          <div className="flex flex-wrap gap-1">
+                            {cat.options.map((opt) => (
+                              <Button
+                                key={opt.name}
+                                size="sm"
+                                variant="secondary"
+                                className="h-6 text-[11px] px-2"
+                                onPress={() => {
+                                  if (opt.args === 0) {
+                                    setPathGenState((s) => ({ ...s, pipes: [...s.pipes, { name: opt.name, args: [] }] }));
+                                  } else {
+                                    const newIdx = pathGenState.pipes.length;
+                                    setPathGenState((s) => ({ ...s, pipes: [...s.pipes, { name: opt.name, args: Array(opt.args).fill('') }] }));
+                                    setEditPipeIdx(newIdx);
+                                  }
+                                }}
+                              >
+                                {opt.label}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* 参数编辑（当前选中的管道函数） */}
+                    {editPipeIdx >= 0 && pathGenState.pipes[editPipeIdx] && (() => {
+                      const pipe = pathGenState.pipes[editPipeIdx];
+                      const opt = PIPE_OPTIONS.find((o) => o.name === pipe.name);
+                      if (!opt || opt.args === 0) return null;
+                      return (
+                        <div className="rounded-lg border border-border bg-surface-secondary p-2 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <div className="text-xs text-muted">编辑 {opt.label} 参数</div>
+                            <button className="text-xs text-muted hover:text-foreground" onClick={() => setEditPipeIdx(-1)}>完成</button>
+                          </div>
+                          {pipe.args.map((arg, ai) => (
+                            <Input
+                              key={ai}
+                              className="h-7 text-xs"
+                              value={arg}
+                              onChange={(e) => {
+                                const next = [...pathGenState.pipes];
+                                next[editPipeIdx] = { ...pipe, args: pipe.args.map((a, i) => i === ai ? e.target.value : a) };
+                                setPathGenState((s) => ({ ...s, pipes: next }));
+                              }}
+                              placeholder={opt.placeholder}
+                            />
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="rounded-lg border border-border bg-surface-secondary p-3">

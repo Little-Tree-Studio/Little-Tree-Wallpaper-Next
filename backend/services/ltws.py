@@ -467,6 +467,8 @@ class LTWSService:
                 item_mapping = mapping_payload.get("item_mapping") or {}
                 if isinstance(item_mapping, list):
                     item_mapping = _normalize_key_value_rows(item_mapping)
+                if not item_mapping:
+                    item_mapping = _normalize_key_value_rows(mapping_payload.get("fields"))
                 if not item_mapping and any(
                     _stringify(mapping_payload.get(key))
                     for key in (
@@ -880,8 +882,10 @@ class LTWSService:
 
             item_mapping = mapping_payload.get("item_mapping") or {}
             if not item_mapping:
+                item_mapping = _normalize_key_value_rows(mapping_payload.get("fields"))
+            if not item_mapping:
                 item_mapping = _build_legacy_item_mapping(mapping_payload)
-            elif isinstance(item_mapping, list):
+            if isinstance(item_mapping, list):
                 item_mapping = _normalize_key_value_rows(item_mapping)
             mapping_document["item_mapping"] = item_mapping
             document["mapping"] = _strip_empty_sections(mapping_document)
