@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from loguru import logger
+
 from backend.paths import get_cache_dir
 
 
@@ -59,7 +61,8 @@ class ResponseCache:
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            logger.warning("Cache read failed for {}: {}", self._mem_key(key), exc)
             return None
         cached_at = float(payload.get("cached_at", 0))
         if effective_ttl >= 0 and (time.time() - cached_at) > effective_ttl:
@@ -99,7 +102,8 @@ class ResponseCache:
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            logger.warning("Cache read failed for {}: {}", self._mem_key(key), exc)
             return None
         cached_at = float(payload.get("cached_at", 0))
         if datetime.fromtimestamp(cached_at).date() < today:
@@ -123,14 +127,15 @@ class ResponseCache:
                 ),
                 encoding="utf-8",
             )
-        except OSError:
-            # Disk full / permissions etc. - in-memory cache still works.
-            pass
+        except OSError as exc:
+            logger.warning("Cache write failed for {}: {}", self._mem_key(key), exc)
         mem_key = self._mem_key(key)
         with self._memory_lock:
             self._memory[mem_key] = (now, data)
 
     def clear(self) -> None:
+        logger.info("Clearing response cache for namespace {}", self.namespace)
+        cleared_count = 0
         with self._memory_lock:
             for k in list(self._memory):
                 if k.startswith(f"{self.namespace}:"):
@@ -138,5 +143,7 @@ class ResponseCache:
         for f in self.dir.glob("*.json"):
             try:
                 f.unlink()
-            except OSError:
-                pass
+                cleared_count += 1
+            except OSError as exc:
+                logger.warning("Cache delete failed for {}: {}", f, exc)
+        logger.info("Cleared {} file(s) from response cache namespace {}", cleared_count, self.namespace)

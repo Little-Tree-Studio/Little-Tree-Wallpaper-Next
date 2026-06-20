@@ -6,8 +6,10 @@ import Generate from '@/pages/Generate';
 import Search from '@/pages/Search';
 import Sniff from '@/pages/Sniff';
 import Favorite from '@/pages/Favorite';
+import Tags from '@/pages/Tags';
 import Store from '@/pages/Store';
 import Settings from '@/pages/Settings';
+import Help from '@/pages/Help';
 import History from '@/pages/History';
 import Tools from '@/pages/Tools';
 import ColorPalette from '@/pages/ColorPalette';
@@ -28,9 +30,11 @@ function App() {
             <Route path="search" element={<Search />} />
             <Route path="sniff" element={<Sniff />} />
             <Route path="favorite" element={<Favorite />} />
+            <Route path="tags" element={<Tags />} />
             <Route path="store" element={<Store />} />
             <Route path="settings" element={<Settings />} />
             <Route path="settings/:tab" element={<Settings />} />
+            <Route path="help" element={<Help />} />
             <Route path="history" element={<History />} />
             <Route path="tools" element={<Tools />} />
             <Route path="tools/color-palette" element={<ColorPalette />} />

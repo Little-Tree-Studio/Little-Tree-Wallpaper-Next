@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
+from loguru import logger
 from PIL import Image
 
 from backend.models import WallpaperItem
@@ -32,38 +33,49 @@ class SpotlightService:
         self, limit: int = 20, force_refresh: bool = False
     ) -> list[dict[str, Any]]:
         cache_key = f"local:{limit}"
+        logger.debug("Spotlight list_local_candidates limit={} force_refresh={}", limit, force_refresh)
         if not force_refresh:
             cached = self._cache.get(cache_key, ttl=self._local_ttl)
             if cached is not None:
+                logger.debug("Spotlight local cache hit for {}", cache_key)
                 return cached
 
         items = self._scan_local_assets(limit=limit)
         if items or force_refresh:
             self._cache.set(cache_key, items)
+            logger.info("Spotlight local scanned {} item(s) for {}", len(items), cache_key)
         else:
             stale = self._cache.get_stale(cache_key)
             if stale is not None:
+                logger.info("Spotlight local empty scan, fallback to stale cache for {}", cache_key)
                 return stale
         return items
 
     def _scan_local_assets(self, limit: int) -> list[dict[str, Any]]:
         if os.name != "nt":
+            logger.debug("Spotlight local scan skipped: not Windows")
             return []
 
         assets_path = Path.home() / "AppData/Local/Packages/Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy/LocalState/Assets"
         if not assets_path.exists():
+            logger.debug("Spotlight local assets path not found: {}", assets_path)
             return []
 
+        logger.debug("Spotlight scanning local assets at {} (limit={})", assets_path, limit)
         items: list[dict] = []
+        skipped = 0
         for asset in sorted(assets_path.iterdir(), key=lambda item: item.stat().st_mtime, reverse=True):
             if not asset.is_file() or asset.stat().st_size < 150_000:
+                skipped += 1
                 continue
             try:
                 with Image.open(asset) as image:
                     width, height = image.size
                 if width < 1000 or height < 1000:
+                    skipped += 1
                     continue
             except Exception:
+                skipped += 1
                 continue
 
             identifier = hashlib.sha1(str(asset).encode("utf-8")).hexdigest()
@@ -83,15 +95,18 @@ class SpotlightService:
             if len(items) >= limit:
                 break
 
+        logger.debug("Spotlight local scan complete: {} kept, {} skipped", len(items), skipped)
         return items
 
     def list_online_candidates(
         self, limit: int = 20, market: str = "zh-CN", force_refresh: bool = False
     ) -> list[dict[str, Any]]:
         cache_key = f"online:{limit}:{market}"
+        logger.debug("Spotlight list_online_candidates limit={} market={} force_refresh={}", limit, market, force_refresh)
         if not force_refresh:
             cached = self._cache.get(cache_key, ttl=self._online_ttl)
             if cached is not None:
+                logger.debug("Spotlight online cache hit for {}", cache_key)
                 return cached
 
         try:
@@ -112,24 +127,30 @@ class SpotlightService:
             )
             response.raise_for_status()
             payload = response.json().get("batchrsp", {})
-        except Exception:
+        except Exception as exc:
+            logger.warning("Spotlight online fetch failed for {}: {}", market, exc)
             stale = self._cache.get_stale(cache_key)
             if stale is not None:
+                logger.info("Spotlight online fallback to stale cache for {}", cache_key)
                 return stale
             raise
 
         items: list[dict[str, Any]] = []
+        skipped = 0
         for entry in payload.get("items", []):
             raw_item = entry.get("item", "")
             if not raw_item:
+                skipped += 1
                 continue
             try:
                 ad = json.loads(raw_item).get("ad", {})
             except json.JSONDecodeError:
+                skipped += 1
                 continue
             landscape = ad.get("landscapeImage", {}) or {}
             image_url = self._absolute_url(landscape.get("asset", ""))
             if not image_url:
+                skipped += 1
                 continue
             title = ad.get("title") or ad.get("description") or ad.get("copyright") or "Windows Spotlight 在线壁纸"
             items.append(
@@ -154,6 +175,7 @@ class SpotlightService:
             if len(items) >= limit:
                 break
         self._cache.set(cache_key, items)
+        logger.info("Spotlight online fetched {} item(s) for {} (skipped={})", len(items), cache_key, skipped)
         return items
 
     def _absolute_url(self, url: str) -> str:

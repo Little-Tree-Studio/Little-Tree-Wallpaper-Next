@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Card, Button, Tabs, ComboBox, Input, Label, ListBox,
-  Drawer, Switch, TextArea, TextField, FieldError, Description, Modal, Accordion, toast,
+  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, toast,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Heart, Copy, RefreshCw,
   Plus, Trash2, Upload,
-  Play, AlertCircle, Wand2, ChevronDown, ChevronRight,
+  Play, AlertCircle, Wand2, ChevronDown, ChevronRight, Braces,
 } from 'lucide-react';
 import {
   getWallpaperSources, setWallpaperSourceEnabled, deleteWallpaperSource,
@@ -14,6 +14,7 @@ import {
   downloadFile, setWallpaper, addFavorite, copyToClipboard,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
+import { logError } from '@/lib/log';
 import type {
   WallpaperSource, WallpaperSourceApiParameter,
   WallpaperSourceCreatorPayload,
@@ -276,10 +277,151 @@ const MAPPING_FIELD_KEYS: { key: string; label: string; required?: boolean }[] =
 
 /* ───── 请求/响应方法选项 ───── */
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
-const RESPONSE_FORMATS = ['json', 'html', 'raw', 'binary'];
+const RESPONSE_FORMATS = ['json', 'html', 'binary'];
 const RESPONSE_TYPES = ['single', 'multi'];
-const PAGINATION_STRATEGIES = ['offset', 'cursor', 'link_header', 'selector'];
-const ERROR_ACTIONS = ['skip', 'retry', 'fallback'];
+/* ───── 分页策略（含说明） ───── */
+interface PaginationOption {
+  value: string;
+  label: string;
+  desc: string;
+  longDesc: string;
+}
+
+const PAGINATION_OPTIONS: PaginationOption[] = [
+  {
+    value: 'offset',
+    label: '页码 / 偏移 (offset)',
+    desc: 'URL 中按页码递增，如 ?page={{page}}',
+    longDesc: '适合大多数 REST API。客户端从起始值开始，每次按增量递增请求下一页，直到结果为空或达到最大页数。',
+  },
+  {
+    value: 'cursor',
+    label: '游标 (cursor)',
+    desc: '下一页标识由上一页响应返回',
+    longDesc: '适合返回 next_cursor / next_token 等字段的接口。每次请求后从响应中提取游标，带入下一次请求。',
+  },
+  {
+    value: 'link_header',
+    label: 'Link 头 (link_header)',
+    desc: '自动解析响应 Link 头中的下一页链接',
+    longDesc: '适合遵循 RFC 5988、在 HTTP Link 头中返回 rel="next" 的接口，无需额外配置。',
+  },
+  {
+    value: 'selector',
+    label: '选择器 (selector)',
+    desc: '从 HTML 页面提取「下一页」链接',
+    longDesc: '适合 HTML 网页抓取。通过 CSS 选择器定位「下一页」按钮并取其链接地址。',
+  },
+];
+
+const CURSOR_IN_OPTIONS = [
+  { value: 'query', label: '查询参数' },
+  { value: 'header', label: '请求头' },
+  { value: 'body', label: '请求体' },
+];
+/* ───── 错误处理场景（含本地化的可选动作） ───── */
+interface ErrorAction { value: string; label: string; desc?: string }
+interface ErrorScenario {
+  key: 'on_http_4xx' | 'on_http_5xx' | 'on_empty_response' | 'on_mapping_failure';
+  label: string;
+  desc: string;
+  actions: ErrorAction[];
+}
+
+const ERROR_SCENARIOS: ErrorScenario[] = [
+  {
+    key: 'on_http_4xx',
+    label: 'HTTP 4xx 错误',
+    desc: '收到 4xx 状态码（如 404 未找到、403 无权限）时',
+    actions: [
+      { value: '', label: '默认 (跳过)' },
+      { value: 'skip', label: '跳过', desc: '丢弃本次结果' },
+      { value: 'fallback', label: '降级', desc: '改用备用接口' },
+      { value: 'retry', label: '重试', desc: '重新发起请求' },
+    ],
+  },
+  {
+    key: 'on_http_5xx',
+    label: 'HTTP 5xx 错误',
+    desc: '收到 5xx 状态码（如 500 服务器错误、502 网关错误）时',
+    actions: [
+      { value: '', label: '默认 (重试)' },
+      { value: 'skip', label: '跳过', desc: '丢弃本次结果' },
+      { value: 'fallback', label: '降级', desc: '改用备用接口' },
+      { value: 'retry', label: '重试', desc: '重新发起请求' },
+    ],
+  },
+  {
+    key: 'on_empty_response',
+    label: '空响应',
+    desc: '响应体为空或不含有效数据时',
+    actions: [
+      { value: '', label: '默认 (跳过)' },
+      { value: 'skip', label: '跳过', desc: '丢弃本次结果' },
+      { value: 'fallback', label: '降级', desc: '改用备用接口' },
+      { value: 'retry', label: '重试', desc: '重新发起请求' },
+    ],
+  },
+  {
+    key: 'on_mapping_failure',
+    label: '映射失败',
+    desc: '多条结果中单个条目映射失败时',
+    actions: [
+      { value: '', label: '默认 (丢弃单条)' },
+      { value: 'skip_item', label: '丢弃单条', desc: '仅丢弃失败的条目' },
+      { value: 'skip', label: '丢弃全部', desc: '丢弃整个接口的结果' },
+    ],
+  },
+];
+
+/* ───── 验证约束动作 ───── */
+const VALIDATION_ACTIONS: ErrorAction[] = [
+  { value: 'skip', label: '丢弃', desc: '移除不满足条件的条目' },
+  { value: 'warn', label: '警告', desc: '保留但记录警告' },
+  { value: 'ignore', label: '忽略', desc: '不处理，照常保留' },
+];
+
+const SPECIAL_VALUE_CATEGORIES = [
+  {
+    label: '时间',
+    values: [
+      { key: '{{timestamp_ms}}', label: '时间戳(ms)', desc: '1704067200000' },
+      { key: '{{timestamp_s}}', label: '时间戳(s)', desc: '1704067200' },
+      { key: '{{date_iso}}', label: 'ISO日期', desc: '2024-01-01' },
+      { key: '{{date_cn}}', label: '中文日期', desc: '2024年01月01日' },
+      { key: '{{year}}', label: '年', desc: '2024' },
+      { key: '{{month}}', label: '月', desc: '01' },
+      { key: '{{day}}', label: '日', desc: '01' },
+      { key: '{{hour}}', label: '时', desc: '12' },
+      { key: '{{minute}}', label: '分', desc: '30' },
+      { key: '{{second}}', label: '秒', desc: '45' },
+    ],
+  },
+  {
+    label: '随机',
+    values: [
+      { key: '{{random_string:8}}', label: '随机字符串', desc: '8位随机字符' },
+      { key: '{{random_int:1:100}}', label: '随机整数', desc: '1~100' },
+      { key: '{{random_hex:8}}', label: '随机十六进制', desc: '8位hex' },
+    ],
+  },
+  {
+    label: '屏幕',
+    values: [
+      { key: '{{screen_width}}', label: '屏幕宽度', desc: '设备宽度' },
+      { key: '{{screen_height}}', label: '屏幕高度', desc: '设备高度' },
+      { key: '{{screen_ratio}}', label: '屏幕比例', desc: '宽高比' },
+    ],
+  },
+  {
+    label: '分页',
+    values: [
+      { key: '{{page}}', label: '页码', desc: 'offset策略' },
+      { key: '{{offset}}', label: '偏移量', desc: 'offset策略' },
+      { key: '{{cursor}}', label: '游标', desc: 'cursor策略' },
+    ],
+  },
+];
 
 /* ───── JSON 树组件 ───── */
 interface JsonTreeViewProps {
@@ -386,6 +528,10 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
   const [jsonTreeSelected, setJsonTreeSelected] = useState('');
   const [editPipeIdx, setEditPipeIdx] = useState<number>(-1);
 
+  /* 特殊值模板生成器状态 */
+  const [specialGenOpen, setSpecialGenOpen] = useState(false);
+  const [specialGenTarget, setSpecialGenTarget] = useState<{ target: 'mapping' | 'cache'; fieldKey: string; apiIndex: number } | null>(null);
+
   const { openViewer } = useImageViewer();
 
   /* ───── 验证 ───── */
@@ -430,12 +576,19 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
 
         if (!api.response?.format?.trim()) e.format = '响应格式为必填项';
 
-        const itemsPath = api.mapping?.items?.trim() || '';
-        if (!itemsPath) e.items = '条目路径为必填项';
-        else if (!itemsPath.startsWith('$')) e.items = '条目路径应以 $ 开头';
+        const isRaw = api.response?.format === 'binary';
+        const isMulti = api.response?.type === 'multi' && api.response?.format !== 'binary';
 
-        const imagePath = api.mapping?.fields?.image?.trim() || '';
-        if (!imagePath) e.image = '图片字段映射为必填项';
+        if (isMulti) {
+          const itemsPath = api.mapping?.items?.trim() || '';
+          if (!itemsPath) e.items = '条目路径为必填项';
+          else if (!itemsPath.startsWith('$')) e.items = '条目路径应以 $ 开头';
+        }
+
+        if (!isRaw) {
+          const imagePath = api.mapping?.fields?.image?.trim() || '';
+          if (!imagePath) e.image = '图片字段映射为必填项';
+        }
 
         if (Object.keys(e).length > 0) errors.apis[idx] = e;
       });
@@ -481,13 +634,13 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
         const firstValid = list.find((s) => !s.invalid && s.enabled !== false);
         if (firstValid) setSelectedSourceId(firstValid.identifier);
       }
-    } catch (e) { console.error('Failed to load wallpaper sources', e); }
+    } catch (e) { logError('Failed to load wallpaper sources', e); }
     finally { setLoading(false); }
   };
 
   const handleToggleSource = async (source: WallpaperSource) => {
     try { await setWallpaperSourceEnabled(source.identifier, !source.enabled); await loadSources(); }
-    catch (e) { console.error('Failed to toggle source', e); }
+    catch (e) { logError('Failed to toggle source', e); }
   };
 
   const handleDeleteSource = async (source: WallpaperSource) => {
@@ -496,7 +649,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
       await deleteWallpaperSource(source.identifier);
       if (selectedSourceId === source.identifier) setSelectedSourceId('');
       await loadSources();
-    } catch (e) { console.error('Failed to delete source', e); }
+    } catch (e) { logError('Failed to delete source', e); }
   };
 
   const handleExecute = async () => {
@@ -513,7 +666,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
       });
       const items = await executeWallpaperSource(selectedSourceId, selectedApiName, payload);
       setResults(items || []); onExecute?.(items || []);
-    } catch (e) { console.error('Execute source failed', e); }
+    } catch (e) { logError('Execute source failed', e); }
     finally { setResultsLoading(false); }
   };
 
@@ -521,7 +674,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     try {
       const imported = await pickAndImportSource();
       if (imported) { await loadSources(); setSelectedSourceId(imported.identifier); }
-    } catch (e) { console.error('Import failed', e); }
+    } catch (e) { logError('Import failed', e); }
   };
 
   const selectedSource = useMemo(() => sources.find((s) => s.identifier === selectedSourceId), [sources, selectedSourceId]);
@@ -587,6 +740,31 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     }
     setCreatorPayload((prev) => ({ ...prev, apis: next }));
     setPathGenOpen(false);
+  };
+
+  const openSpecialGen = (fieldKey: string, apiIndex: number, target: 'mapping' | 'cache' = 'mapping') => {
+    setSpecialGenTarget({ target, fieldKey, apiIndex });
+    setSpecialGenOpen(true);
+  };
+
+  const applySpecialValue = (value: string) => {
+    if (!specialGenTarget) return;
+    const { target, fieldKey, apiIndex } = specialGenTarget;
+    const next = [...(creatorPayload.apis || [])];
+    if (target === 'cache') {
+      const current = next[apiIndex]?.cache?.key_template || '';
+      const nextValue = current ? `${current}${value}` : value;
+      next[apiIndex] = { ...next[apiIndex], cache: { ...next[apiIndex].cache, key_template: nextValue } };
+    } else {
+      const current = next[apiIndex]?.mapping?.fields?.[fieldKey] || '';
+      const nextValue = current ? `${current} ${value}` : value;
+      next[apiIndex] = {
+        ...next[apiIndex],
+        mapping: { ...next[apiIndex].mapping, fields: { ...next[apiIndex].mapping?.fields, [fieldKey]: nextValue } },
+      };
+    }
+    setCreatorPayload((prev) => ({ ...prev, apis: next }));
+    setSpecialGenOpen(false);
   };
 
   /* ───── payload 更新辅助 ───── */
@@ -812,7 +990,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                         <Label>底部文案</Label>
                         <Input value={creatorPayload.source?.footer_text || ''}
                           onChange={(e) => setCreatorPayload((p) => ({ ...p, source: { ...p.source, footer_text: e.target.value } }))}
-                          placeholder="© 2025 示例壁纸源"
+                          placeholder="© 2026 示例壁纸源"
                         />
                       </TextField>
 
@@ -932,6 +1110,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                       {(creatorPayload.apis || []).map((api, idx) => {
                         const e = validation.errors.apis[idx] || {};
                         const cats = (creatorPayload.categories?.categories || []).map((c) => ({ id: c.id, name: c.name || c.id }));
+                        const pOpt = PAGINATION_OPTIONS.find((o) => o.value === (api.pagination?.strategy || ''));
                         return (
                           <div key={idx} className="rounded-lg border border-border bg-surface p-0 overflow-hidden">
                             {/* API 标题栏（可点击展开/折叠） */}
@@ -1102,41 +1281,81 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                             {e.format && <div className="text-sm text-danger">{e.format}</div>}
 
                             {/* Mapping Fields */}
-                            <TextField isInvalid={!!e.items}>
-                              <Label className="text-xs text-muted">条目路径 (items)</Label>
-                              <Description className="text-[10px] text-muted"
->指定如何从响应中提取壁纸条目列表的路径表达式，如 $.data.list[*]</Description>
-                              <div className="flex items-start gap-2">
-                                <Input className="h-8 text-sm flex-1" value={api.mapping?.items || ''}
-                                  onChange={(ev) => updateApi(idx, { mapping: { ...api.mapping, items: ev.target.value } })}
-                                  placeholder="$.data.list[*]"
-                                />
-                                <Button isIconOnly variant="ghost" size="sm" className="mt-0.5" onPress={() => openPathGen('items', idx)}><Wand2 size={14} /></Button>
-                              </div>
-                              <FieldError>{e.items}</FieldError>
-                            </TextField>
-
-                            <div className="space-y-2">
-                              <Label className="text-xs text-muted">字段映射 (fields)</Label>
-                              <Description className="text-[10px] text-muted">定义从每个条目中提取哪些字段，image 字段必填</Description>
-                              {MAPPING_FIELD_KEYS.map((field) => (
-                                <div key={field.key} className="flex items-start gap-2">
-                                  <TextField className="flex-1" isInvalid={field.key === 'image' && !!e.image}>
-                                    <Label className="text-xs text-muted">{field.label}{field.required && <span className="text-danger"> *</span>}</Label>
-                                    <Input className="h-8 text-sm"
-                                      value={api.mapping?.fields?.[field.key] || ''}
-                                      onChange={(ev) => updateApi(idx, {
-                                        mapping: { ...api.mapping, fields: { ...api.mapping?.fields, [field.key]: ev.target.value } },
-                                      })}
-                                      placeholder={`${field.key} 路径`}
-                                    />
-                                    {field.key === 'image' && <FieldError>{e.image}</FieldError>}
-                                  </TextField>
-                                  <Button isIconOnly variant="ghost" size="sm" className="mt-5"
-                                    onPress={() => openPathGen(field.key, idx)}><Wand2 size={14} /></Button>
+                            {api.response?.type === 'multi' && api.response?.format !== 'binary' && (
+                              <TextField isInvalid={!!e.items}>
+                                <Label className="text-xs text-muted">条目路径 (items)</Label>
+                                <Description className="text-[10px] text-muted block">
+                                  指定如何从响应中提取壁纸条目列表的路径表达式，如 $.data.list[*]
+                                </Description>
+                                <div className="flex items-start gap-2">
+                                  <Input className="h-8 text-sm flex-1" value={api.mapping?.items || ''}
+                                    onChange={(ev) => updateApi(idx, { mapping: { ...api.mapping, items: ev.target.value } })}
+                                    placeholder="$.data.list[*]"
+                                  />
+                                  <Tooltip delay={0}>
+                                    <Tooltip.Trigger>
+                                      <Button isIconOnly variant="ghost" size="sm" className="mt-0.5" onPress={() => openPathGen('items', idx)}><Wand2 size={14} /></Button>
+                                    </Tooltip.Trigger>
+                                    <Tooltip.Content placement="right">
+                                      <p>路径生成器</p>
+                                    </Tooltip.Content>
+                                  </Tooltip>
                                 </div>
-                              ))}
-                            </div>
+                                <FieldError>{e.items}</FieldError>
+                              </TextField>
+                            )}
+
+                            {api.response?.format !== 'binary' ? (
+                              <div className="space-y-2">
+                                <Label className="text-xs text-muted">字段映射 (fields)</Label>
+                                <Description className="text-[10px] text-muted">
+                                  {api.response?.type === 'multi' ? '定义从每个条目中提取哪些字段，image 字段必填' : '定义从响应中提取哪些字段，image 字段必填'}
+                                </Description>
+                                {MAPPING_FIELD_KEYS.map((field) => (
+                                  <div key={field.key} className="flex items-center gap-2">
+                                    <TextField className="flex-1" isInvalid={field.key === 'image' && !!e.image}>
+                                      <Label className="text-xs text-muted">{field.label}{field.required && <span className="text-danger"> *</span>}</Label>
+                                      <Input className="h-8 text-sm"
+                                        value={api.mapping?.fields?.[field.key] || ''}
+                                        onChange={(ev) => updateApi(idx, {
+                                          mapping: { ...api.mapping, fields: { ...api.mapping?.fields, [field.key]: ev.target.value } },
+                                        })}
+                                        placeholder={`${field.key} 路径`}
+                                      />
+                                      {field.key === 'image' && <FieldError>{e.image}</FieldError>}
+                                    </TextField>
+                                    <div className="flex flex-col gap-1">
+                                      <Tooltip delay={0}>
+                                        <Tooltip.Trigger>
+                                          <Button isIconOnly variant="ghost" size="sm"
+                                            onPress={() => openPathGen(field.key, idx)}><Wand2 size={14} /></Button>
+                                        </Tooltip.Trigger>
+                                        <Tooltip.Content placement="right">
+                                          <p>路径生成器</p>
+                                        </Tooltip.Content>
+                                      </Tooltip>
+                                      {field.key !== 'image' ? (
+                                        <Tooltip delay={0}>
+                                          <Tooltip.Trigger>
+                                            <Button isIconOnly variant="ghost" size="sm"
+                                              onPress={() => openSpecialGen(field.key, idx)}><Braces size={14} /></Button>
+                                          </Tooltip.Trigger>
+                                          <Tooltip.Content placement="right">
+                                            <p>特殊值模板</p>
+                                          </Tooltip.Content>
+                                        </Tooltip>
+                                      ) : (
+                                        <Button isIconOnly variant="ghost" size="sm" className="opacity-0 pointer-events-none"><Braces size={14} /></Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="rounded-lg border border-border bg-surface-secondary p-3 text-sm text-muted">
+                                当前响应格式为 <strong>{api.response?.format?.toUpperCase()}</strong>，响应体本身就是图片数据，无需配置字段映射。
+                              </div>
+                            )}
 
                             {/* 高级配置 Accordion */}
                             <Accordion variant="surface">
@@ -1149,90 +1368,189 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                     <Accordion.Indicator><ChevronDown size={14} /></Accordion.Indicator>
                                   </Accordion.Trigger>
                                 </Accordion.Heading>
-                                <Accordion.Panel><Accordion.Body><div className="space-y-2">
-                                  <ComboBox selectedKey={api.pagination?.strategy || ''}
-                                    onSelectionChange={(k) => updateApi(idx, { pagination: { ...api.pagination, strategy: String(k || '') } })}
-                                  >
-                                    <ComboBox.InputGroup><Input className="h-8 text-sm" placeholder="选择策略" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                    <ComboBox.Popover><ListBox>
-                                      <ListBox.Item id="" textValue="无分页">无分页</ListBox.Item>
-                                      {PAGINATION_STRATEGIES.map((s) => <ListBox.Item key={s} id={s} textValue={s}>{s}</ListBox.Item>)}
-                                    </ListBox></ComboBox.Popover>
-                                  </ComboBox>
-                                  {api.pagination?.strategy && (
-                                    <>
-                                      <div className="grid grid-cols-2 gap-2">
-                                        <TextField><Input type="number" className="h-8 text-sm"
-                                          value={String(api.pagination?.max_pages ?? '')}
-                                          onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, max_pages: Number(ev.target.value) } })}
-                                          placeholder="最大页数"
-                                        /></TextField>
-                                        <TextField><Input type="number" className="h-8 text-sm"
-                                          value={String(api.pagination?.page_size ?? '')}
-                                          onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, page_size: Number(ev.target.value) } })}
-                                          placeholder="每页数量"
-                                        /></TextField>
-                                        <TextField><Input type="number" className="h-8 text-sm"
-                                          value={String(api.pagination?.delay_ms ?? '')}
-                                          onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, delay_ms: Number(ev.target.value) } })}
-                                          placeholder="延迟(ms)"
-                                        /></TextField>
-                                        <TextField><Input className="h-8 text-sm"
-                                          value={String(api.pagination?.param_name ?? '')}
-                                          onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, param_name: ev.target.value } })}
-                                          placeholder="参数名"
-                                        /></TextField>
-                                      </div>
-                                      {api.pagination?.strategy === 'offset' && (
+                                <Accordion.Panel><Accordion.Body>
+                                  <div className="space-y-3">
+                                    <Description className="text-[10px] text-muted block">启用分页后，客户端会按策略连续请求多页并合并结果。仅需单页数据时选择「无分页」。</Description>
+                                    <div className="space-y-1">
+                                      <Label className="text-xs text-muted block">分页策略</Label>
+                                      <ComboBox selectedKey={api.pagination?.strategy || ''}
+                                        onSelectionChange={(k) => updateApi(idx, { pagination: { ...api.pagination, strategy: String(k || '') } })}
+                                      >
+                                        <ComboBox.InputGroup><Input className="h-8 text-sm" placeholder="选择策略" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                        <ComboBox.Popover><ListBox>
+                                          <ListBox.Item id="" textValue="无分页">无分页</ListBox.Item>
+                                          {PAGINATION_OPTIONS.map((o) => (
+                                            <ListBox.Item key={o.value} id={o.value} textValue={o.label}>
+                                              <div className="flex flex-col">
+                                                <Label>{o.label}</Label>
+                                                <Description>{o.desc}</Description>
+                                              </div>
+                                            </ListBox.Item>
+                                          ))}
+                                        </ListBox></ComboBox.Popover>
+                                      </ComboBox>
+                                    </div>
+
+                                    {api.pagination?.strategy && pOpt && (
+                                      <>
+                                        <div className="rounded-lg border border-border bg-surface-secondary p-2 text-[11px] text-muted leading-relaxed">{pOpt.longDesc}</div>
+
                                         <div className="grid grid-cols-2 gap-2">
-                                          <TextField><Input type="number" className="h-8 text-sm"
-                                            value={String(api.pagination?.start_value ?? '')}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, start_value: Number(ev.target.value) } })}
-                                            placeholder="起始值"
-                                          /></TextField>
-                                          <TextField><Input type="number" className="h-8 text-sm"
-                                            value={String(api.pagination?.increment ?? '')}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, increment: Number(ev.target.value) } })}
-                                            placeholder="增量"
-                                          /></TextField>
+                                          <TextField>
+                                            <Label className="text-xs text-muted">最大页数</Label>
+                                            <Description className="text-[10px] text-muted">最多翻多少页，防止无限请求</Description>
+                                            <Input type="number" className="h-8 text-sm"
+                                              value={String(api.pagination?.max_pages ?? '')}
+                                              onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, max_pages: Number(ev.target.value) } })}
+                                              placeholder="如 10"
+                                            />
+                                          </TextField>
+                                          <TextField>
+                                            <Label className="text-xs text-muted">每页数量</Label>
+                                            <Description className="text-[10px] text-muted">每页期望的条目数</Description>
+                                            <Input type="number" className="h-8 text-sm"
+                                              value={String(api.pagination?.page_size ?? '')}
+                                              onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, page_size: Number(ev.target.value) } })}
+                                              placeholder="如 20"
+                                            />
+                                          </TextField>
+                                          <TextField>
+                                            <Label className="text-xs text-muted">请求间隔 (毫秒)</Label>
+                                            <Description className="text-[10px] text-muted">分页请求之间的最小延迟</Description>
+                                            <Input type="number" className="h-8 text-sm"
+                                              value={String(api.pagination?.delay_ms ?? '')}
+                                              onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, delay_ms: Number(ev.target.value) } })}
+                                              placeholder="如 200"
+                                            />
+                                          </TextField>
                                         </div>
-                                      )}
-                                      {api.pagination?.strategy === 'cursor' && (
-                                        <div className="space-y-2">
-                                          <TextField><Input className="h-8 text-sm"
-                                            value={api.pagination?.cursor_path || ''}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, cursor_path: ev.target.value } })}
-                                            placeholder="cursor_path"
-                                          /></TextField>
-                                          <TextField><Input className="h-8 text-sm"
-                                            value={api.pagination?.cursor_param || ''}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, cursor_param: ev.target.value } })}
-                                            placeholder="cursor_param"
-                                          /></TextField>
-                                          <TextField><Input className="h-8 text-sm"
-                                            value={api.pagination?.cursor_in || ''}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, cursor_in: ev.target.value } })}
-                                            placeholder="cursor_in (query/header/body)"
-                                          /></TextField>
-                                        </div>
-                                      )}
-                                      {api.pagination?.strategy === 'selector' && (
-                                        <div className="space-y-2">
-                                          <TextField><Input className="h-8 text-sm"
-                                            value={api.pagination?.next_selector || ''}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, next_selector: ev.target.value } })}
-                                            placeholder="next_selector"
-                                          /></TextField>
-                                          <TextField><Input className="h-8 text-sm"
-                                            value={api.pagination?.attr || ''}
-                                            onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, attr: ev.target.value } })}
-                                            placeholder="attr (默认 href)"
-                                          /></TextField>
-                                        </div>
-                                      )}
-                                    </>
-                                  )}
-                                </div></Accordion.Body></Accordion.Panel>
+
+                                        {api.pagination.strategy === 'offset' && (
+                                          <div className="space-y-2 rounded-lg border border-border bg-surface-secondary p-2">
+                                            <div className="text-xs font-medium">页码递增设置</div>
+                                            <Description className="text-[10px] text-muted block">{'在请求 URL 中用变量占位（如 ?page={{page}}），客户端会按起始值递增地请求下一页'}</Description>
+                                            <TextField>
+                                              <Label className="text-xs text-muted">页码变量名</Label>
+                                              <Description className="text-[10px] text-muted">{'该名称会成为 URL 中的 {{变量}}，默认 page'}</Description>
+                                              <Input className="h-8 text-sm"
+                                                value={String(api.pagination?.param_name ?? '')}
+                                                onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, param_name: ev.target.value } })}
+                                                placeholder="page"
+                                              />
+                                            </TextField>
+                                            <div className="grid grid-cols-2 gap-2">
+                                              <TextField>
+                                                <Label className="text-xs text-muted">起始值</Label>
+                                                <Input type="number" className="h-8 text-sm"
+                                                  value={String(api.pagination?.start_value ?? '')}
+                                                  onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, start_value: Number(ev.target.value) } })}
+                                                  placeholder="如 1"
+                                                />
+                                              </TextField>
+                                              <TextField>
+                                                <Label className="text-xs text-muted">每次增量</Label>
+                                                <Input type="number" className="h-8 text-sm"
+                                                  value={String(api.pagination?.increment ?? '')}
+                                                  onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, increment: Number(ev.target.value) } })}
+                                                  placeholder="如 1"
+                                                />
+                                              </TextField>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {api.pagination.strategy === 'cursor' && (
+                                          <div className="space-y-2 rounded-lg border border-border bg-surface-secondary p-2">
+                                            <div className="text-xs font-medium">游标分页设置</div>
+                                            <Description className="text-[10px] text-muted block">{'从响应中提取游标（如 next_cursor），并作为变量（默认 {{cursor}}）带入下一次请求'}</Description>
+                                            <TextField>
+                                              <Label className="text-xs text-muted">游标路径</Label>
+                                              <Description className="text-[10px] text-muted">从响应 JSON 中提取游标的路径表达式</Description>
+                                              <Input className="h-8 text-sm"
+                                                value={api.pagination?.cursor_path || ''}
+                                                onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, cursor_path: ev.target.value } })}
+                                                placeholder="$.next_cursor"
+                                              />
+                                            </TextField>
+                                            <div className="grid grid-cols-2 gap-2">
+                                              <TextField>
+                                                <Label className="text-xs text-muted">游标变量名</Label>
+                                                <Description className="text-[10px] text-muted">{'带入请求的变量名，默认 cursor'}</Description>
+                                                <Input className="h-8 text-sm"
+                                                  value={api.pagination?.cursor_param || ''}
+                                                  onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, cursor_param: ev.target.value } })}
+                                                  placeholder="cursor"
+                                                />
+                                              </TextField>
+                                              <div className="space-y-1">
+                                                <Label className="text-xs text-muted">游标位置</Label>
+                                                <Description className="text-[10px] text-muted">游标放入请求的哪个部分</Description>
+                                                <ComboBox selectedKey={api.pagination?.cursor_in || 'query'}
+                                                  onSelectionChange={(k) => updateApi(idx, { pagination: { ...api.pagination, cursor_in: String(k) } })}
+                                                >
+                                                  <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                                  <ComboBox.Popover><ListBox>
+                                                    {CURSOR_IN_OPTIONS.map((o) => <ListBox.Item key={o.value} id={o.value} textValue={o.label}>{o.label}</ListBox.Item>)}
+                                                  </ListBox></ComboBox.Popover>
+                                                </ComboBox>
+                                              </div>
+                                            </div>
+                                            <TextField>
+                                              <Label className="text-xs text-muted">首次游标（可选）</Label>
+                                              <Description className="text-[10px] text-muted">第一次请求携带的游标值，留空则不带</Description>
+                                              <Input className="h-8 text-sm"
+                                                value={api.pagination?.initial_cursor || ''}
+                                                onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, initial_cursor: ev.target.value } })}
+                                                placeholder="留空"
+                                              />
+                                            </TextField>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-xs">游标为空时停止翻页</span>
+                                              <Switch isSelected={api.pagination?.stop_on_missing ?? true}
+                                                onChange={(v) => updateApi(idx, { pagination: { ...api.pagination, stop_on_missing: v } })}
+                                              ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {api.pagination.strategy === 'selector' && (
+                                          <div className="space-y-2 rounded-lg border border-border bg-surface-secondary p-2">
+                                            <div className="text-xs font-medium">HTML 选择器设置</div>
+                                            <Description className="text-[10px] text-muted block">仅用于 HTML 响应。通过 CSS 选择器定位「下一页」按钮并取其链接地址</Description>
+                                            <TextField>
+                                              <Label className="text-xs text-muted">「下一页」选择器</Label>
+                                              <Description className="text-[10px] text-muted">定位下一页链接的 CSS 选择器</Description>
+                                              <Input className="h-8 text-sm"
+                                                value={api.pagination?.next_selector || ''}
+                                                onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, next_selector: ev.target.value } })}
+                                                placeholder="a.next-page"
+                                              />
+                                            </TextField>
+                                            <TextField>
+                                              <Label className="text-xs text-muted">链接属性</Label>
+                                              <Description className="text-[10px] text-muted">从该属性取链接地址，默认 href</Description>
+                                              <Input className="h-8 text-sm"
+                                                value={api.pagination?.attr || ''}
+                                                onChange={(ev) => updateApi(idx, { pagination: { ...api.pagination, attr: ev.target.value } })}
+                                                placeholder="href"
+                                              />
+                                            </TextField>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-xs">找不到链接时停止</span>
+                                              <Switch isSelected={api.pagination?.stop_on_missing ?? true}
+                                                onChange={(v) => updateApi(idx, { pagination: { ...api.pagination, stop_on_missing: v } })}
+                                              ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {api.pagination.strategy === 'link_header' && (
+                                          <div className="rounded-lg border border-border bg-surface-secondary p-2 text-[11px] text-muted leading-relaxed">此策略无需额外配置，客户端会自动解析响应头中 rel="next" 的链接作为下一页。</div>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                </Accordion.Body></Accordion.Panel>
                               </Accordion.Item>
 
                               {/* Post Process */}
@@ -1254,25 +1572,25 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                     />
                                   </TextField>
                                   <div className="space-y-1">
-                                    <Label className="text-xs text-muted">合并字段</Label>
-                                    <Description className="text-[10px] text-muted">为每个条目添加或覆盖固定字段，常用于标注数据来源</Description>
+                                    <Label className="text-xs text-muted block">合并字段</Label>
+                                    <Description className="text-[10px] text-muted block">为每个条目添加或覆盖固定字段值，如统一标注来源</Description>
                                     {(Object.entries(api.post_process?.merge || {})).map(([k, v], mi) => (
-                                      <div key={mi} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-                                        <Input className="h-7 text-xs" value={k}
+                                      <div key={mi} className="flex items-center gap-2">
+                                        <Input className="h-7 text-xs flex-1 min-w-0" value={k}
                                           onChange={(ev) => {
                                             const old = api.post_process?.merge || {};
                                             const next: Record<string, string> = {};
                                             Object.entries(old).forEach(([ok, ov], oi) => { if (oi === mi) next[ev.target.value] = String(ov); else next[ok] = String(ov); });
                                             updateApi(idx, { post_process: { ...api.post_process, merge: next } });
-                                          }} placeholder="key"
+                                        }} placeholder="字段名 (如 source)"
+                                      />
+                                      <Input className="h-7 text-xs flex-1 min-w-0" value={String(v)}
+                                        onChange={(ev) => {
+                                          const next = { ...(api.post_process?.merge || {}), [k]: ev.target.value };
+                                          updateApi(idx, { post_process: { ...api.post_process, merge: next } });
+                                        }} placeholder="字段值 (如 Bing)"
                                         />
-                                        <Input className="h-7 text-xs" value={String(v)}
-                                          onChange={(ev) => {
-                                            const next = { ...(api.post_process?.merge || {}), [k]: ev.target.value };
-                                            updateApi(idx, { post_process: { ...api.post_process, merge: next } });
-                                          }} placeholder="value"
-                                        />
-                                        <Button isIconOnly variant="ghost" size="sm" className="h-7 w-7"
+                                        <Button isIconOnly variant="ghost" size="sm" className="h-7 w-7 shrink-0"
                                           onPress={() => {
                                             const next = { ...(api.post_process?.merge || {}) };
                                             delete next[k];
@@ -1307,43 +1625,108 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                     />
                                   </TextField>
                                   <div className="space-y-1">
-                                    <Label className="text-xs text-muted">约束规则</Label>
+                                    <Label className="text-xs text-muted block">约束规则</Label>
+                                    <Description className="text-[10px] text-muted block">为指定字段设置正则、长度或数值范围约束，不满足时按动作处理</Description>
                                     {(api.validation?.constraints || []).map((c, ci) => (
-                                      <div key={ci} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
-                                        <Input className="h-7 text-xs" value={c.path}
-                                          onChange={(ev) => {
-                                            const next = [...(api.validation?.constraints || [])];
-                                            next[ci] = { ...next[ci], path: ev.target.value };
-                                            updateApi(idx, { validation: { ...api.validation, constraints: next } });
-                                          }} placeholder="path"
-                                        />
-                                        <Input className="h-7 text-xs" value={c.regex || ''}
-                                          onChange={(ev) => {
-                                            const next = [...(api.validation?.constraints || [])];
-                                            next[ci] = { ...next[ci], regex: ev.target.value };
-                                            updateApi(idx, { validation: { ...api.validation, constraints: next } });
-                                          }} placeholder="regex"
-                                        />
-                                        <ComboBox selectedKey={c.action || 'skip'}
-                                          onSelectionChange={(k) => {
-                                            const next = [...(api.validation?.constraints || [])];
-                                            next[ci] = { ...next[ci], action: String(k) };
-                                            updateApi(idx, { validation: { ...api.validation, constraints: next } });
-                                          }}
-                                        >
-                                          <ComboBox.InputGroup><Input className="h-7 text-xs" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                          <ComboBox.Popover><ListBox>
-                                            <ListBox.Item id="skip" textValue="丢弃">丢弃</ListBox.Item>
-                                            <ListBox.Item id="warn" textValue="警告">警告</ListBox.Item>
-                                            <ListBox.Item id="ignore" textValue="忽略">忽略</ListBox.Item>
-                                          </ListBox></ComboBox.Popover>
-                                        </ComboBox>
-                                        <Button isIconOnly variant="ghost" size="sm" className="h-7 w-7"
-                                          onPress={() => {
-                                            const next = (api.validation?.constraints || []).filter((_, i) => i !== ci);
-                                            updateApi(idx, { validation: { ...api.validation, constraints: next } });
-                                          }}
-                                        ><Trash2 size={12} /></Button>
+                                      <div key={ci} className="rounded-lg border border-border bg-surface-secondary p-2 space-y-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="text-[10px] text-muted shrink-0">规则 #{ci + 1}</span>
+                                          <Button isIconOnly variant="ghost" size="sm" className="h-6 w-6 shrink-0"
+                                            onPress={() => {
+                                              const next = (api.validation?.constraints || []).filter((_, i) => i !== ci);
+                                              updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                            }}
+                                          ><Trash2 size={12} /></Button>
+                                        </div>
+                                        <TextField>
+                                          <Label className="text-xs text-muted">字段路径 *</Label>
+                                          <Input className="h-8 text-sm" value={c.path}
+                                            onChange={(ev) => {
+                                              const next = [...(api.validation?.constraints || [])];
+                                              next[ci] = { ...next[ci], path: ev.target.value };
+                                              updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                            }} placeholder="$.image"
+                                          />
+                                        </TextField>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div className="space-y-1">
+                                            <Label className="text-xs text-muted">失败动作</Label>
+                                            <ComboBox selectedKey={c.action || 'skip'}
+                                              onSelectionChange={(k) => {
+                                                const next = [...(api.validation?.constraints || [])];
+                                                next[ci] = { ...next[ci], action: String(k) };
+                                                updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                              }}
+                                            >
+                                              <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                              <ComboBox.Popover><ListBox>
+                                                {VALIDATION_ACTIONS.map((a) => (
+                                                  <ListBox.Item key={a.value} id={a.value} textValue={a.label}>
+                                                    <div className="flex flex-col">
+                                                      <Label>{a.label}</Label>
+                                                      <Description>{a.desc}</Description>
+                                                    </div>
+                                                  </ListBox.Item>
+                                                ))}
+                                              </ListBox></ComboBox.Popover>
+                                            </ComboBox>
+                                          </div>
+                                          <TextField>
+                                            <Label className="text-xs text-muted">正则匹配</Label>
+                                            <Input className="h-8 text-sm" value={c.regex || ''}
+                                              onChange={(ev) => {
+                                                const next = [...(api.validation?.constraints || [])];
+                                                next[ci] = { ...next[ci], regex: ev.target.value };
+                                                updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                              }} placeholder="^https://"
+                                            />
+                                          </TextField>
+                                        </div>
+                                        <div>
+                                          <div className="text-[10px] text-muted mb-1">范围约束（可选）</div>
+                                          <div className="grid grid-cols-2 gap-2">
+                                            <TextField>
+                                              <Label className="text-[10px] text-muted">最小长度</Label>
+                                              <Input type="number" className="h-8 text-sm" value={String(c.min_length ?? '')}
+                                                onChange={(ev) => {
+                                                  const next = [...(api.validation?.constraints || [])];
+                                                  next[ci] = { ...next[ci], min_length: ev.target.value ? Number(ev.target.value) : undefined };
+                                                  updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                                }} placeholder="最小长度"
+                                              />
+                                            </TextField>
+                                            <TextField>
+                                              <Label className="text-[10px] text-muted">最大长度</Label>
+                                              <Input type="number" className="h-8 text-sm" value={String(c.max_length ?? '')}
+                                                onChange={(ev) => {
+                                                  const next = [...(api.validation?.constraints || [])];
+                                                  next[ci] = { ...next[ci], max_length: ev.target.value ? Number(ev.target.value) : undefined };
+                                                  updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                                }} placeholder="最大长度"
+                                              />
+                                            </TextField>
+                                            <TextField>
+                                              <Label className="text-[10px] text-muted">最小值</Label>
+                                              <Input type="number" className="h-8 text-sm" value={String(c.min ?? '')}
+                                                onChange={(ev) => {
+                                                  const next = [...(api.validation?.constraints || [])];
+                                                  next[ci] = { ...next[ci], min: ev.target.value ? Number(ev.target.value) : undefined };
+                                                  updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                                }} placeholder="最小值"
+                                              />
+                                            </TextField>
+                                            <TextField>
+                                              <Label className="text-[10px] text-muted">最大值</Label>
+                                              <Input type="number" className="h-8 text-sm" value={String(c.max ?? '')}
+                                                onChange={(ev) => {
+                                                  const next = [...(api.validation?.constraints || [])];
+                                                  next[ci] = { ...next[ci], max: ev.target.value ? Number(ev.target.value) : undefined };
+                                                  updateApi(idx, { validation: { ...api.validation, constraints: next } });
+                                                }} placeholder="最大值"
+                                              />
+                                            </TextField>
+                                          </div>
+                                        </div>
                                       </div>
                                     ))}
                                     <Button size="sm" variant="secondary" className="h-7 text-xs"
@@ -1362,32 +1745,51 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                     <Accordion.Indicator><ChevronDown size={14} /></Accordion.Indicator>
                                   </Accordion.Trigger>
                                 </Accordion.Heading>
-                                <Accordion.Panel><Accordion.Body><div className="grid grid-cols-2 gap-2">
-                                  {[
-                                    { key: 'on_http_4xx', label: 'HTTP 4xx' },
-                                    { key: 'on_http_5xx', label: 'HTTP 5xx' },
-                                    { key: 'on_empty_response', label: '空响应' },
-                                    { key: 'on_mapping_failure', label: '映射失败' },
-                                  ].map((opt) => (
-                                    <ComboBox key={opt.key}
-                                      selectedKey={api.error_handling?.[opt.key as keyof typeof api.error_handling] || ''}
-                                      onSelectionChange={(k) => updateApi(idx, { error_handling: { ...api.error_handling, [opt.key]: String(k || '') } })}
-                                    >
-                                      <ComboBox.InputGroup><Input className="h-8 text-sm" placeholder={opt.label} /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                      <ComboBox.Popover><ListBox>
-                                        <ListBox.Item id="" textValue="默认">默认</ListBox.Item>
-                                        {ERROR_ACTIONS.map((a) => <ListBox.Item key={a} id={a} textValue={a}>{a}</ListBox.Item>)}
-                                      </ListBox></ComboBox.Popover>
-                                    </ComboBox>
-                                  ))}
-                                  <TextField>
-                                    <Input className="h-8 text-sm"
-                                      value={api.error_handling?.fallback_api || ''}
-                                      onChange={(ev) => updateApi(idx, { error_handling: { ...api.error_handling, fallback_api: ev.target.value } })}
-                                      placeholder="fallback_api"
-                                    />
-                                  </TextField>
-                                </div></Accordion.Body></Accordion.Panel>
+                                <Accordion.Panel><Accordion.Body>
+                                  <div className="space-y-3">
+                                    <Description className="text-[10px] text-muted">定义当请求或映射出现异常时的应对策略。留空表示使用客户端默认值。</Description>
+                                    {ERROR_SCENARIOS.map((scenario) => (
+                                      <div key={scenario.key} className="space-y-1">
+                                        <Label className="text-xs text-muted block">{scenario.label}</Label>
+                                        <Description className="text-[10px] text-muted block">{scenario.desc}</Description>
+                                        <ComboBox
+                                          selectedKey={api.error_handling?.[scenario.key] || ''}
+                                          onSelectionChange={(k) => updateApi(idx, { error_handling: { ...api.error_handling, [scenario.key]: String(k || '') } })}
+                                        >
+                                          <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                          <ComboBox.Popover><ListBox>
+                                            {scenario.actions.map((a) => (
+                                              <ListBox.Item key={a.value || 'default'} id={a.value} textValue={a.label}>
+                                                {a.desc ? (
+                                                  <div className="flex flex-col">
+                                                    <Label>{a.label}</Label>
+                                                    <Description>{a.desc}</Description>
+                                                  </div>
+                                                ) : <Label>{a.label}</Label>}
+                                              </ListBox.Item>
+                                            ))}
+                                          </ListBox></ComboBox.Popover>
+                                        </ComboBox>
+                                      </div>
+                                    ))}
+                                    <div className="space-y-1">
+                                      <Label className="text-xs text-muted block">备用接口</Label>
+                                      <Description className="text-[10px] text-muted block">当主接口失败且策略为「降级」时，改用此备用接口（须为同一源内的其它接口）</Description>
+                                      <ComboBox
+                                        selectedKey={api.error_handling?.fallback_api || ''}
+                                        onSelectionChange={(k) => updateApi(idx, { error_handling: { ...api.error_handling, fallback_api: String(k || '') } })}
+                                      >
+                                        <ComboBox.InputGroup><Input className="h-8 text-sm" placeholder="选择备用接口" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                        <ComboBox.Popover><ListBox>
+                                          <ListBox.Item id="" textValue="无">无</ListBox.Item>
+                                          {(creatorPayload.apis || []).map((a) => a.name.trim()).filter((n) => n && n !== api.name.trim()).map((n) => (
+                                            <ListBox.Item key={n} id={n} textValue={n}>{n}</ListBox.Item>
+                                          ))}
+                                        </ListBox></ComboBox.Popover>
+                                      </ComboBox>
+                                    </div>
+                                  </div>
+                                </Accordion.Body></Accordion.Panel>
                               </Accordion.Item>
 
                               {/* Cache */}
@@ -1399,28 +1801,46 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                                     <Accordion.Indicator><ChevronDown size={14} /></Accordion.Indicator>
                                   </Accordion.Trigger>
                                 </Accordion.Heading>
-                                <Accordion.Panel><Accordion.Body><div className="space-y-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm">启用缓存</span>
-                                    <Switch isSelected={api.cache?.enabled ?? true}
-                                      onChange={(v) => updateApi(idx, { cache: { ...api.cache, enabled: v } })}
-                                    ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <TextField><Input type="number" className="h-8 text-sm"
-                                      value={String(api.cache?.ttl_seconds ?? '')}
-                                      onChange={(ev) => updateApi(idx, { cache: { ...api.cache, ttl_seconds: Number(ev.target.value) } })}
-                                      placeholder="TTL (秒)"
-                                    /></TextField>
+                                <Accordion.Panel><Accordion.Body>
+                                  <div className="space-y-3">
+                                    <Description className="text-[10px] text-muted">为该接口单独设置缓存策略，优先级高于全局缓存配置</Description>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm">启用缓存</span>
+                                      <Switch isSelected={api.cache?.enabled ?? true}
+                                        onChange={(v) => updateApi(idx, { cache: { ...api.cache, enabled: v } })}
+                                      ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                                    </div>
                                     <TextField>
-                                      <Description className="text-[10px] text-muted">{'支持 {{变量}} 模板，如 bing_{{mkt}}_{{date_iso}}'}</Description>
-                                      <Input className="h-8 text-sm"
-                                      value={api.cache?.key_template || ''}
-                                      onChange={(ev) => updateApi(idx, { cache: { ...api.cache, key_template: ev.target.value } })}
-                                      placeholder="缓存键模板"
-                                    /></TextField>
+                                      <Label className="text-xs text-muted">缓存时长 (TTL)</Label>
+                                      <Description className="text-[10px] text-muted">该接口结果缓存的存活时间，过期后重新请求</Description>
+                                      <Input type="number" className="h-8 text-sm"
+                                        value={String(api.cache?.ttl_seconds ?? '')}
+                                        onChange={(ev) => updateApi(idx, { cache: { ...api.cache, ttl_seconds: Number(ev.target.value) } })}
+                                        placeholder="单位：秒，如 300"
+                                      />
+                                    </TextField>
+                                    <div className="space-y-1">
+                                      <Label className="text-xs text-muted block">缓存键模板</Label>
+                                      <Description className="text-[10px] text-muted block">{'用于区分不同请求结果的缓存标识。相同键会命中同一份缓存，建议拼接参数与日期变量以保证唯一性，如 bing_{{page}}_{{date_iso}}'}</Description>
+                                      <div className="flex items-center gap-2">
+                                        <Input className="h-8 text-sm flex-1"
+                                          value={api.cache?.key_template || ''}
+                                          onChange={(ev) => updateApi(idx, { cache: { ...api.cache, key_template: ev.target.value } })}
+                                          placeholder="如 bing_{{page}}_{{date_iso}}"
+                                        />
+                                        <Tooltip delay={0}>
+                                          <Tooltip.Trigger>
+                                            <Button isIconOnly variant="ghost" size="sm"
+                                              onPress={() => openSpecialGen('key_template', idx, 'cache')}><Braces size={14} /></Button>
+                                          </Tooltip.Trigger>
+                                          <Tooltip.Content placement="left">
+                                            <p>插入特殊值变量</p>
+                                          </Tooltip.Content>
+                                        </Tooltip>
+                                      </div>
+                                    </div>
                                   </div>
-                                </div></Accordion.Body></Accordion.Panel>
+                                </Accordion.Body></Accordion.Panel>
                               </Accordion.Item>
                             </Accordion>
                               </div>
@@ -1478,7 +1898,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                     setCreatorStep(1);
                     await loadSources();
                   } catch (e) {
-                    console.error('Create source failed', e);
+                    logError('Create source failed', e);
                     alert('创建失败: ' + (e instanceof Error ? e.message : String(e)));
                   }
                 }}>完成</Button>
@@ -1771,6 +2191,46 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
             </Modal.Dialog>
           </Modal.Container>
         </Modal.Backdrop>
+      )}
+
+      {/* ═══════════ 特殊值模板生成器 Drawer ═══════════ */}
+      {specialGenOpen && (
+        <Drawer.Backdrop isOpen={specialGenOpen} onOpenChange={setSpecialGenOpen}>
+          <Drawer.Content placement="bottom">
+            <Drawer.Dialog className="h-[500px]">
+              <Drawer.Handle />
+              <Drawer.Header><Drawer.Heading>特殊值模板</Drawer.Heading></Drawer.Header>
+              <Drawer.Body>
+                <div className="space-y-4">
+                  {SPECIAL_VALUE_CATEGORIES.map((cat) => (
+                    <div key={cat.label}>
+                      <Label className="text-xs text-muted mb-2 block">{cat.label}</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {cat.values.map((v) => (
+                          <Button
+                            key={v.key}
+                            size="sm"
+                            variant="secondary"
+                            className="h-8 text-xs"
+                            onPress={() => applySpecialValue(v.key)}
+                          >
+                            <div className="flex flex-col items-start">
+                              <span>{v.label}</span>
+                              <span className="text-[10px] text-muted">{v.desc}</span>
+                            </div>
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Drawer.Body>
+              <Drawer.Footer>
+                <Button variant="ghost" onPress={() => setSpecialGenOpen(false)}>取消</Button>
+              </Drawer.Footer>
+            </Drawer.Dialog>
+          </Drawer.Content>
+        </Drawer.Backdrop>
       )}
     </div>
   );

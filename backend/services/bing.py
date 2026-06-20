@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 import re
+from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin
 
 import requests
+from loguru import logger
 
 from backend.models import WallpaperItem
 from backend.services.cache import ResponseCache
@@ -43,27 +44,32 @@ class BingService:
     ) -> list[dict[str, Any]]:
         normalized_quality = self._normalize_quality(quality)
         cache_key = f"daily:{market}:{normalized_quality}"
+        logger.debug("Bing query_daily market={} quality={} force_refresh={}", market, normalized_quality, force_refresh)
         if not force_refresh:
-            # 每日壁纸按"本地自然日"判断新鲜度：跨过 0:00 后强制重新拉取，
-            # 避免前一天 23:00 的缓存把今天的图也覆盖成昨天的。
             cached = self._cache.get_same_day(cache_key, ttl=self._daily_ttl)
             if cached is not None:
+                logger.debug("Bing daily cache hit for {}", cache_key)
                 return cached
 
         try:
             image = self._get_daily_wallpaper(market)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Bing daily fetch failed for {}: {}", market, exc)
             stale = self._cache.get_stale(cache_key)
             if stale is not None:
+                logger.info("Bing daily fallback to stale cache for {}", cache_key)
                 return stale
             raise
         if not image:
             stale = self._cache.get_stale(cache_key)
             if stale is not None:
+                logger.info("Bing daily empty response, fallback to stale cache for {}", cache_key)
                 return stale
+            logger.debug("Bing daily returned no images for {}", cache_key)
             return []
         items = [self._normalize_daily_item(image, normalized_quality)]
         self._cache.set(cache_key, items)
+        logger.info("Bing daily fetched {} item(s) for {}", len(items), cache_key)
         return items
 
     def query_recent(
@@ -77,9 +83,11 @@ class BingService:
         normalized_quality = self._normalize_quality(quality)
         effective_count = max(1, min(count, 20))
         cache_key = f"recent:{market}:{normalized_quality}:{effective_count}"
+        logger.debug("Bing query_recent market={} count={} quality={} force_refresh={}", market, effective_count, normalized_quality, force_refresh)
         if not force_refresh:
             cached = self._cache.get(cache_key, ttl=self._recent_ttl)
             if cached is not None:
+                logger.debug("Bing recent cache hit for {}", cache_key)
                 return cached
 
         try:
@@ -98,9 +106,11 @@ class BingService:
             )
             response.raise_for_status()
             payload = response.json()
-        except Exception:
+        except Exception as exc:
+            logger.warning("Bing recent fetch failed for {}: {}", market, exc)
             stale = self._cache.get_stale(cache_key)
             if stale is not None:
+                logger.info("Bing recent fallback to stale cache for {}", cache_key)
                 return stale
             raise
 
@@ -109,6 +119,7 @@ class BingService:
         for image in gallery.get("images", [])[:effective_count]:
             items.append(self._normalize_recent_item(image, normalized_quality))
         self._cache.set(cache_key, items)
+        logger.info("Bing recent fetched {} item(s) for {}", len(items), cache_key)
         return items
 
     def _normalize_daily_item(

@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
-  Accordion, Link, Table,
+  Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
+  TagGroup, useFilter,
 } from '@heroui/react';
+import type { Key } from '@heroui/react';
 import {
   ArrowLeft, FolderOpen, Plus, Trash2, Wand2, ChevronDown, Heart, Package,
-  Copyright, FileText, Shield, ExternalLink,
+  Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download,
 } from 'lucide-react';
-import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl } from '@/api/backend';
+import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences } from '@/api/backend';
 import { useThemeContext } from '@/components/ThemeProvider';
-import type { AppSettings, ImageProviderConfig } from '@/types';
+import type { AppSettings, ImageProviderConfig, CustomSentence } from '@/types';
 import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
 
 export default function Settings() {
@@ -70,29 +72,10 @@ export default function Settings() {
 
         <Tabs.Panel id="general">
           <Card className="space-y-4 p-4">
-            <Section title="主页内容">
-              <Row label="语句来源">
-                <ComboBox
-                  className="w-40"
-                  selectedKey={settings.home_page.source}
-                  onSelectionChange={(key) => update('home_page.source', String(key))}
-                >
-                  <ComboBox.InputGroup>
-                    <Input />
-                    <ComboBox.Trigger />
-                  </ComboBox.InputGroup>
-                  <ComboBox.Popover>
-                    <ListBox>
-                      <ListBox.Item id="hitokoto" textValue="一言">一言</ListBox.Item>
-                      <ListBox.Item id="zhaoyu" textValue="诏预">诏预</ListBox.Item>
-                      <ListBox.Item id="custom" textValue="自定义">自定义</ListBox.Item>
-                    </ListBox>
-                  </ComboBox.Popover>
-                </ComboBox>
-              </Row>
-              <Row label="显示作者"><Switch aria-label="显示作者" isSelected={settings.home_page.show_author} onChange={(v) => update('home_page.show_author', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="显示来源"><Switch aria-label="显示来源" isSelected={settings.home_page.show_source} onChange={(v) => update('home_page.show_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-            </Section>
+            <HomePagePanel settings={settings} onUpdate={update} onReload={async () => {
+              const s = await getSettings();
+              setLocalSettings(s as AppSettings);
+            }} />
             <Separator />
             <Section title="开机与后台">
               <Row label="开机后自动隐藏到后台"><Switch aria-label="开机后自动隐藏到后台" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
@@ -252,6 +235,253 @@ export default function Settings() {
         </Tabs.Panel>
       </Tabs>
     </div>
+  );
+}
+
+const HITOKOTO_CATEGORIES: { id: string; label: string }[] = [
+  { id: 'a', label: '动画' },
+  { id: 'b', label: '漫画' },
+  { id: 'c', label: '游戏' },
+  { id: 'd', label: '文学' },
+  { id: 'e', label: '原创' },
+  { id: 'f', label: '来自网络' },
+  { id: 'g', label: '其他' },
+  { id: 'h', label: '影视' },
+  { id: 'i', label: '诗词' },
+  { id: 'j', label: '哲学' },
+  { id: 'k', label: '抖机灵' },
+  { id: 'l', label: '网易云' },
+];
+
+function HomePagePanel({ settings, onUpdate, onReload }: {
+  settings: AppSettings;
+  onUpdate: (key: string, value: unknown) => void;
+  onReload: () => Promise<void>;
+}) {
+  const hp = settings.home_page;
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [draft, setDraft] = useState<{ content: string; from: string; from_who: string }>({ content: '', from: '', from_who: '' });
+
+  const items: CustomSentence[] = hp.custom?.items || [];
+  const categories: string[] = hp.hitokoto?.categories || [];
+  const { contains } = useFilter({ sensitivity: 'base' });
+
+  const startAdd = () => {
+    setDraft({ content: '', from: '', from_who: '' });
+    setEditingIndex(-1);
+  };
+  const startEdit = (index: number) => {
+    setDraft({ content: items[index].content, from: items[index].from, from_who: items[index].from_who || '' });
+    setEditingIndex(index);
+  };
+  const saveDraft = () => {
+    const content = draft.content.trim();
+    if (!content) return;
+    const normalized: CustomSentence = {
+      content,
+      from: draft.from.trim(),
+      from_who: draft.from_who.trim() || null,
+    };
+    const next = [...items];
+    if (editingIndex !== null && editingIndex >= 0) {
+      next[editingIndex] = normalized;
+    } else {
+      next.push(normalized);
+    }
+    onUpdate('home_page.custom.items', next);
+    setEditingIndex(null);
+  };
+  const removeItem = (index: number) => {
+    onUpdate('home_page.custom.items', items.filter((_, i) => i !== index));
+  };
+
+  const handleImport = async () => {
+    const imported = await importCustomSentences();
+    if (imported === null) return;
+    if (imported.length === 0) {
+      toast.info('文件中未找到有效语句', { timeout: 3000 });
+      return;
+    }
+    await onReload();
+    toast.success(`已导入 ${imported.length} 条语句`, { timeout: 3000 });
+  };
+  const handleExport = async () => {
+    const path = await exportCustomSentences();
+    if (path) toast.success('已导出', { timeout: 3000 });
+  };
+
+  return (
+    <Section title="主页语句">
+      <Row label="语句来源">
+        <ComboBox
+          className="w-40"
+          selectedKey={hp.source}
+          onSelectionChange={(key) => onUpdate('home_page.source', String(key))}
+        >
+          <ComboBox.InputGroup>
+            <Input />
+            <ComboBox.Trigger />
+          </ComboBox.InputGroup>
+          <ComboBox.Popover>
+            <ListBox>
+              <ListBox.Item id="hitokoto" textValue="一言">一言</ListBox.Item>
+              <ListBox.Item id="zhaoyu" textValue="诏预">诏预</ListBox.Item>
+              <ListBox.Item id="custom" textValue="自定义">自定义</ListBox.Item>
+            </ListBox>
+          </ComboBox.Popover>
+        </ComboBox>
+      </Row>
+      <Row label="显示作者"><Switch aria-label="显示作者" isSelected={hp.show_author} onChange={(v) => onUpdate('home_page.show_author', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+      <Row label="显示来源"><Switch aria-label="显示来源" isSelected={hp.show_source} onChange={(v) => onUpdate('home_page.show_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+
+      {hp.source === 'hitokoto' && (
+        <>
+          <Row label="服务区域">
+            <ComboBox
+              className="w-40"
+              selectedKey={hp.hitokoto?.region || 'domestic'}
+              onSelectionChange={(key) => onUpdate('home_page.hitokoto.region', String(key))}
+            >
+              <ComboBox.InputGroup>
+                <Input />
+                <ComboBox.Trigger />
+              </ComboBox.InputGroup>
+              <ComboBox.Popover>
+                <ListBox>
+                  <ListBox.Item id="domestic" textValue="国内">国内</ListBox.Item>
+                  <ListBox.Item id="international" textValue="国际">国际</ListBox.Item>
+                </ListBox>
+              </ComboBox.Popover>
+            </ComboBox>
+          </Row>
+          <div className="space-y-2">
+            <Label className="block text-sm">分类（留空表示全部）</Label>
+            <Autocomplete
+              className="w-full"
+              placeholder="选择分类"
+              selectionMode="multiple"
+              aria-label="分类"
+              value={categories}
+              onChange={(keys) => onUpdate('home_page.hitokoto.categories', (keys as Key[]) || [])}
+            >
+              <Autocomplete.Trigger>
+                <Autocomplete.Value>
+                  {({ defaultChildren, isPlaceholder, state }: any) => {
+                    if (isPlaceholder || state.selectedItems.length === 0) return defaultChildren;
+                    const selectedIds = state.selectedItems.map((item: any) => String(item.key));
+                    return (
+                      <TagGroup
+                        size="sm"
+                        onRemove={(keys) => onUpdate('home_page.hitokoto.categories', categories.filter((c) => !keys.has(c)))}
+                      >
+                        <TagGroup.List>
+                          {selectedIds.map((id: string) => {
+                            const item = HITOKOTO_CATEGORIES.find((c) => c.id === id);
+                            if (!item) return null;
+                            return (
+                              <Tag key={item.id} id={item.id}>{item.label}</Tag>
+                            );
+                          })}
+                        </TagGroup.List>
+                      </TagGroup>
+                    );
+                  }}
+                </Autocomplete.Value>
+                <Autocomplete.ClearButton />
+                <Autocomplete.Indicator />
+              </Autocomplete.Trigger>
+              <Autocomplete.Popover>
+                <Autocomplete.Filter filter={contains}>
+                  <SearchField autoFocus name="search" variant="secondary">
+                    <SearchField.Group>
+                      <SearchField.SearchIcon />
+                      <SearchField.Input placeholder="搜索分类..." />
+                      <SearchField.ClearButton />
+                    </SearchField.Group>
+                  </SearchField>
+                  <ListBox renderEmptyState={() => <EmptyState>未找到分类</EmptyState>}>
+                    {HITOKOTO_CATEGORIES.map((c) => (
+                      <ListBox.Item key={c.id} id={c.id} textValue={c.label}>
+                        {c.label}
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Autocomplete.Filter>
+              </Autocomplete.Popover>
+            </Autocomplete>
+          </div>
+        </>
+      )}
+
+      {hp.source === 'custom' && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" onPress={startAdd}><Plus size={14} /> 添加语句</Button>
+            <Button size="sm" variant="secondary" onPress={handleImport}><Upload size={14} /> 导入</Button>
+            <Button size="sm" variant="secondary" onPress={handleExport} isDisabled={items.length === 0}><Download size={14} /> 导出</Button>
+          </div>
+          {items.length === 0 ? (
+            <p className="text-sm text-muted">还没有自定义语句，点击「添加语句」或「导入」开始。</p>
+          ) : (
+            <div className="space-y-2">
+              {items.map((it, i) => (
+                <div key={i} className="flex items-start gap-2 rounded-lg border border-border p-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm">{it.content}</p>
+                    {(it.from_who || it.from) && (
+                      <p className="mt-1 text-xs text-muted">
+                        {it.from_who ? `—— ${it.from_who}` : ''}
+                        {it.from ? `${it.from_who ? ' ' : ''}《${it.from}》` : ''}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button size="sm" variant="ghost" isIconOnly aria-label="编辑" onPress={() => startEdit(i)}><Pencil size={14} /></Button>
+                    <Button size="sm" variant="ghost" isIconOnly aria-label="删除" className="text-danger" onPress={() => removeItem(i)}><Trash2 size={14} /></Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <Modal.Backdrop isOpen={editingIndex !== null} onOpenChange={(open) => !open && setEditingIndex(null)}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.Header><Modal.Heading>{editingIndex !== null && editingIndex >= 0 ? '编辑语句' : '添加语句'}</Modal.Heading></Modal.Header>
+            <Modal.Body>
+              <div className="space-y-3">
+                <div>
+                  <Label className="mb-1 block text-sm">内容</Label>
+                  <TextArea
+                    autoFocus
+                    rows={3}
+                    className="w-full"
+                    value={draft.content}
+                    onChange={(e) => setDraft({ ...draft, content: e.target.value })}
+                    placeholder="输入语句内容"
+                  />
+                </div>
+                <div>
+                  <Label className="mb-1 block text-sm">作者</Label>
+                  <Input value={draft.from_who} onChange={(e) => setDraft({ ...draft, from_who: e.target.value })} placeholder="（可选）" />
+                </div>
+                <div>
+                  <Label className="mb-1 block text-sm">来源</Label>
+                  <Input value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} placeholder="（可选）例如：书名、出处" />
+                </div>
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="ghost" onPress={() => setEditingIndex(null)}>取消</Button>
+              <Button onPress={saveDraft} isDisabled={!draft.content.trim()}>保存</Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Section>
   );
 }
 
@@ -561,6 +791,9 @@ function AboutPanel() {
         <Separator className="my-4" />
         <p className="text-sm text-muted">
           一款桌面壁纸管理应用，支持多种壁纸来源、AI 生成、自动更换、收藏管理等功能。
+        </p>
+        <p className="mt-3 text-xs text-muted">
+          日志与诊断已移至「帮助与反馈」页面。
         </p>
       </Card>
 

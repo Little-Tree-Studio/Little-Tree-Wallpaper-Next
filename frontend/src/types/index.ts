@@ -1,11 +1,3 @@
-declare global {
-  interface Window {
-    pywebview?: {
-      api: Record<string, (...args: any[]) => Promise<any>>;
-    };
-  }
-}
-
 export interface WallpaperInfo {
   path: string;
   filename: string;
@@ -30,6 +22,23 @@ export interface Hitokoto {
   from_who: string | null;
 }
 
+export interface CustomSentence {
+  content: string;
+  from: string;
+  from_who: string | null;
+}
+
+export type HomePageSource = 'hitokoto' | 'zhaoyu' | 'custom';
+
+export interface HomePageSettings {
+  source: HomePageSource;
+  show_author: boolean;
+  show_source: boolean;
+  hitokoto: { region: 'domestic' | 'international'; categories: string[] };
+  zhaoyu?: { catalog: string; theme: string; author: string };
+  custom: { items: CustomSentence[] };
+}
+
 export interface FavoriteItem {
   id: string;
   folder_id: string;
@@ -48,6 +57,12 @@ export interface FavoriteFolder {
   name: string;
   description: string;
   order: number;
+}
+
+export interface FavoritesData {
+  folders: FavoriteFolder[];
+  items: FavoriteItem[];
+  all_tags: string[];
 }
 
 export interface SniffedImage {
@@ -87,13 +102,7 @@ export interface AppSettings {
     allow_NSFW: boolean;
     history_save_copy: boolean;
   };
-  home_page: {
-    source: 'hitokoto' | 'zhaoyu' | 'custom';
-    show_author: boolean;
-    show_source: boolean;
-    hitokoto: { region: string; categories: string[] };
-    custom: { items: { content: string; from: string; from_who: string }[] };
-  };
+  home_page: HomePageSettings;
   startup: {
     auto_start: boolean;
     hide_on_launch: boolean;

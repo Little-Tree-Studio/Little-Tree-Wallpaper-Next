@@ -12,6 +12,7 @@ import {
   downloadWithProgress, saveAsWithProgress, openUrl,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
+import { logError } from '@/lib/log';
 import IntelliMarketsPanel from '@/components/IntelliMarketsPanel';
 import WallpaperSourcesPanel from '@/components/WallpaperSourcesPanel';
 
@@ -33,8 +34,15 @@ function formatBingDate(item: any, category: string): string {
   return '';
 }
 
-function getBingUrlForQuality(url: string, quality: '1080p' | 'uhd'): string {
-  return quality === 'uhd' ? url.replace('1920x1080', 'UHD') : url;
+function getBingUrlForQuality(item: any, quality: '1080p' | 'uhd'): string {
+  const base = item?.image_url || '';
+  const qualities = item?.metadata?.available_qualities;
+  if (qualities && typeof qualities === 'object') {
+    const key = quality === 'uhd' ? 'ultraHighDef' : 'highDef';
+    const chosen = qualities[key] || qualities.ultraHighDef || qualities.highDef;
+    if (chosen) return chosen;
+  }
+  return quality === 'uhd' ? base.replace('1920x1080', 'UHD') : base;
 }
 
 function absoluteBingUrl(url: string | undefined): string {
@@ -127,7 +135,7 @@ export default function Resource() {
       setBingGallery(items || []);
       setBingLoadedFor(category);
     } catch (e) {
-      console.error('Bing load failed', e);
+      logError('Bing load failed', e);
       setBingGallery([]);
       setBingLoadedFor(category);
     } finally {
@@ -144,7 +152,7 @@ export default function Resource() {
       setSpotlightGallery(items || []);
       setSpotlightLoadedFor(source);
     } catch (e) {
-      console.error('Spotlight load failed', e);
+      logError('Spotlight load failed', e);
       setSpotlightGallery([]);
       setSpotlightLoadedFor(source);
     } finally {
@@ -271,15 +279,15 @@ export default function Resource() {
                     <div className="font-medium">{currentBing.title}</div>
                     <div className="text-sm text-muted">{currentBing.description}</div>
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" onPress={() => handleSetWallpaper(getBingUrlForQuality(currentBing.image_url, bingQuality), currentBing.title)}><ImageIcon size={14} /> 设为壁纸</Button>
+                      <Button size="sm" onPress={() => handleSetWallpaper(getBingUrlForQuality(currentBing, bingQuality), currentBing.title)}><ImageIcon size={14} /> 设为壁纸</Button>
                       <Button size="sm" variant="secondary" onPress={() => handleFavorite(currentBing)}><Heart size={14} /> 收藏</Button>
-                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(getBingUrlForQuality(currentBing.image_url, bingQuality), `${currentBing.title?.slice(0,30) || 'bing'}.jpg`)}><Download size={14} /> 下载</Button>
-                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(getBingUrlForQuality(currentBing.image_url, bingQuality), `${currentBing.title?.slice(0,30) || 'bing'}.jpg`)}><Save size={14} /> 另存为</Button>
+                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(getBingUrlForQuality(currentBing, bingQuality), `${currentBing.title?.slice(0,30) || 'bing'}.jpg`)}><Download size={14} /> 下载</Button>
+                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(getBingUrlForQuality(currentBing, bingQuality), `${currentBing.title?.slice(0,30) || 'bing'}.jpg`)}><Save size={14} /> 另存为</Button>
                       <Button size="sm" variant="secondary" onPress={() => {
                         const link = absoluteBingUrl(currentBing.metadata?.click_url);
                         if (link) openUrl(link);
                       }}><ExternalLink size={14} /> 查看详情</Button>
-                      <Button size="sm" variant="ghost" onPress={() => copyToClipboard(getBingUrlForQuality(currentBing.image_url, bingQuality))}><Copy size={14} /> 复制链接</Button>
+                      <Button size="sm" variant="ghost" onPress={() => copyToClipboard(getBingUrlForQuality(currentBing, bingQuality))}><Copy size={14} /> 复制链接</Button>
                       <Button size="sm" variant="ghost" onPress={() => openBingViewer(selectedBingIndex)}><ImageIcon size={14} /> 查看</Button>
                       {bingGallery.length > 1 && (
                         <>
@@ -288,7 +296,7 @@ export default function Resource() {
                         </>
                       )}
                     </div>
-                    {bingTab === 'daily' && (
+                    {(bingTab === 'daily' || bingTab === 'recent') && (
                       <ComboBox
                         className="mt-1 w-40"
                         menuTrigger="focus"

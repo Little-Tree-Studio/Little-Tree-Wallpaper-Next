@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 from typing import Any
+
+from loguru import logger
+
 from .paths import get_config_dir
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -101,10 +104,14 @@ class SettingsStore:
     def load(self) -> None:
         if self.path.exists():
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
+                with open(self.path, encoding="utf-8") as f:
                     self._data = json.load(f)
-            except Exception:
+                logger.debug("Settings loaded from {}", self.path)
+            except Exception as exc:
+                logger.error("Failed to load settings from {}: {}", self.path, exc)
                 self._data = {}
+        else:
+            logger.info("Settings file not found, using defaults: {}", self.path)
         self._migrate()
 
     def _migrate(self) -> None:
@@ -120,9 +127,13 @@ class SettingsStore:
         set_defaults(self._data, DEFAULT_SETTINGS)
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            logger.debug("Settings saved to {}", self.path)
+        except Exception as exc:
+            logger.error("Failed to save settings to {}: {}", self.path, exc)
 
     def get(self, key: str, default: Any = None) -> Any:
         parts = key.split(".")
@@ -143,6 +154,7 @@ class SettingsStore:
             current = current[part]
         current[parts[-1]] = value
         self.save()
+        logger.info("Setting changed: {}={}", key, value if not isinstance(value, (dict, list)) else "(...)")
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self._data)
@@ -150,6 +162,7 @@ class SettingsStore:
     def reset(self) -> None:
         self._data = json.loads(json.dumps(DEFAULT_SETTINGS))
         self.save()
+        logger.info("Settings reset to defaults")
 
 _settings: SettingsStore | None = None
 

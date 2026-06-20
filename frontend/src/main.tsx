@@ -1,9 +1,11 @@
-import { StrictMode, useState, useEffect, useCallback } from 'react';
+import { StrictMode, useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Loader2, AlertTriangle, Sprout } from 'lucide-react';
 import { Button, ProgressBar } from '@heroui/react';
 import './index.css';
 import App from './App';
+import { waitForApi } from '@/api/backend';
+import { logError } from '@/lib/log';
 
 const BRIDGE_TIMEOUT_MS = 12000;
 
@@ -11,44 +13,31 @@ function BridgeLoader() {
   const [status, setStatus] = useState<'waiting' | 'ready' | 'timeout'>('waiting');
   const [elapsed, setElapsed] = useState(0);
 
-  const checkReady = useCallback(() => {
-    if (typeof window !== 'undefined' && window.pywebview?.api) {
-      setStatus('ready');
-      return true;
-    }
-    return false;
-  }, []);
-
   useEffect(() => {
-    if (checkReady()) return;
+    let cancelled = false;
 
-    const onReady = () => {
-      setStatus('ready');
-    };
-    window.addEventListener('pywebviewready', onReady, { once: true });
-
-    const interval = window.setInterval(() => {
-      setElapsed((e) => e + 100);
-      if (checkReady()) {
-        window.clearInterval(interval);
-        window.removeEventListener('pywebviewready', onReady);
+    (async () => {
+      try {
+        await waitForApi();
+        if (!cancelled) setStatus('ready');
+      } catch (e) {
+        logError('Backend bridge timed out', e);
+        if (!cancelled) setStatus('timeout');
       }
-    }, 100);
+    })();
 
+    const elapsedTimer = window.setInterval(() => setElapsed((e) => e + 100), 100);
     const timeout = window.setTimeout(() => {
-      window.clearInterval(interval);
-      window.removeEventListener('pywebviewready', onReady);
-      if (!checkReady()) {
-        setStatus('timeout');
-      }
+      window.clearInterval(elapsedTimer);
+      setStatus((s) => (s === 'ready' ? s : 'timeout'));
     }, BRIDGE_TIMEOUT_MS);
 
     return () => {
-      window.clearInterval(interval);
+      cancelled = true;
+      window.clearInterval(elapsedTimer);
       window.clearTimeout(timeout);
-      window.removeEventListener('pywebviewready', onReady);
     };
-  }, [checkReady]);
+  }, []);
 
   if (status === 'ready') {
     return (

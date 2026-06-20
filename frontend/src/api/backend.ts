@@ -1,4 +1,5 @@
 import { toast } from '@heroui/react';
+import { logError } from '@/lib/log';
 import type {
   WallpaperInfo,
   BingWallpaper,
@@ -6,31 +7,118 @@ import type {
   Hitokoto,
   FavoriteItem,
   FavoriteFolder,
+  FavoritesData,
   SniffedImage,
   StoreResource,
   AppSettings,
+  CustomSentence,
   IntelligentMarketSource,
   IntelligentMarketHealthUpdate,
 } from '@/types';
 
-async function waitForApi(): Promise<void> {
-  if (typeof window !== 'undefined' && window.pywebview?.api) {
-    return;
+// ---------------------------------------------------------------------------
+// Bridge: the frontend talks to the FastAPI backend over HTTP (same origin).
+// A per-session secret token (delivered via the pywebview launch URL) authorizes
+// every request via the X-Api-Token header. Same-origin fetch avoids CORS.
+// ---------------------------------------------------------------------------
+const TOKEN_STORAGE_KEY = '__ltw_api_token__';
+
+let _token: string | null = null;
+let _readyPromise: Promise<void> | null = null;
+
+function readToken(): string | null {
+  if (_token) return _token;
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const stored = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    if (stored) {
+      _token = stored;
+      return _token;
+    }
+  } catch {
+    /* sessionStorage may be unavailable; ignore */
   }
-  return new Promise((resolve) => {
-    const onReady = () => resolve();
-    window.addEventListener('pywebviewready', onReady, { once: true });
-  });
+
+  // On first launch the token arrives as ?token=... in the launch URL.
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get('token');
+  if (fromUrl) {
+    _token = fromUrl;
+    try {
+      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, fromUrl);
+    } catch {
+      /* ignore */
+    }
+    // Strip the token from the address bar so it is not visible to the user.
+    try {
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete('token');
+      window.history.replaceState({}, '', clean.toString());
+    } catch {
+      /* ignore */
+    }
+  }
+  return _token;
+}
+
+function authHeaders(): Record<string, string> {
+  const token = readToken();
+  return token ? { 'X-Api-Token': token } : {};
+}
+
+async function healthCheck(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/health', { headers: authHeaders() });
+    return res.ok;
+  } catch (e) {
+    logError('Health check failed', e);
+    return false;
+  }
+}
+
+/** Resolve once the backend is reachable and authorized. */
+export function waitForApi(): Promise<void> {
+  if (_readyPromise) return _readyPromise;
+  _readyPromise = (async () => {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      if (readToken() && (await healthCheck())) return;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    throw new Error('backend not ready');
+  })();
+  return _readyPromise;
 }
 
 async function call<T>(method: string, ...args: any[]): Promise<T> {
   await waitForApi();
-  const api = window.pywebview!.api;
-  const fn = api[method];
-  if (typeof fn !== 'function') {
-    throw new Error(`未找到后端方法: ${method}`);
+  let res: Response;
+  try {
+    res = await fetch(`/api/rpc/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ args }),
+    });
+  } catch (e) {
+    logError(`RPC ${method} fetch failed`, e);
+    throw new Error(`后端连接失败: ${method}`);
   }
-  return fn(...args);
+
+  let payload: any;
+  try {
+    payload = await res.json();
+  } catch (e) {
+    logError(`RPC ${method} returned invalid JSON`, e);
+    throw new Error(`后端返回无效数据: ${method}`);
+  }
+
+  if (!res.ok || payload?.error) {
+    const message = payload?.error?.message || `调用失败: ${method}`;
+    logError(`RPC ${method} failed`, new Error(message));
+    throw new Error(message);
+  }
+  return payload.result as T;
 }
 
 // --- Global bootstrap cache ---
@@ -76,6 +164,18 @@ export async function getHitokoto(categories?: string[]): Promise<Hitokoto | nul
   return call('get_hitokoto', categories);
 }
 
+export async function getSentence(): Promise<Hitokoto | null> {
+  return call('get_sentence');
+}
+
+export async function importCustomSentences(): Promise<CustomSentence[] | null> {
+  return call('import_custom_sentences');
+}
+
+export async function exportCustomSentences(): Promise<string | null> {
+  return call('export_custom_sentences');
+}
+
 export async function downloadFile(url: string, filename?: string): Promise<string | null> {
   return call('download_file', url, filename);
 }
@@ -84,21 +184,46 @@ export async function copyToClipboard(text: string): Promise<void> {
   return call('copy_to_clipboard', text);
 }
 
-export async function saveFileDialog(data: string, filename: string): Promise<string | null> {
-  return call('save_file_dialog', data, filename);
+/** Persist a raw binary blob into the downloads directory. Returns the path. */
+export async function saveBlobToDownloads(blob: Blob, filename: string): Promise<string | null> {
+  await waitForApi();
+  try {
+    const res = await fetch(`/api/save-download?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: blob,
+    });
+    const payload = await res.json();
+    if (!res.ok || payload?.error) {
+      logError('saveBlobToDownloads failed', new Error(payload?.error?.message || `HTTP ${res.status}`));
+      return null;
+    }
+    return (payload.path as string) ?? null;
+  } catch (e) {
+    logError('saveBlobToDownloads failed', e);
+    return null;
+  }
 }
 
-export async function saveBase64ToDownloads(data: string, filename: string): Promise<string | null> {
-  return call('save_base64_file', data, filename);
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+/** Prompt for a save location and persist a raw binary blob there. */
+export async function saveBlobAs(blob: Blob, filename: string): Promise<string | null> {
+  await waitForApi();
+  try {
+    const res = await fetch(`/api/save-as?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: blob,
+    });
+    const payload = await res.json();
+    if (!res.ok || payload?.error) {
+      logError('saveBlobAs failed', new Error(payload?.error?.message || `HTTP ${res.status}`));
+      return null;
+    }
+    return (payload.path as string) ?? null;
+  } catch (e) {
+    logError('saveBlobAs failed', e);
+    return null;
+  }
 }
 
 async function fetchBlobWithProgress(
@@ -137,8 +262,7 @@ export async function downloadWithProgress(url: string, filename: string): Promi
     });
 
     toast.close(loadingId);
-    const data = await blobToBase64(blob);
-    const path = await saveBase64ToDownloads(data, filename);
+    const path = await saveBlobToDownloads(blob, filename);
     if (path) {
       toast.success('下载完成', { timeout: 3000 });
     } else {
@@ -153,19 +277,10 @@ export async function downloadWithProgress(url: string, filename: string): Promi
 }
 
 export async function saveAsWithProgress(url: string, filename: string): Promise<string | null> {
-  if (url.startsWith('data:')) {
-    const path = await saveFileDialog(url, filename);
-    if (path) {
-      toast.success('保存成功', { timeout: 3000 });
-    } else {
-      toast.info('已取消保存', { timeout: 0 });
-    }
-    return path;
-  }
-
   let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
 
   try {
+    // fetch() works for both http(s) and data: URLs, so the flow is unified.
     const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
       toast.close(loadingId);
       const desc = percent !== null
@@ -175,8 +290,7 @@ export async function saveAsWithProgress(url: string, filename: string): Promise
     });
 
     toast.close(loadingId);
-    const data = await blobToBase64(blob);
-    const path = await saveFileDialog(data, filename);
+    const path = await saveBlobAs(blob, filename);
     if (path) {
       toast.success('保存成功', { timeout: 3000 });
     } else {
@@ -213,23 +327,17 @@ export async function setWallpaperWithProgress(
   let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
 
   try {
-    let data: string;
-    if (url.startsWith('data:')) {
-      data = url;
-    } else {
-      const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-        toast.close(loadingId);
-        const desc = percent !== null
-          ? `已下载 ${percent}%`
-          : `已下载 ${(received / 1024).toFixed(1)} KB`;
-        loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
-      });
-      data = await blobToBase64(blob);
-    }
+    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+      toast.close(loadingId);
+      const desc = percent !== null
+        ? `已下载 ${percent}%`
+        : `已下载 ${(received / 1024).toFixed(1)} KB`;
+      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
+    });
 
     toast.close(loadingId);
     loadingId = toast('正在应用壁纸…', { isLoading: true, timeout: 0 });
-    const path = await saveBase64ToDownloads(data, filename);
+    const path = await saveBlobToDownloads(blob, filename);
     if (!path) {
       toast.close(loadingId);
       toast.danger('保存临时文件失败', { timeout: 0 });
@@ -268,22 +376,16 @@ export async function openWithSystemWithProgress(
   let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
 
   try {
-    let data: string;
-    if (url.startsWith('data:')) {
-      data = url;
-    } else {
-      const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-        toast.close(loadingId);
-        const desc = percent !== null
-          ? `已下载 ${percent}%`
-          : `已下载 ${(received / 1024).toFixed(1)} KB`;
-        loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
-      });
-      data = await blobToBase64(blob);
-    }
+    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+      toast.close(loadingId);
+      const desc = percent !== null
+        ? `已下载 ${percent}%`
+        : `已下载 ${(received / 1024).toFixed(1)} KB`;
+      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
+    });
 
     toast.close(loadingId);
-    const path = await saveBase64ToDownloads(data, filename);
+    const path = await saveBlobToDownloads(blob, filename);
     if (!path) {
       toast.danger('保存临时文件失败', { timeout: 0 });
       return null;
@@ -305,12 +407,19 @@ export async function searchBaiduImages(text: string, index: number = 0, size: n
   return call('search_baidu_images', text, index, size);
 }
 
-export async function getFavorites(): Promise<{ folders: FavoriteFolder[]; items: FavoriteItem[] }> {
+export async function getFavorites(): Promise<FavoritesData> {
   return call('get_favorites');
 }
 
 export async function addFavorite(item: Omit<FavoriteItem, 'id' | 'created_at'>): Promise<FavoriteItem> {
-  return call('add_favorite', item);
+  const tags = [...item.tags];
+  if (item.source_type === 'bing' && !tags.includes('Bing')) {
+    tags.push('Bing');
+  }
+  if (item.source_type === 'spotlight' && !tags.includes('Windows聚焦')) {
+    tags.push('Windows聚焦');
+  }
+  return call('add_favorite', { ...item, tags });
 }
 
 export async function updateFavorite(item: FavoriteItem): Promise<void> {
@@ -323,6 +432,18 @@ export async function removeFavorite(id: string): Promise<void> {
 
 export async function createFavoriteFolder(name: string, description?: string): Promise<FavoriteFolder> {
   return call('create_favorite_folder', name, description);
+}
+
+export async function ensureTag(name: string): Promise<void> {
+  return call('ensure_tag', name);
+}
+
+export async function renameTag(oldName: string, newName: string): Promise<void> {
+  return call('rename_tag', oldName, newName);
+}
+
+export async function deleteTag(name: string): Promise<void> {
+  return call('delete_tag', name);
 }
 
 export async function getStoreResources(type: string): Promise<StoreResource[]> {
@@ -385,8 +506,19 @@ export async function importFavorites(path: string): Promise<void> {
   return call('import_favorites', path);
 }
 
-export async function getLocalImageBase64(path: string): Promise<string | null> {
-  return call('get_local_image_base64', path);
+export async function getLocalImageUrl(path: string, maxSize = 960): Promise<string | null> {
+  return call('get_local_image_url', path, maxSize);
+}
+
+/**
+ * Build a token-authenticated preview URL for a local file directly on the
+ * client (no round-trip). The server still validates that the path is within an
+ * allowed directory, so this is safe to use for any local_path value.
+ */
+export function localPreviewUrl(path: string, maxSize = 960): string {
+  const token = readToken();
+  const q = `path=${encodeURIComponent(path)}&max=${maxSize}${token ? `&token=${token}` : ''}`;
+  return `/api/preview?${q}`;
 }
 
 // --- Enhanced API methods ---
@@ -454,12 +586,46 @@ export async function getDebugLog(lines: number = 240): Promise<any> {
   return call('get_debug_log', lines);
 }
 
+export interface LogStats {
+  directory: string;
+  file_count: number;
+  entry_count: number;
+  error_count: number;
+  size_bytes: number;
+  level: string;
+  levels: string[];
+}
+
+export async function getLogStats(): Promise<LogStats> {
+  return call('get_log_stats');
+}
+
+export async function setLogFileLevel(level: string): Promise<LogStats> {
+  return call('set_log_file_level', level);
+}
+
+export async function clearLogs(): Promise<LogStats & { removed: number }> {
+  return call('clear_logs');
+}
+
 export async function openDebugLogDirectory(): Promise<any> {
   return call('open_debug_log_directory');
 }
 
 export async function openDebugLogFile(): Promise<any> {
   return call('open_debug_log_file');
+}
+
+export async function saveDebugLog(targetPath?: string): Promise<{ saved_path: string; error?: string; cancelled?: boolean }> {
+  return call('save_debug_log', targetPath);
+}
+
+export async function getCrashReports(): Promise<Array<{ path: string; name: string; size: number; created_at: string }>> {
+  return call('get_crash_reports');
+}
+
+export async function openCrashReport(reportPath: string): Promise<any> {
+  return call('open_crash_report', reportPath);
 }
 
 export async function listIntelligentMarketSources(force: boolean = false): Promise<IntelligentMarketSource[]> {

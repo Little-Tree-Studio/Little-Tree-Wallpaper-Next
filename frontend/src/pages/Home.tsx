@@ -2,10 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { Card, Button, Skeleton } from '@heroui/react';
 import { RefreshCw, History, ImageIcon, Copy, Heart, FolderOutput, Monitor, Download, Save } from 'lucide-react';
 import {
-  getCurrentWallpaper, setWallpaper, getHitokoto, getBingWallpaper,
+  getCurrentWallpaper, setWallpaper, getSentence, getBingWallpaper,
   copyToClipboard, addFavorite,
   recordCurrentWallpaper, getBootstrapCache,
   downloadWithProgress, saveAsWithProgress,
+  getSettings,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import type { Hitokoto } from '@/types';
@@ -14,6 +15,8 @@ export default function Home() {
   const [wallpaper, setWallpaperInfo] = useState<{ path: string; filename: string; preview_url?: string } | null>(null);
   const [bing, setBing] = useState<any>(null);
   const [hitokoto, setHitokoto] = useState<Hitokoto | null>(null);
+  const [showAuthor, setShowAuthor] = useState(true);
+  const [showSource, setShowSource] = useState(true);
   const [wpLoading, setWpLoading] = useState(true);
   const [bingLoading, setBingLoading] = useState(true);
   const [quoteLoading, setQuoteLoading] = useState(true);
@@ -42,6 +45,10 @@ export default function Home() {
         setQuoteLoading(false);
       }
     }
+    if (cache?.settings?.home_page) {
+      setShowAuthor(cache.settings.home_page.show_author ?? true);
+      setShowSource(cache.settings.home_page.show_source ?? true);
+    }
 
     getCurrentWallpaper().then((wp) => {
       if (wp) setWallpaperInfo(wp);
@@ -53,10 +60,15 @@ export default function Home() {
       setBingLoading(false);
     }).catch(() => setBingLoading(false));
 
-    getHitokoto().then((h) => {
+    getSentence().then((h) => {
       if (h) setHitokoto(h);
       setQuoteLoading(false);
     }).catch(() => setQuoteLoading(false));
+
+    getSettings().then((s) => {
+      setShowAuthor(s.home_page.show_author ?? true);
+      setShowSource(s.home_page.show_source ?? true);
+    }).catch(() => { /* ignore */ });
   }, []);
 
   // Auto-refresh current wallpaper every 30 seconds
@@ -85,8 +97,8 @@ export default function Home() {
   const refreshSentence = async () => {
     setQuoteLoading(true);
     try {
-      const h = await getHitokoto();
-      setHitokoto(h);
+      const h = await getSentence();
+      if (h) setHitokoto(h);
     } finally {
       setQuoteLoading(false);
     }
@@ -240,10 +252,12 @@ export default function Home() {
           ) : hitokoto?.hitokoto ? (
             <>
               <p className="text-lg leading-relaxed">{hitokoto.hitokoto}</p>
-              <p className="text-sm text-muted">
-                —— {hitokoto.from_who || '佚名'}
-                {hitokoto.from && `《${hitokoto.from}》`}
-              </p>
+              {(showAuthor && hitokoto.from_who) || (showSource && hitokoto.from) ? (
+                <p className="text-sm text-muted">
+                  ——{showAuthor && hitokoto.from_who ? ` ${hitokoto.from_who}` : ''}
+                  {showSource && hitokoto.from ? `《${hitokoto.from}》` : ''}
+                </p>
+              ) : null}
             </>
           ) : (
             <p className="text-muted">加载失败</p>

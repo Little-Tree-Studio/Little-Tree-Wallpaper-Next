@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import requests
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class _ImageExtractor(HTMLParser):
@@ -44,14 +42,12 @@ class _ImageExtractor(HTMLParser):
                 if val := attributes.get(lazy):
                     self.urls.add(val)
         elif tag_lower == "source":
-            self._parse_srcset(
-                attributes.get("srcset", "") or attributes.get("data-srcset", "")
-            )
+            self._parse_srcset(attributes.get("srcset", "") or attributes.get("data-srcset", ""))
         elif tag_lower == "meta":
             prop = attributes.get("property") or attributes.get("name")
-            if prop and prop.lower() in {"og:image", "twitter:image"}:
-                if content := attributes.get("content"):
-                    self.urls.add(content)
+            content = attributes.get("content")
+            if prop and prop.lower() in {"og:image", "twitter:image"} and content:
+                self.urls.add(content)
         elif tag_lower == "style":
             self.in_style = True
             self.style_data.clear()
@@ -108,13 +104,9 @@ class SniffService:
             r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>',
             re.DOTALL | re.IGNORECASE,
         ),
-        re.compile(
-            r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\});", re.DOTALL | re.IGNORECASE
-        ),
+        re.compile(r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\});", re.DOTALL | re.IGNORECASE),
         re.compile(r"window\.__DATA__\s*=\s*(\{.*?\});", re.DOTALL | re.IGNORECASE),
-        re.compile(
-            r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});", re.DOTALL | re.IGNORECASE
-        ),
+        re.compile(r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});", re.DOTALL | re.IGNORECASE),
     ]
 
     TRACKING_PATTERNS = [
@@ -131,39 +123,36 @@ class SniffService:
     ]
 
     def __init__(self):
-        self._tracking_regex = re.compile(
-            "|".join(self.TRACKING_PATTERNS), re.IGNORECASE
-        )
+        self._tracking_regex = re.compile("|".join(self.TRACKING_PATTERNS), re.IGNORECASE)
 
-    def sniff_images(
-        self, url: str, user_agent: str, timeout_seconds: int = 15
-    ) -> list[dict]:
+    def sniff_images(self, url: str, user_agent: str, timeout_seconds: int = 15) -> list[dict]:
         if not url.startswith(("http://", "https://")):
             url = "http://" + url
 
+        logger.info("Sniffing images from {}", url)
         headers = {"User-Agent": user_agent, "Accept": "text/html,*/*"}
         try:
             resp = requests.get(url, headers=headers, timeout=timeout_seconds)
             resp.raise_for_status()
             html = resp.text
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Fetch failed {url}: {e}")
+            logger.warning("Fetch failed {}: {}", url, e)
             return []
 
         found_urls: set[str] = set()
 
-        # 1. 基础 HTML 解析
         parser = _ImageExtractor()
         parser.feed(html)
         found_urls.update(parser.urls)
+        logger.debug("HTML parser extracted {} image URLs from {}", len(parser.urls), url)
 
-        # 2. 深度 SSR JSON 提取 (轻量级动态数据嗅探核心)
         found_urls.update(self._extract_ssr_images(html))
 
-        # 3. 全局正则兜底 (匹配 JS 数组或普通文本中的 URL)
         found_urls.update(self.IMAGE_REGEX.findall(html))
 
-        return self._process_results(url, found_urls)
+        results = self._process_results(url, found_urls)
+        logger.info("Sniffed {} images from {}", len(results), url)
+        return results
 
     def _extract_ssr_images(self, html: str) -> set[str]:
         """从现代前端框架注入的 JSON 状态中提取图片"""
@@ -189,29 +178,31 @@ class SniffService:
         if isinstance(obj, dict):
             for k, v in obj.items():
                 # 启发式：如果 key 包含 image, img, pic, avatar, cover, thumbnail, src 等
-                if isinstance(v, str) and any(
-                    word in k.lower()
-                    for word in [
-                        "img",
-                        "image",
-                        "pic",
-                        "avatar",
-                        "cover",
-                        "thumb",
-                        "src",
-                        "poster",
-                    ]
+                if (
+                    isinstance(v, str)
+                    and any(
+                        word in k.lower()
+                        for word in [
+                            "img",
+                            "image",
+                            "pic",
+                            "avatar",
+                            "cover",
+                            "thumb",
+                            "src",
+                            "poster",
+                        ]
+                    )
+                    and self.IMAGE_REGEX.match(v)
                 ):
-                    if self.IMAGE_REGEX.match(v):
-                        urls.add(v)
+                    urls.add(v)
                 self._deep_walk_json(v, urls)
         elif isinstance(obj, list):
             for item in obj:
                 self._deep_walk_json(item, urls)
-        elif isinstance(obj, str):
+        elif isinstance(obj, str) and self.IMAGE_REGEX.match(obj):
             # 如果字符串本身就是一个完整的图片 URL
-            if self.IMAGE_REGEX.match(obj):
-                urls.add(obj)
+            urls.add(obj)
 
     def _process_results(self, base_url: str, raw_urls: set[str]) -> list[dict]:
         results: list[dict] = []
@@ -223,11 +214,7 @@ class SniffService:
 
             # 清理 JSON 转义符 (如 \/ 替换为 /)
             clean_url = item.replace("\\/", "/")
-            absolute_url = (
-                clean_url
-                if clean_url.startswith("http")
-                else urljoin(base_url, clean_url)
-            )
+            absolute_url = clean_url if clean_url.startswith("http") else urljoin(base_url, clean_url)
 
             if self._tracking_regex.search(absolute_url):
                 continue
@@ -238,11 +225,7 @@ class SniffService:
             seen_urls.add(normalized_url)
 
             filename = urlparse(absolute_url).path.split("/")[-1]
-            title = (
-                filename
-                if filename and not filename.startswith(".")
-                else f"图片 {len(results) + 1}"
-            )
+            title = filename if filename and not filename.startswith(".") else f"图片 {len(results) + 1}"
 
             results.append(
                 {
@@ -269,9 +252,7 @@ class SniffService:
             }
             if parsed.query:
                 qs = parse_qs(parsed.query, keep_blank_values=True)
-                filtered_qs = {
-                    k: v for k, v in qs.items() if k.lower() not in tracking_params
-                }
+                filtered_qs = {k: v for k, v in qs.items() if k.lower() not in tracking_params}
                 new_query = urlencode(filtered_qs, doseq=True)
                 parsed = parsed._replace(query=new_query)
             return parsed.geturl()

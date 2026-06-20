@@ -1,7 +1,14 @@
 import { useState } from 'react';
-import { Card, Button, Input, Spinner, Chip, Tooltip } from '@heroui/react';
-import { Search, ImageIcon, Heart, Download, Copy, CheckSquare, Square, Eye } from 'lucide-react';
-import { sniffImages, setWallpaper, downloadFile, copyToClipboard, addFavorite } from '@/api/backend';
+import {
+  Card, Button, Input, Spinner, Tooltip, Checkbox,
+  Toolbar, ButtonGroup, Separator,
+} from '@heroui/react';
+import {
+  Search, ImageIcon, Heart, Download, Copy, Eye, X,
+} from 'lucide-react';
+import {
+  sniffImages, setWallpaper, downloadFile, copyToClipboard, addFavorite,
+} from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import type { SniffedImage } from '@/types';
 
@@ -38,6 +45,15 @@ export default function Sniff() {
   };
 
   const selectedImages = images.filter((img) => selected.has(img.id));
+  const allSelected = images.length > 0 && selected.size === images.length;
+  const someSelected = selected.size > 0 && selected.size < images.length;
+
+  const toggleSelectAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(images.map((i) => i.id)));
+  };
+
+  const clearSelection = () => setSelected(new Set());
 
   const handleSetWallpaper = async (img: SniffedImage) => {
     const path = await downloadFile(img.url, img.filename);
@@ -65,6 +81,17 @@ export default function Sniff() {
     setSelected(new Set());
   };
 
+  const handleCopySelectedUrls = () => {
+    const urls = selectedImages.map((i) => i.url).join('\n');
+    copyToClipboard(urls);
+  };
+
+  const handleDownloadSelected = async () => {
+    for (const img of selectedImages) {
+      await downloadFile(img.url, img.filename);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-bold">嗅探</h1>
@@ -82,30 +109,26 @@ export default function Sniff() {
         <Button variant="ghost" onPress={() => { setUrl(''); setImages([]); setSelected(new Set()); setHasSearched(false); }}>清空</Button>
       </div>
 
-      {selected.size > 0 && (
-        <Card className="p-3">
-          <div className="flex items-center gap-4">
-            <Chip className="shrink-0 whitespace-nowrap">已选择 {selected.size} 张</Chip>
-            <Button size="sm" variant="secondary" onPress={handleFavoriteSelected}><Heart size={14} /> 批量收藏</Button>
-            <Button size="sm" variant="ghost" onPress={() => {
-              const urls = selectedImages.map((i) => i.url).join('\n');
-              copyToClipboard(urls);
-            }}><Copy size={14} /> 复制链接</Button>
-          </div>
-        </Card>
-      )}
-
       {loading && <div className="flex justify-center py-10"><Spinner size="sm" /></div>}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {images.map((img, idx) => {
           const isSel = selected.has(img.id);
           return (
-            <div
+            <Card
               key={img.id}
-              className={`group relative cursor-pointer overflow-hidden rounded-xl border-2 transition-all ${isSel ? 'border-primary' : 'border-transparent'}`}
+              className="group relative cursor-pointer overflow-hidden rounded-md p-0"
               onClick={() => toggleSelect(img.id)}
             >
+              <div className="absolute top-2 left-2 z-10">
+                <Checkbox isSelected={isSel} onChange={() => toggleSelect(img.id)} aria-label={`选择 ${img.filename}`}>
+                  <Checkbox.Content>
+                    <Checkbox.Control className="size-5 bg-surface shadow-sm">
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                  </Checkbox.Content>
+                </Checkbox>
+              </div>
               <img
                 src={img.url}
                 alt={img.filename}
@@ -113,9 +136,6 @@ export default function Sniff() {
                 loading="lazy"
                 onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; }}
               />
-              <div className="absolute top-2 left-2 flex h-5 w-5 items-center justify-center rounded-sm bg-white/30 backdrop-blur-sm">
-                {isSel ? <CheckSquare className="text-white drop-shadow" size={14} /> : <Square className="text-white drop-shadow" size={14} />}
-              </div>
               <div className="absolute inset-x-0 bottom-0 flex gap-1 bg-black/60 p-1 opacity-0 transition-opacity group-hover:opacity-100">
                 <span onClick={(e) => { e.stopPropagation(); }}>
                   <Tooltip delay={0}>
@@ -142,13 +162,52 @@ export default function Sniff() {
                   </Tooltip>
                 </span>
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>
 
       {!loading && images.length === 0 && hasSearched && (
         <div className="py-10 text-center text-muted">未找到图片</div>
+      )}
+
+      {selected.size > 0 && (
+        <Toolbar
+          isAttached
+          aria-label="批量操作"
+          className="fixed bottom-16 left-1/2 z-[100] -translate-x-1/2 flex-wrap shadow-lg"
+        >
+          <ButtonGroup variant="tertiary">
+            <Checkbox isSelected={allSelected} isIndeterminate={someSelected} onChange={toggleSelectAll} aria-label={allSelected ? '取消全选' : '全选'}>
+              <Checkbox.Content>
+                <Checkbox.Control className="size-5 ml-2">
+                  <Checkbox.Indicator />
+                </Checkbox.Control>
+              </Checkbox.Content>
+            </Checkbox>
+            <Button size="sm" variant="ghost" isDisabled className="text-muted">
+              已选 {selected.size} / {images.length}
+            </Button>
+          </ButtonGroup>
+          <Separator orientation="vertical" />
+          <ButtonGroup variant="tertiary">
+            <Button size="sm" variant="secondary" onPress={handleFavoriteSelected}>
+              <Heart size={14} /> 收藏
+            </Button>
+            <Button size="sm" variant="secondary" onPress={handleCopySelectedUrls}>
+              <Copy size={14} /> 复制链接
+            </Button>
+            <Button size="sm" variant="secondary" onPress={handleDownloadSelected}>
+              <Download size={14} /> 下载
+            </Button>
+          </ButtonGroup>
+          <Separator orientation="vertical" />
+          <ButtonGroup variant="tertiary">
+            <Button size="sm" variant="ghost" onPress={clearSelection}>
+              <X size={14} /> 清空
+            </Button>
+          </ButtonGroup>
+        </Toolbar>
       )}
     </div>
   );

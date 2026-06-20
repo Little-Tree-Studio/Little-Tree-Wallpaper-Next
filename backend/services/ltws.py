@@ -10,11 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import requests
 import rtoml
 import yaml
+from loguru import logger
 
 from backend.models import WallpaperItem
 from backend.settings_manager import SettingsStore
@@ -23,6 +24,7 @@ from backend.settings_manager import SettingsStore
 def get_primary_display_resolution() -> dict[str, int]:
     try:
         from ctypes import windll
+
         user32 = windll.user32
         user32.SetProcessDPIAware()
         width = user32.GetSystemMetrics(0)
@@ -31,6 +33,7 @@ def get_primary_display_resolution() -> dict[str, int]:
     except Exception:
         try:
             import tkinter as tk
+
             root = tk.Tk()
             width = root.winfo_screenwidth()
             height = root.winfo_screenheight()
@@ -214,11 +217,7 @@ def _normalize_rule_rows(raw_value: Any) -> list[dict[str, Any]]:
 
 
 def _strip_empty_sections(document: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in document.items()
-        if value not in (None, "", [], {})
-    }
+    return {key: value for key, value in document.items() if value not in (None, "", [], {})}
 
 
 def _sanitize_identifier_segment(value: str) -> str:
@@ -244,12 +243,16 @@ class LTWSService:
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ltws_http")
 
     def list_sources(self) -> list[dict[str, Any]]:
+        logger.debug("Listing wallpaper sources from {}", self.sources_dir)
         results = []
+        invalid_count = 0
         for source_path, source_kind in self._iter_source_directories():
             try:
                 results.append(self._load_source_with_state(source_path, source_kind))
             except Exception as exc:
+                invalid_count += 1
                 state_key = source_path.name
+                logger.warning("Failed to load wallpaper source {}: {}", state_key, exc)
                 results.append(
                     {
                         "identifier": state_key,
@@ -262,9 +265,11 @@ class LTWSService:
                         "error": str(exc),
                     }
                 )
+        logger.info("Listed {} wallpaper source(s), {} invalid", len(results), invalid_count)
         return results
 
     def set_source_enabled(self, source_id: str, enabled: bool) -> dict[str, Any]:
+        logger.info("Setting wallpaper source {} enabled={}", source_id, enabled)
         source_path, source_kind, state_key = self._resolve_source_entry(source_id)
         disabled_ids = self._disabled_source_ids()
         if enabled:
@@ -276,6 +281,7 @@ class LTWSService:
         return self._load_source_with_state(source_path, source_kind)
 
     def delete_source(self, source_id: str) -> dict[str, Any]:
+        logger.info("Deleting wallpaper source {}", source_id)
         source_path, source_kind, state_key = self._resolve_source_entry(source_id)
         if source_kind != "custom":
             raise ValueError("内置壁纸源不支持删除")
@@ -284,9 +290,11 @@ class LTWSService:
         disabled_ids.discard(state_key)
         disabled_ids.discard(source_id)
         self._save_disabled_source_ids(disabled_ids)
+        logger.info("Deleted wallpaper source {}", state_key)
         return {"deleted": True, "identifier": state_key}
 
     def import_source(self, import_path: str) -> dict[str, Any]:
+        logger.info("Importing wallpaper source from {}", import_path)
         source = Path(import_path)
         if self._is_ltws_source_path(source):
             if source.is_file() and source.name.lower() == "source.toml":
@@ -303,33 +311,40 @@ class LTWSService:
                             member_path.resolve().relative_to(destination.resolve())
                         except ValueError:
                             raise ValueError(f"壁纸源包中包含不安全路径: {member.name}")
-                    if hasattr(tarfile, 'data_filter'):
-                        archive.extractall(destination, filter='data')
+                    if hasattr(tarfile, "data_filter"):
+                        archive.extractall(destination, filter="data")
                     else:
                         archive.extractall(destination)
+                logger.info("Imported .ltws wallpaper source to {}", destination)
                 return self._load_source(destination)
 
             destination = self.sources_dir / source.name
             if destination.exists():
                 shutil.rmtree(destination)
             shutil.copytree(source, destination)
+            logger.info("Imported wallpaper source directory to {}", destination)
             return self._load_source(destination)
 
         payload = self.import_source_as_payload(import_path)
         return self.create_source(payload)
 
     def import_source_as_payload(self, import_path: str) -> dict[str, Any]:
+        logger.debug("Importing wallpaper source as payload from {}", import_path)
         source = Path(import_path)
         document = self._load_external_document(source)
         if self._is_openapi_document(document):
+            logger.info("Converting OpenAPI document to wallpaper source payload")
             return self._convert_openapi_to_payload(document, source)
 
         version = _stringify(document.get("APICORE_version"))
         if version in {"1.0", "2.0"}:
+            logger.info("Converting APICORE v{} document to wallpaper source payload", version)
             return self._convert_apicore_to_payload(document, source, version)
+        logger.error("Unsupported import format for {}", import_path)
         raise ValueError("不支持的导入格式，当前仅支持 LTWS、APICORE v1/v2 和 OpenAPI 3.2")
 
     def export_source(self, source_id: str, target_path: str) -> dict[str, Any]:
+        logger.info("Exporting wallpaper source {} to {}", source_id, target_path)
         source_path = self._find_source_path(source_id)
         target = Path(target_path)
         if target.suffix.lower() != ".ltws":
@@ -338,6 +353,7 @@ class LTWSService:
         with tarfile.open(target, "w") as archive:
             for child in sorted(source_path.rglob("*")):
                 archive.add(child, arcname=str(child.relative_to(source_path)))
+        logger.info("Exported wallpaper source {} to {}", source_id, target)
         return {"saved_path": str(target)}
 
     def export_payload(
@@ -347,6 +363,7 @@ class LTWSService:
         target_path: str,
         export_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        logger.info("Exporting wallpaper source payload as {} to {}", export_format, target_path)
         normalized_format = _stringify(export_format).lower()
         target = Path(target_path)
         if normalized_format == "apicore_v1":
@@ -359,11 +376,15 @@ class LTWSService:
             document = self._convert_payload_to_openapi(payload, export_options)
             saved_path = self._write_external_document(document, target, ".yaml")
         else:
+            logger.error("Unsupported export format: {}", export_format)
             raise ValueError("不支持的导出格式，当前仅支持 APICORE v1/v2 和 OpenAPI 3.2")
+        logger.info("Exported wallpaper source payload to {}", saved_path)
         return {"saved_path": str(saved_path)}
 
     def create_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         source_payload = payload.get("source") or {}
+        identifier = str(source_payload.get("identifier") or "").strip()
+        logger.info("Creating wallpaper source {}", identifier or "(unknown)")
         config_payload = payload.get("config") or {}
         categories_payload = payload.get("categories") or {}
         raw_api_payloads = payload.get("apis")
@@ -373,8 +394,8 @@ class LTWSService:
             legacy_api_payload = payload.get("api")
             api_payloads = [legacy_api_payload] if isinstance(legacy_api_payload, dict) else []
 
-        identifier = str(source_payload.get("identifier") or "").strip()
         if not IDENTIFIER_PATTERN.match(identifier):
+            logger.error("Invalid wallpaper source identifier: {}", identifier)
             raise ValueError("identifier 不符合 littletree_wallpaper_source_v3 规范")
 
         name = str(source_payload.get("name") or "").strip()
@@ -389,16 +410,13 @@ class LTWSService:
             raise ValueError("至少需要一个 API 配置")
 
         existing_sources = self.list_sources()
-        existing_identifiers = {
-            str(item.get("identifier") or "") for item in existing_sources
-        }
+        existing_identifiers = {str(item.get("identifier") or "") for item in existing_sources}
         if identifier in existing_identifiers:
             raise ValueError("壁纸源标识已存在，请更换 identifier")
 
         slugified_identifier = _slugify_source_path(identifier.replace(".", "_"))
         existing_slugs = {
-            _slugify_source_path(str(item.get("identifier") or "").replace(".", "_"))
-            for item in existing_sources
+            _slugify_source_path(str(item.get("identifier") or "").replace(".", "_")) for item in existing_sources
         }
         if slugified_identifier in existing_slugs:
             raise ValueError("壁纸源标识已存在，请更换 identifier")
@@ -453,12 +471,10 @@ class LTWSService:
                 request_payload = api_payload.get("request") or {}
                 request_url = str(request_payload.get("url") or "").strip()
                 response_payload = api_payload.get("response") or {}
-                response_format = (
-                    str(response_payload.get("format") or "json").strip() or "json"
-                )
-                response_type = (
-                    str(response_payload.get("type") or "multi").strip() or "multi"
-                )
+                response_format = str(response_payload.get("format") or "json").strip() or "json"
+                if response_format == "raw":
+                    response_format = "binary"
+                response_type = str(response_payload.get("type") or "multi").strip() or "multi"
 
                 if response_format not in {"static_dict", "static_list"} and not request_url:
                     raise ValueError(f"API {api_name} 的请求地址不能为空")
@@ -481,7 +497,14 @@ class LTWSService:
                     )
                 ):
                     item_mapping = _build_legacy_item_mapping(mapping_payload)
-                if response_format not in {"image_url", "image_raw", "static_dict", "static_list"} and not _stringify(item_mapping.get("image")):
+                if response_format not in {
+                    "image_url",
+                    "image_raw",
+                    "raw",
+                    "binary",
+                    "static_dict",
+                    "static_list",
+                } and not _stringify(item_mapping.get("image")):
                     raise ValueError(f"API {api_name} 的图片字段映射不能为空")
 
                 api_categories = _normalize_string_list(api_payload.get("categories"))
@@ -511,9 +534,13 @@ class LTWSService:
             shutil.rmtree(source_dir, ignore_errors=True)
             raise
 
-    def execute_api(self, source_id: str, api_name: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def execute_api(
+        self, source_id: str, api_name: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         parameters = parameters or {}
+        logger.info("Executing wallpaper source api source_id={} api_name={} params={}", source_id, api_name, list(parameters.keys()))
         if not self._is_source_enabled(source_id):
+            logger.warning("Wallpaper source {} is disabled, cannot execute {}", source_id, api_name)
             raise ValueError("该壁纸源已禁用，请先启用后再执行")
         source_path = self._find_source_path(source_id)
         spec = self._load_source(source_path)
@@ -534,17 +561,9 @@ class LTWSService:
         directories: list[tuple[Path, str]] = []
         example_root = self.builtin_examples_dir / "ltws"
         if example_root.exists():
-            directories.extend(
-                (path, "builtin")
-                for path in sorted(example_root.iterdir())
-                if path.is_dir()
-            )
+            directories.extend((path, "builtin") for path in sorted(example_root.iterdir()) if path.is_dir())
         if self.sources_dir.exists():
-            directories.extend(
-                (path, "custom")
-                for path in sorted(self.sources_dir.iterdir())
-                if path.is_dir()
-            )
+            directories.extend((path, "custom") for path in sorted(self.sources_dir.iterdir()) if path.is_dir())
         return directories
 
     def _resolve_source_entry(self, source_id: str) -> tuple[Path, str, str]:
@@ -649,10 +668,7 @@ class LTWSService:
             document["description"] = f"{document['name']} 的自定义 LTWS 壁纸源"
         if not document["details"]:
             category_names = "、".join(item["name"] for item in categories)
-            document["details"] = (
-                f"# {document['name']}\n\n"
-                f"通过可视化编辑器创建，默认分类包含：{category_names}。"
-            )
+            document["details"] = f"# {document['name']}\n\n通过可视化编辑器创建，默认分类包含：{category_names}。"
         if not document["footer_text"]:
             document["footer_text"] = "Created with Little Tree Wallpaper Next"
         return _strip_empty_sections(document)
@@ -665,14 +681,23 @@ class LTWSService:
         source_name: str,
     ) -> dict[str, Any]:
         raw_categories = categories_payload.get("categories")
-        category_rows = raw_categories if isinstance(raw_categories, list) and raw_categories else self._normalize_created_source_categories(fallback_categories)
+        category_rows = (
+            raw_categories
+            if isinstance(raw_categories, list) and raw_categories
+            else self._normalize_created_source_categories(fallback_categories)
+        )
         categories: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for item in category_rows:
             if isinstance(item, dict):
                 category_id = _slugify_category_id(_stringify(item.get("id") or item.get("name")))
                 name = _stringify(item.get("name") or category_id)
-                category = _stringify(item.get("category") or categories_payload.get("template", {}).get("category") or "自定义") or "自定义"
+                category = (
+                    _stringify(
+                        item.get("category") or categories_payload.get("template", {}).get("category") or "自定义"
+                    )
+                    or "自定义"
+                )
                 subcategory = _stringify(item.get("subcategory") or source_name)
                 subsubcategory = _stringify(item.get("subsubcategory"))
                 icon = _stringify(item.get("icon"))
@@ -715,7 +740,11 @@ class LTWSService:
             if not isinstance(item, dict):
                 continue
             name = _stringify(item.get("name"))
-            category_ids = [category_id for category_id in _normalize_string_list(item.get("category_ids")) if category_id in seen_ids]
+            category_ids = [
+                category_id
+                for category_id in _normalize_string_list(item.get("category_ids"))
+                if category_id in seen_ids
+            ]
             if name and category_ids:
                 category_groups.append({"name": name, "category_ids": category_ids})
         if not category_groups and categories:
@@ -821,11 +850,7 @@ class LTWSService:
             "name": str(api_payload.get("name") or "").strip(),
             "description": str(api_payload.get("description") or "").strip(),
             "logo": _stringify(api_payload.get("logo")),
-            "categories": [
-                str(item).strip()
-                for item in (api_payload.get("categories") or [])
-                if str(item).strip()
-            ],
+            "categories": [str(item).strip() for item in (api_payload.get("categories") or []) if str(item).strip()],
             "response": {
                 "format": response_format,
                 "type": response_type,
@@ -868,13 +893,15 @@ class LTWSService:
                         "preview": _stringify(item.get("preview")),
                         "description": _stringify(item.get("description")),
                         "width": _coerce_int(item.get("width"), 0, 0) if item.get("width") not in {None, ""} else None,
-                        "height": _coerce_int(item.get("height"), 0, 0) if item.get("height") not in {None, ""} else None,
+                        "height": _coerce_int(item.get("height"), 0, 0)
+                        if item.get("height") not in {None, ""}
+                        else None,
                     }
                 )
                 if normalized_item:
                     items.append(normalized_item)
             document["static_dict"] = {"items": items}
-        elif response_format not in {"image_url", "image_raw"}:
+        elif response_format not in {"image_url", "image_raw", "raw", "binary"}:
             mapping_document: dict[str, Any] = {}
             items_path = _stringify(mapping_payload.get("items") or mapping_payload.get("items_path"))
             if response_type == "multi" and items_path:
@@ -902,14 +929,16 @@ class LTWSService:
         if validation_document:
             document["validation"] = validation_document
 
-        error_handling_document = self._build_created_error_handling_document(
-            error_handling_payload
-        )
+        error_handling_document = self._build_created_error_handling_document(error_handling_payload)
         if error_handling_document:
             document["error_handling"] = error_handling_document
 
         cache_enabled = cache_payload.get("enabled")
-        if cache_enabled is True or cache_payload.get("ttl_seconds") not in {None, ""} or _stringify(cache_payload.get("key_template")):
+        if (
+            cache_enabled is True
+            or cache_payload.get("ttl_seconds") not in {None, ""}
+            or _stringify(cache_payload.get("key_template"))
+        ):
             document["cache"] = {
                 "enabled": bool(cache_payload.get("enabled", True)),
                 "ttl_seconds": max(1, int(cache_payload.get("ttl_seconds") or 3600)),
@@ -939,11 +968,7 @@ class LTWSService:
             default_value = item.get("default")
             if default_value not in {None, ""}:
                 parameter["default"] = default_value
-            choices = [
-                str(choice).strip()
-                for choice in (item.get("choices") or [])
-                if str(choice).strip()
-            ]
+            choices = [str(choice).strip() for choice in (item.get("choices") or []) if str(choice).strip()]
             if choices:
                 parameter["choices"] = choices
             description = _stringify(item.get("description"))
@@ -961,9 +986,7 @@ class LTWSService:
             normalized.append(_strip_empty_sections(parameter))
         return normalized
 
-    def _build_created_validation_document(
-        self, validation_payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _build_created_validation_document(self, validation_payload: dict[str, Any]) -> dict[str, Any]:
         required_fields = _normalize_string_list(validation_payload.get("required_fields"))
         if not required_fields:
             if bool(validation_payload.get("require_image", True)):
@@ -978,9 +1001,7 @@ class LTWSService:
                 field_patterns.append({"path": "image", "regex": image_regex})
             title_max_length = validation_payload.get("title_max_length")
             if title_max_length not in {None, ""}:
-                field_patterns.append(
-                    {"path": "title", "max_length": int(title_max_length)}
-                )
+                field_patterns.append({"path": "title", "max_length": int(title_max_length)})
 
         quality_rules = _normalize_rule_rows(validation_payload.get("quality_rules"))
         return _strip_empty_sections(
@@ -991,9 +1012,7 @@ class LTWSService:
             }
         )
 
-    def _build_created_error_handling_document(
-        self, error_handling_payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _build_created_error_handling_document(self, error_handling_payload: dict[str, Any]) -> dict[str, Any]:
         http_codes: list[dict[str, Any]] = []
         for item in error_handling_payload.get("http_codes") or []:
             if not isinstance(item, dict):
@@ -1006,7 +1025,9 @@ class LTWSService:
                     {
                         "code": _coerce_int(code, 0, 100),
                         "message": _stringify(item.get("message")),
-                        "retry_after": _coerce_int(item.get("retry_after"), 0, 0) if item.get("retry_after") not in {None, ""} else None,
+                        "retry_after": _coerce_int(item.get("retry_after"), 0, 0)
+                        if item.get("retry_after") not in {None, ""}
+                        else None,
                         "fallback": bool(item.get("fallback", False)) or None,
                     }
                 )
@@ -1135,12 +1156,26 @@ class LTWSService:
         response_type = response_spec.get("type", "multi")
 
         if format_name == "image_url":
-            return [self._apply_post_process(self._normalize_item({"image": response_text.strip(), "title": api_name}, source_id, source_name, api_name), api_spec)]
-        if format_name == "image_raw":
+            return [
+                self._apply_post_process(
+                    self._normalize_item(
+                        {"image": response_text.strip(), "title": api_name}, source_id, source_name, api_name
+                    ),
+                    api_spec,
+                )
+            ]
+        if format_name in {"image_raw", "raw", "binary"}:
             cache_name = hashlib.sha1(response_bytes).hexdigest() + ".jpg"
             image_path = self.cache_dir / cache_name
             image_path.write_bytes(response_bytes)
-            return [self._apply_post_process(self._normalize_item({"image": str(image_path), "title": api_name}, source_id, source_name, api_name), api_spec)]
+            return [
+                self._apply_post_process(
+                    self._normalize_item(
+                        {"image": str(image_path), "title": api_name}, source_id, source_name, api_name
+                    ),
+                    api_spec,
+                )
+            ]
 
         if format_name == "toml":
             payload = rtoml.loads(response_text)
@@ -1160,7 +1195,11 @@ class LTWSService:
         for raw_item in raw_items:
             try:
                 mapped_item = self._map_item(mapping_spec.get("item_mapping", {}), raw_item)
-                results.append(self._apply_post_process(self._normalize_item(mapped_item, source_id, source_name, api_name), api_spec))
+                results.append(
+                    self._apply_post_process(
+                        self._normalize_item(mapped_item, source_id, source_name, api_name), api_spec
+                    )
+                )
             except Exception:
                 if error_handling.get("on_mapping_failed") == "skip_item":
                     continue
@@ -1283,7 +1322,12 @@ class LTWSService:
             width=int(item["width"]) if item.get("width") not in {None, ""} else None,
             height=int(item["height"]) if item.get("height") not in {None, ""} else None,
             description=item.get("description", ""),
-            metadata={key: value for key, value in item.items() if key not in {"id", "title", "image", "image_url", "preview", "preview_url", "width", "height", "description"}},
+            metadata={
+                key: value
+                for key, value in item.items()
+                if key
+                not in {"id", "title", "image", "image_url", "preview", "preview_url", "width", "height", "description"}
+            },
         )
         return wallpaper.to_dict()
 
@@ -1293,7 +1337,10 @@ class LTWSService:
             return item
         result = dict(item)
         for key, template in post_process.items():
-            current_variables = {**{field: str(value) for field, value in result.items() if value is not None}, **{field: str(value) for field, value in result.get("metadata", {}).items() if value is not None}}
+            current_variables = {
+                **{field: str(value) for field, value in result.items() if value is not None},
+                **{field: str(value) for field, value in result.get("metadata", {}).items() if value is not None},
+            }
             result[key if key != "image" else "image_url"] = self._render_template(template, current_variables)
             if key == "image":
                 result["preview_url"] = result["image_url"]
@@ -1306,11 +1353,7 @@ class LTWSService:
         raise ValueError(f"未找到 API: {api_name}")
 
     def _resolve_cache_spec(self, spec: dict[str, Any], api_spec: dict[str, Any]) -> dict[str, Any]:
-        global_cache = (
-            spec.get("config", {})
-            .get("request", {})
-            .get("cache", {})
-        )
+        global_cache = spec.get("config", {}).get("request", {}).get("cache", {})
         api_cache = api_spec.get("cache", {})
         enabled = api_cache.get("enabled")
         if enabled is None:
@@ -1324,9 +1367,7 @@ class LTWSService:
             "key_template": _stringify(api_cache.get("key_template")),
         }
 
-    def _match_http_code_rule(
-        self, error_handling: dict[str, Any], status_code: int
-    ) -> dict[str, Any] | None:
+    def _match_http_code_rule(self, error_handling: dict[str, Any], status_code: int) -> dict[str, Any] | None:
         for rule in error_handling.get("http_codes", []):
             if _coerce_int(rule.get("code"), 0) == status_code:
                 return rule
@@ -1354,9 +1395,7 @@ class LTWSService:
             delay = max(delay, retry_after)
         return max(0.0, delay)
 
-    def _resolve_fallback_api(
-        self, spec: dict[str, Any], api_spec: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    def _resolve_fallback_api(self, spec: dict[str, Any], api_spec: dict[str, Any]) -> dict[str, Any] | None:
         fallback_to = _stringify(api_spec.get("error_handling", {}).get("fallback_to"))
         if not fallback_to:
             return None
@@ -1375,7 +1414,9 @@ class LTWSService:
         parameters: dict[str, Any],
         error_handling: dict[str, Any],
     ) -> requests.Response:
-        custom_variables = request_config.get("variables") if isinstance(request_config.get("variables"), dict) else None
+        custom_variables = (
+            request_config.get("variables") if isinstance(request_config.get("variables"), dict) else None
+        )
         headers = {
             **_normalize_key_value_rows(request_config.get("headers")),
             **_normalize_key_value_rows(request_spec.get("headers")),
@@ -1478,16 +1519,15 @@ class LTWSService:
         visited: set[str],
     ) -> list[dict[str, Any]]:
         api_visit_key = str(api_spec.get("_file_stem") or api_spec.get("name") or "")
+        logger.debug("Executing api spec source_id={} api={}", source_id, api_visit_key)
         if api_visit_key in visited:
+            logger.error("Fallback loop detected at api {}", api_visit_key)
             raise RuntimeError(f"检测到 fallback 循环: {api_visit_key}")
         visited.add(api_visit_key)
 
         request_spec = api_spec.get("request", {})
         response_spec = api_spec.get("response", {})
-        request_config = (
-            spec.get("config", {})
-            .get("request", {})
-        )
+        request_config = spec.get("config", {}).get("request", {})
         error_handling = api_spec.get("error_handling", {})
 
         cache_payload = self._load_cache(
@@ -1497,6 +1537,7 @@ class LTWSService:
             parameters=parameters,
         )
         if cache_payload is not None:
+            logger.debug("Cache hit for api spec source_id={} api={}", source_id, api_visit_key)
             return cache_payload
 
         try:
@@ -1541,6 +1582,7 @@ class LTWSService:
 
             validated = self._validate_items(mapped, api_spec.get("validation", {}))
             if not validated and error_handling.get("on_empty_response") == "skip":
+                logger.warning("Validation produced no items and on_empty_response=skip for api {}", api_visit_key)
                 return []
             self._save_cache(
                 spec=spec,
@@ -1549,10 +1591,13 @@ class LTWSService:
                 parameters=parameters,
                 payload=validated,
             )
+            logger.info("Executed api spec source_id={} api={} returned {} item(s)", source_id, api_visit_key, len(validated))
             return validated
-        except Exception:
+        except Exception as exc:
+            logger.warning("Api spec execution failed source_id={} api={}: {}", source_id, api_visit_key, exc)
             fallback = self._resolve_fallback_api(spec, api_spec)
             if fallback is not None:
+                logger.info("Falling back from api {} to {}", api_visit_key, fallback.get("name") or fallback.get("_file_stem"))
                 return self._execute_api_spec(
                     source_id=source_id,
                     spec=spec,
@@ -1560,6 +1605,7 @@ class LTWSService:
                     parameters=parameters,
                     visited=visited,
                 )
+            logger.exception("Api spec execution failed and no fallback available source_id={} api={}", source_id, api_visit_key)
             raise
 
     def _validate_items(self, items: list[dict[str, Any]], validation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1627,27 +1673,29 @@ class LTWSService:
         if cache_spec.get("key_template"):
             key = self._render_template(cache_spec["key_template"], parameters)
         else:
-            serialized = json.dumps({"source_id": source_id, "api": api_spec.get("name"), "params": parameters}, sort_keys=True)
+            serialized = json.dumps(
+                {"source_id": source_id, "api": api_spec.get("name"), "params": parameters}, sort_keys=True
+            )
             key = hashlib.sha1(serialized.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{key}.json"
 
-    def _cache_file_for_spec(self, spec: dict[str, Any], api_spec: dict[str, Any], source_id: str, parameters: dict[str, Any]) -> Path:
+    def _cache_file_for_spec(
+        self, spec: dict[str, Any], api_spec: dict[str, Any], source_id: str, parameters: dict[str, Any]
+    ) -> Path:
         cache_spec = self._resolve_cache_spec(spec, api_spec)
-        request_variables = (
-            spec.get("config", {})
-            .get("request", {})
-            .get("variables", {})
-        )
+        request_variables = spec.get("config", {}).get("request", {}).get("variables", {})
         if cache_spec.get("key_template"):
             key = self._render_template_with_custom_values(
                 cache_spec["key_template"],
                 parameters,
                 request_variables if isinstance(request_variables, dict) else None,
             )
-            key = re.sub(r'[\\/:*?"<>|]', '-', key)
+            key = re.sub(r'[\\/:*?"<>|]', "-", key)
             key = key.replace("..", "-")
         else:
-            serialized = json.dumps({"source_id": source_id, "api": api_spec.get("name"), "params": parameters}, sort_keys=True)
+            serialized = json.dumps(
+                {"source_id": source_id, "api": api_spec.get("name"), "params": parameters}, sort_keys=True
+            )
             key = hashlib.sha1(serialized.encode("utf-8")).hexdigest()
         cache_file = self.cache_dir / f"{key}.json"
         try:
@@ -1656,7 +1704,9 @@ class LTWSService:
             raise ValueError(f"不安全的缓存键: {key}")
         return cache_file
 
-    def _load_cache(self, spec: dict[str, Any], api_spec: dict[str, Any], source_id: str, parameters: dict[str, Any]) -> list[dict[str, Any]] | None:
+    def _load_cache(
+        self, spec: dict[str, Any], api_spec: dict[str, Any], source_id: str, parameters: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
         cache_spec = self._resolve_cache_spec(spec, api_spec)
         if not cache_spec.get("enabled"):
             return None
@@ -1669,7 +1719,14 @@ class LTWSService:
             return None
         return json.loads(cache_file.read_text(encoding="utf-8"))
 
-    def _save_cache(self, spec: dict[str, Any], api_spec: dict[str, Any], source_id: str, parameters: dict[str, Any], payload: list[dict[str, Any]]) -> None:
+    def _save_cache(
+        self,
+        spec: dict[str, Any],
+        api_spec: dict[str, Any],
+        source_id: str,
+        parameters: dict[str, Any],
+        payload: list[dict[str, Any]],
+    ) -> None:
         cache_spec = self._resolve_cache_spec(spec, api_spec)
         if not cache_spec.get("enabled"):
             return
@@ -1720,10 +1777,7 @@ class LTWSService:
                 "name": source_name,
                 "version": "1.0.0",
                 "description": description or f"从 {import_label} 导入的壁纸源",
-                "details": (
-                    f"# {source_name}\n\n"
-                    f"从 {import_label} 自动导入生成，可继续在 LTWS 编辑器中调整。"
-                ),
+                "details": (f"# {source_name}\n\n从 {import_label} 自动导入生成，可继续在 LTWS 编辑器中调整。"),
                 "logo": logo,
                 "footer_text": f"Imported from {source.name}",
                 "merge": {
@@ -1765,9 +1819,7 @@ class LTWSService:
         }
 
     def _build_unique_import_identifier(self, source_name: str) -> str:
-        base_segment = _sanitize_identifier_segment(
-            _slugify_source_path(source_name).replace("-", "_")
-        )
+        base_segment = _sanitize_identifier_segment(_slugify_source_path(source_name).replace("-", "_"))
         candidate = f"com.littletree.imported.{base_segment}"
         existing = {str(item.get("identifier") or "") for item in self.list_sources()}
         if candidate not in existing:
@@ -1793,12 +1845,7 @@ class LTWSService:
         for index, item in enumerate(rows):
             if not isinstance(item, dict):
                 continue
-            key_source = (
-                item.get("name")
-                or item.get("key")
-                or item.get("friendly_name")
-                or f"param_{index + 1}"
-            )
+            key_source = item.get("name") or item.get("key") or item.get("friendly_name") or f"param_{index + 1}"
             key = _slugify_source_path(_stringify(key_source)).replace("-", "_")
             source_type = _stringify(item.get("type") or "string").lower() or "string"
             parameter_type = {
@@ -1865,9 +1912,7 @@ class LTWSService:
             "body": "",
             "body_type": "json",
         }
-        available_keys = [
-            str(item.get("key") or "") for item in parameters if str(item.get("key") or "")
-        ]
+        available_keys = [str(item.get("key") or "") for item in parameters if str(item.get("key") or "")]
         referenced_keys = self._extract_template_variables(request_url)
         referenced_keys.update(self._extract_template_variables(request_headers))
         missing_keys = [key for key in available_keys if key not in referenced_keys]
@@ -1875,9 +1920,7 @@ class LTWSService:
         if method_upper in {"GET", "HEAD", "DELETE", "OPTIONS"} and missing_keys:
             separator = "&" if "?" in request_url else "?"
             query_template = "&".join(f"{key}={{{{{key}}}}}" for key in missing_keys)
-            payload["url"] = (
-                f"{request_url}{separator}{query_template}" if query_template else request_url
-            )
+            payload["url"] = f"{request_url}{separator}{query_template}" if query_template else request_url
         elif missing_keys:
             payload["body"] = json.dumps(
                 {key: f"{{{{{key}}}}}" for key in missing_keys},
@@ -1913,9 +1956,7 @@ class LTWSService:
                     {
                         "code": int(code),
                         "message": _stringify(rule.get("message")),
-                        "retry_after": _coerce_int(rule.get("delay_ms"), 0, 0) // 1000
-                        if action == "retry"
-                        else None,
+                        "retry_after": _coerce_int(rule.get("delay_ms"), 0, 0) // 1000 if action == "retry" else None,
                         "fallback": True if action in {"warning", "error"} else None,
                     }
                 )
@@ -1937,10 +1978,10 @@ class LTWSService:
         internal_path = _apicore_path_to_internal(path)
         internal_items = items_path.lstrip("/")
         if internal_items and internal_path.startswith("/" + internal_items + "/"):
-            return internal_path[len("/" + internal_items + "/"):]
+            return internal_path[len("/" + internal_items + "/") :]
         internal_image = _apicore_path_to_internal(image_path).lstrip("/")
         if internal_image and internal_path.startswith("/" + internal_image + "/"):
-            return internal_path[len("/" + internal_image + "/"):]
+            return internal_path[len("/" + internal_image + "/") :]
         return internal_path
 
     def _guess_metadata_field(self, friendly_name: str) -> str | None:
@@ -2026,7 +2067,9 @@ class LTWSService:
         if timeout_ms not in {None, ""}:
             request_payload["timeout_seconds"] = max(1, int(timeout_ms) // 1000)
 
-        response_payload, mapping_payload, post_process_payload = self._convert_apicore_response(document.get("response"))
+        response_payload, mapping_payload, post_process_payload = self._convert_apicore_response(
+            document.get("response")
+        )
         retry_config = ((document.get("configs") or {}).get("retry") or {}) if version == "2.0" else {}
         base_payload = self._create_imported_source_payload(
             source_name=source_name,
@@ -2134,12 +2177,16 @@ class LTWSService:
         resolved = schema if isinstance(schema, dict) else {}
         schema_type = _stringify(resolved.get("type") or "string").lower() or "string"
         enum_values = resolved.get("enum") if isinstance(resolved.get("enum"), list) else []
-        parameter_type = "choice" if enum_values else {
-            "boolean": "boolean",
-            "integer": "number",
-            "number": "number",
-            "array": "list",
-        }.get(schema_type, "text")
+        parameter_type = (
+            "choice"
+            if enum_values
+            else {
+                "boolean": "boolean",
+                "integer": "number",
+                "number": "number",
+                "array": "list",
+            }.get(schema_type, "text")
+        )
         default_value = resolved.get("default", example)
         if schema_type == "array" and isinstance(default_value, list):
             default_value = ",".join(str(item) for item in default_value)
@@ -2208,7 +2255,9 @@ class LTWSService:
             body_template[property_name] = f"{{{{{converted['key']}}}}}"
         return parameters, json.dumps(body_template, ensure_ascii=False, indent=2)
 
-    def _convert_openapi_request_body(self, document: dict[str, Any], request_body: Any) -> tuple[list[dict[str, Any]], str, str]:
+    def _convert_openapi_request_body(
+        self, document: dict[str, Any], request_body: Any
+    ) -> tuple[list[dict[str, Any]], str, str]:
         payload = self._resolve_openapi_schema(document, request_body)
         if not isinstance(payload, dict):
             return [], "", "json"
@@ -2254,10 +2303,15 @@ class LTWSService:
                 break
         return rows
 
-    def _build_openapi_json_response_mapping(self, document: dict[str, Any], schema: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _build_openapi_json_response_mapping(
+        self, document: dict[str, Any], schema: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         resolved = self._resolve_openapi_schema(document, schema)
         if not isinstance(resolved, dict):
-            return {"format": "json", "type": "single"}, {"items": "", "item_mapping": [{"key": "image", "value": "/url"}]}
+            return {"format": "json", "type": "single"}, {
+                "items": "",
+                "item_mapping": [{"key": "image", "value": "/url"}],
+            }
 
         if _stringify(resolved.get("type")) == "array":
             item_schema = self._resolve_openapi_schema(document, resolved.get("items") or {})
@@ -2282,14 +2336,19 @@ class LTWSService:
                     item_schema = self._resolve_openapi_schema(document, nested_schema.get("items") or {})
                     nested_mapping = self._build_openapi_item_mapping(document, item_schema, "")
                     if any(row["key"] == "image" for row in nested_mapping):
-                        return {"format": "json", "type": "multi"}, {"items": "/" + property_name, "item_mapping": nested_mapping}
+                        return {"format": "json", "type": "multi"}, {
+                            "items": "/" + property_name,
+                            "item_mapping": nested_mapping,
+                        }
                 nested_mapping = self._build_openapi_item_mapping(document, nested_schema, property_name + ".")
                 if any(row["key"] == "image" for row in nested_mapping):
                     return {"format": "json", "type": "single"}, {"items": "", "item_mapping": nested_mapping}
 
         return {"format": "json", "type": "single"}, {"items": "", "item_mapping": [{"key": "image", "value": "/url"}]}
 
-    def _convert_openapi_response(self, document: dict[str, Any], response: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
+    def _convert_openapi_response(
+        self, document: dict[str, Any], response: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
         content = response.get("content") or {}
         if not isinstance(content, dict):
             return None, None
@@ -2350,11 +2409,11 @@ class LTWSService:
 
         if query_parameters:
             separator = "&" if "?" in request_url else "?"
-            request_url = request_url + separator + "&".join(
-                f"{name}={{{{{key}}}}}" for name, key in query_parameters
-            )
+            request_url = request_url + separator + "&".join(f"{name}={{{{{key}}}}}" for name, key in query_parameters)
 
-        body_parameters, body_template, body_type = self._convert_openapi_request_body(document, operation.get("requestBody"))
+        body_parameters, body_template, body_type = self._convert_openapi_request_body(
+            document, operation.get("requestBody")
+        )
         parameters.extend(body_parameters)
         api_name = _stringify(
             operation.get("summary") or operation.get("operationId") or f"{method.upper()} {path_name}"
@@ -2659,7 +2718,7 @@ class LTWSService:
         version: str,
     ) -> dict[str, Any]:
         source_payload = payload.get("source") or {}
-        config_payload = ((payload.get("config") or {}).get("request") or {})
+        config_payload = (payload.get("config") or {}).get("request") or {}
         api_payload = self._select_export_api(payload, f"apicore_v{version[0]}")
         request_payload = api_payload.get("request") or {}
         parameters = api_payload.get("parameters") or []
@@ -2668,7 +2727,9 @@ class LTWSService:
 
         document: dict[str, Any] = {
             "friendly_name": _stringify(source_payload.get("name") or api_payload.get("name")),
-            "intro": _stringify(source_payload.get("description") or source_payload.get("details") or api_payload.get("description")),
+            "intro": _stringify(
+                source_payload.get("description") or source_payload.get("details") or api_payload.get("description")
+            ),
             "icon": _stringify(source_payload.get("logo") or api_payload.get("logo")),
             "link": _stringify(request_payload.get("url")),
             "func": _stringify(request_payload.get("method") or "GET").upper() or "GET",
@@ -2692,7 +2753,10 @@ class LTWSService:
                 {
                     "request": {
                         "headers": headers,
-                        "timeout_ms": _coerce_int(request_payload.get("timeout_seconds") or config_payload.get("timeout_seconds"), 20, 1) * 1000,
+                        "timeout_ms": _coerce_int(
+                            request_payload.get("timeout_seconds") or config_payload.get("timeout_seconds"), 20, 1
+                        )
+                        * 1000,
                     },
                     "retry": {
                         "count": _coerce_int(retry_payload.get("max_attempts"), 1, 1),
@@ -2794,14 +2858,12 @@ class LTWSService:
             return "", path or "/", query
         return "", normalized or "/", ""
 
-    def _normalize_openapi_export_options(self, export_options: dict[str, Any] | None) -> tuple[list[str], dict[str, list[str]]]:
+    def _normalize_openapi_export_options(
+        self, export_options: dict[str, Any] | None
+    ) -> tuple[list[str], dict[str, list[str]]]:
         payload = export_options if isinstance(export_options, dict) else {}
         openapi_payload = payload.get("openapi") if isinstance(payload.get("openapi"), dict) else payload
-        servers = [
-            str(item).strip()
-            for item in (openapi_payload.get("servers") or [])
-            if str(item).strip()
-        ]
+        servers = [str(item).strip() for item in (openapi_payload.get("servers") or []) if str(item).strip()]
         tag_overrides: dict[str, list[str]] = {}
         raw_tag_overrides = openapi_payload.get("tags_by_api")
         if isinstance(raw_tag_overrides, dict):
@@ -2812,9 +2874,11 @@ class LTWSService:
                 tag_overrides[normalized_name] = _normalize_string_list(raw_tags)
         return servers, tag_overrides
 
-    def _convert_payload_to_openapi(self, payload: dict[str, Any], export_options: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _convert_payload_to_openapi(
+        self, payload: dict[str, Any], export_options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         source_payload = payload.get("source") or {}
-        categories_payload = ((payload.get("categories") or {}).get("categories") or [])
+        categories_payload = (payload.get("categories") or {}).get("categories") or []
         category_name_map = {
             str(item.get("id") or ""): str(item.get("name") or str(item.get("id") or ""))
             for item in categories_payload
@@ -2867,7 +2931,9 @@ class LTWSService:
                 if token_pattern.search(raw_path):
                     location = "path"
                 else:
-                    header_name = next((header for header, value in header_templates.items() if token_pattern.search(value)), "")
+                    header_name = next(
+                        (header for header, value in header_templates.items() if token_pattern.search(value)), ""
+                    )
                     if header_name:
                         location = "header"
                         name = header_name
@@ -2899,7 +2965,8 @@ class LTWSService:
                 "summary": api_name,
                 "description": _stringify(api_payload.get("description")),
                 "operationId": _slugify_source_path(api_name).replace("-", "_"),
-                "tags": tag_overrides.get(api_name) or [
+                "tags": tag_overrides.get(api_name)
+                or [
                     category_name_map.get(category_id, category_id)
                     for category_id in _normalize_string_list(api_payload.get("categories"))
                 ],
@@ -2925,7 +2992,9 @@ class LTWSService:
                 operation["requestBody"] = {
                     "required": True,
                     "content": {
-                        "application/json" if _stringify(request_payload.get("body_type") or "json") == "json" else "application/x-www-form-urlencoded": {
+                        "application/json"
+                        if _stringify(request_payload.get("body_type") or "json") == "json"
+                        else "application/x-www-form-urlencoded": {
                             "schema": {
                                 "type": "object",
                                 "properties": body_properties,

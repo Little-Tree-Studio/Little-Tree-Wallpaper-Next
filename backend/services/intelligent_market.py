@@ -200,18 +200,14 @@ class IntelligentMarketService:
         self._connector: aiohttp.TCPConnector | None = None
 
     def _create_session(self) -> aiohttp.ClientSession:
-        if self._connector is None:
-            self._connector = aiohttp.TCPConnector(ssl=self._ssl_context)
         return aiohttp.ClientSession(
-            connector=self._connector,
+            connector=aiohttp.TCPConnector(ssl=self._ssl_context),
             timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECONDS),
             headers={"User-Agent": "LittleTreeWallpaperNext/2.0"},
         )
 
     def close(self) -> None:
-        if self._connector is not None:
-            self._connector.close()
-            self._connector = None
+        pass
 
     @property
     def cache_dir(self) -> Path:
@@ -457,12 +453,59 @@ class IntelligentMarketService:
             raise last_error
         raise RuntimeError(f"未找到可用的 Intelligent Market 配置地址: {relative_path}")
 
+    async def _fetch_jsdelivr_html_tree(
+        self, session: aiohttp.ClientSession, base_url: str
+    ) -> dict[str, Any]:
+        """Recursively fetch file tree from jsdelivr HTML directory listings."""
+        all_files: list[dict[str, str]] = []
+        visited: set[str] = set()
+
+        async def scan_directory(url: str) -> None:
+            if url in visited:
+                return
+            visited.add(url)
+
+            async with session.get(url) as response:
+                response.raise_for_status()
+                html = await response.text()
+
+            href_pattern = re.compile(r'href="(/gh/[^"]+?)"')
+            links = href_pattern.findall(html)
+
+            for link in links:
+                if not (link.endswith("/") or link.endswith(".api.json")):
+                    continue
+
+                escaped_branch = re.escape(self._repo_branch)
+                match = re.search(rf"@{escaped_branch}/(.+)$", link)
+                if not match:
+                    continue
+
+                relative_path = match.group(1)
+
+                if relative_path.endswith(".api.json"):
+                    all_files.append({"name": f"/{relative_path}"})
+                elif relative_path.endswith("/"):
+                    subdir_url = f"https://cdn.jsdelivr.net{link}"
+                    await scan_directory(subdir_url)
+
+        await scan_directory(base_url)
+
+        if not all_files:
+            raise RuntimeError("jsdelivr HTML 目录中未找到 .api.json 文件")
+
+        return {"files": all_files}
+
     async def _fetch_market_tree(self, session: aiohttp.ClientSession) -> Any:
         last_error: Exception | None = None
         for tree_url in self._build_tree_candidates():
             try:
                 async with session.get(tree_url) as response:
                     response.raise_for_status()
+                    content_type = response.headers.get("Content-Type", "")
+                    if "text/html" in content_type:
+                        html = await response.text()
+                        return await self._fetch_jsdelivr_html_tree(session, tree_url)
                     return await response.json(content_type=None)
             except Exception as exc:
                 last_error = exc
@@ -1157,16 +1200,16 @@ class IntelligentMarketService:
             f"https://api.github.com/repos/{self._repo_owner}/{self._repo_name}"
             f"/git/trees/{self._repo_branch}?recursive=1"
         )
-        jsdelivr_flat = (
-            f"https://data.jsdelivr.com/v1/package/gh/{self._repo_owner}/"
-            f"{self._repo_name}@{self._repo_branch}/flat"
+        jsdelivr_html = (
+            f"https://cdn.jsdelivr.net/gh/{self._repo_owner}/"
+            f"{self._repo_name}@{self._repo_branch}/"
         )
         ghproxy_api = f"https://gh-proxy.com/{github_api}"
         preference = str(self._settings.get("im.mirror_preference", "auto") or "auto")
         if preference == "github":
-            return [github_api, jsdelivr_flat, ghproxy_api]
+            return [github_api, jsdelivr_html, ghproxy_api]
         if preference == "jsdelivr":
-            return [jsdelivr_flat, github_api, ghproxy_api]
+            return [jsdelivr_html, github_api, ghproxy_api]
         if preference == "ghproxy":
-            return [ghproxy_api, jsdelivr_flat, github_api]
-        return [github_api, jsdelivr_flat, ghproxy_api]
+            return [ghproxy_api, jsdelivr_html, github_api]
+        return [jsdelivr_html, github_api, ghproxy_api]

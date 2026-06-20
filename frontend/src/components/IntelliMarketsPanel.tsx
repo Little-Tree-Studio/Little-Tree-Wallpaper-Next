@@ -14,6 +14,7 @@ import {
   openUrl,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
+import { logError, warn } from '@/lib/log';
 import type { IntelligentMarketSource, IntelligentMarketParameter } from '@/types';
 
 const ALL_CATEGORY = '__all__';
@@ -137,7 +138,7 @@ export default function IntelliMarketsPanel() {
       if (s?.im?.show_disclaimer === false) {
         setShowDisclaimer(false);
       }
-    }).catch(() => {});
+    }).catch((e) => logError('Failed to load settings', e));
   }, []);
 
   const selected = useMemo(
@@ -201,7 +202,7 @@ export default function IntelliMarketsPanel() {
       setLoaded(true);
       void checkHealth(list, force);
     } catch (e) {
-      console.error('IM load failed', e);
+      logError('IM load failed', e);
     } finally {
       setLoading(false);
     }
@@ -218,8 +219,9 @@ export default function IntelliMarketsPanel() {
         const updates = await checkIntelligentMarketSourcesHealth(batch, force);
         if (healthReqId.current !== reqId) return;
         setSources((cur) => mergeHealth(cur, updates));
-      } catch {
+      } catch (e) {
         if (healthReqId.current !== reqId) return;
+        logError('IM health check failed', e);
       }
     }
   }
@@ -231,7 +233,7 @@ export default function IntelliMarketsPanel() {
       setLoaded(false);
       await load(true);
     } catch (e) {
-      console.error('mirror update failed', e);
+      logError('mirror update failed', e);
     }
   }
 
@@ -247,15 +249,9 @@ export default function IntelliMarketsPanel() {
       );
       const items = await executeIntelligentMarketSource(selected.id, payload);
       const list = items || [];
-      console.log('[IM] execute returned', list.length, 'items');
-      list.forEach((it, i) => {
-        const pv = it.preview_url || '';
-        const iv = it.image_url || '';
-        console.log(`[IM] item ${i}: preview_url length=${pv.length}, image_url length=${iv.length}, preview starts with=${pv.slice(0, 30)}`);
-      });
       setGallery(list);
     } catch (e) {
-      console.error('execute failed', e);
+      logError('execute failed', e);
     } finally {
       setExecuting(false);
     }
@@ -264,7 +260,7 @@ export default function IntelliMarketsPanel() {
   function openResultViewer(start = 0) {
     const items = gallery.map((item) => {
       const src = item.preview_url || item.image_url || '';
-      if (!src) console.warn('[IM] openResultViewer: empty src for', item.id);
+      if (!src) warn('openResultViewer: empty src for %s', item.id);
       return {
         src,
         title: item.title || selected?.friendly_name || 'IntelliMarkets',
@@ -586,11 +582,11 @@ export default function IntelliMarketsPanel() {
                                   src={imgSrc}
                                   alt={item.title}
                                   className="block h-full w-full object-cover"
-                                  onError={(e) => {
-                                    console.error('[IM] img onError:', item.id, imgSrc.slice(0, 80));
-                                    const el = e.target as HTMLImageElement;
-                                    el.style.display = 'none';
-                                  }}
+                                onError={(e) => {
+                                  logError(`[IM] img onError: ${item.id} ${imgSrc.slice(0, 80)}`, e);
+                                  const el = e.target as HTMLImageElement;
+                                  el.style.display = 'none';
+                                }}
                                 />
                               </>
                             ) : (

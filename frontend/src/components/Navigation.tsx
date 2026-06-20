@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe,
+  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe, LifeBuoy,
 } from 'lucide-react';
 import { Button } from '@heroui/react';
 
@@ -24,13 +24,14 @@ const items: NavItem[] = [
 interface NavigationProps {
   activeId: string;
   onChange: (id: string) => void;
+  className?: string;
 }
 
-export default function Navigation({ activeId, onChange }: NavigationProps) {
+export default function Navigation({ activeId, onChange, className = '' }: NavigationProps) {
   const [hovered, setHovered] = useState<string | null>(null);
 
   return (
-    <nav className="flex w-16 flex-col items-center gap-2 border-r border-border bg-surface-secondary py-3">
+    <nav className={`flex w-16 flex-col items-center gap-2 border-r border-border bg-surface-secondary py-3 ${className}`}>
       <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg overflow-hidden">
         <img src="./logo.png" alt="小树壁纸" className="h-full w-full object-cover" />
       </div>
@@ -62,7 +63,16 @@ export default function Navigation({ activeId, onChange }: NavigationProps) {
         );
       })}
 
-      <div className="mt-auto">
+      <div className="mt-auto flex flex-col items-center gap-2">
+        <Button
+          isIconOnly
+          variant="ghost"
+          className="h-11 w-11 rounded-lg text-muted-foreground hover:bg-surface-tertiary hover:text-foreground"
+          onPress={() => onChange('help')}
+          aria-label="帮助与反馈"
+        >
+          <LifeBuoy size={20} />
+        </Button>
         <Button
           isIconOnly
           variant="ghost"
