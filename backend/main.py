@@ -53,14 +53,26 @@ def _find_free_port() -> int:
 
 
 def _write_log_header() -> None:
-    """Write a startup header with version and environment information."""
-    logger.info("=" * 60)
-    logger.info("Little Tree Wallpaper Next - Session started")
-    logger.info("Version: {}", _app_version())
-    logger.info("Platform: {}", sys.platform)
-    logger.info("Python: {}", sys.version.replace("\n", " "))
-    logger.info("Cache directory: {}", get_cache_dir())
-    logger.info("=" * 60)
+    """Write a startup header with version and environment information.
+
+    Output goes directly to the terminal and the log file (raw, not via
+    ``logger.info``) so the banner is never filtered out by the configured file
+    log level.
+    """
+    from backend.logging_setup import write_raw
+
+    header = "\n".join(
+        [
+            "=" * 60,
+            "Little Tree Wallpaper Next - Session started",
+            f"Version: {_app_version()}",
+            f"Platform: {sys.platform}",
+            f"Python: {sys.version.replace(chr(10), ' ')}",
+            f"Cache directory: {get_cache_dir()}",
+            "=" * 60,
+        ]
+    )
+    write_raw(header)
 
 
 def _app_version() -> str:

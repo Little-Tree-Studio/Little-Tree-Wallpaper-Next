@@ -230,7 +230,7 @@ async function fetchBlobWithProgress(
   url: string,
   onProgress: (percent: number | null, received: number, total: number | null) => void
 ): Promise<Blob> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
   const total = Number(res.headers.get('content-length')) || null;
@@ -247,6 +247,52 @@ async function fetchBlobWithProgress(
   }
 
   return new Blob(chunks);
+}
+
+export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
+  await waitForApi();
+  try {
+    const res = await fetch('/api/copy-image', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: blob,
+    });
+    if (!res.ok) return false;
+    const payload = await res.json();
+    return payload?.ok === true;
+  } catch (e) {
+    logError('copyImageToClipboard failed', e);
+    return false;
+  }
+}
+
+export async function copyImageToClipboardWithProgress(url: string): Promise<boolean> {
+  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+
+  try {
+    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
+      toast.close(loadingId);
+      const desc = percent !== null
+        ? `已下载 ${percent}%`
+        : `已下载 ${(received / 1024).toFixed(1)} KB`;
+      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
+    });
+
+    toast.close(loadingId);
+    loadingId = toast('正在复制到剪贴板…', { isLoading: true, timeout: 0 });
+    const ok = await copyImageToClipboard(blob);
+    toast.close(loadingId);
+    if (ok) {
+      toast.success('已复制图片', { timeout: 3000 });
+    } else {
+      toast.danger('复制图片失败', { timeout: 0 });
+    }
+    return ok;
+  } catch (e) {
+    toast.close(loadingId);
+    toast.danger('拉取数据失败，请重试', { timeout: 0 });
+    return false;
+  }
 }
 
 export async function downloadWithProgress(url: string, filename: string): Promise<string | null> {
@@ -604,7 +650,7 @@ export async function setLogFileLevel(level: string): Promise<LogStats> {
   return call('set_log_file_level', level);
 }
 
-export async function clearLogs(): Promise<LogStats & { removed: number }> {
+export async function clearLogs(): Promise<LogStats & { removed: number; failed: number; truncated: number }> {
   return call('clear_logs');
 }
 
@@ -664,6 +710,27 @@ export interface WallpaperSource {
   error?: string;
   categories?: WallpaperSourceCategory[];
   category_groups?: WallpaperSourceCategoryGroup[];
+  config?: {
+    request?: {
+      global_interval_seconds?: number;
+      timeout_seconds?: number;
+      max_concurrent?: number;
+      skip_ssl_verify?: boolean;
+      user_agent?: string;
+      headers?: Record<string, string>;
+      retry?: {
+        max_attempts?: number;
+        backoff_base?: number;
+        initial_delay_ms?: number;
+      };
+      cache?: {
+        enabled?: boolean;
+        default_ttl_seconds?: number;
+        max_memory_mb?: number;
+      };
+      variables?: Record<string, string>;
+    };
+  };
   apis?: WallpaperSourceApi[];
 }
 
@@ -687,6 +754,7 @@ export interface WallpaperSourceApi {
   description?: string;
   logo?: string;
   categories?: string[];
+  contains_nsfw?: boolean;
   parameters?: WallpaperSourceApiParameter[];
   request?: {
     url?: string;
@@ -729,7 +797,7 @@ export interface WallpaperSourceApi {
 export interface WallpaperSourceApiParameter {
   key: string;
   label?: string;
-  type?: string;
+  type?: 'text' | 'choice' | 'boolean';
   default?: any;
   choices?: string[];
   hidden?: boolean;
@@ -793,6 +861,7 @@ export interface WallpaperSourceCreatorPayload {
     description?: string;
     logo?: string;
     categories?: string[];
+    contains_nsfw?: boolean;
     parameters?: WallpaperSourceApiParameter[];
     request?: {
       url?: string;
@@ -887,6 +956,10 @@ export async function importWallpaperSourceAsDraft(): Promise<WallpaperSourceCre
 
 export async function createWallpaperSource(payload: WallpaperSourceCreatorPayload): Promise<WallpaperSource> {
   return call('create_wallpaper_source', payload);
+}
+
+export async function updateWallpaperSource(sourceId: string, payload: WallpaperSourceCreatorPayload): Promise<WallpaperSource> {
+  return call('update_wallpaper_source', sourceId, payload);
 }
 
 export async function exportWallpaperSource(sourceId: string, suggestedName?: string): Promise<{ saved_path: string } | null> {

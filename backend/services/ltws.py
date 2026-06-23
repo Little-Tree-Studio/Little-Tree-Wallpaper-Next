@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit, urlparse
 
 import requests
 import rtoml
@@ -233,11 +233,13 @@ class LTWSService:
         cache_dir: Path,
         builtin_examples_dir: Path,
         settings: SettingsStore | None = None,
+        preview_url_builder: Any = None,
     ):
         self.sources_dir = sources_dir
         self.cache_dir = cache_dir / "ltws"
         self.builtin_examples_dir = builtin_examples_dir
         self.settings = settings
+        self.preview_url_builder = preview_url_builder
         self.sources_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ltws_http")
@@ -533,6 +535,164 @@ class LTWSService:
         except Exception:
             shutil.rmtree(source_dir, ignore_errors=True)
             raise
+
+    def update_source(self, source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        logger.info("Updating wallpaper source {}", source_id)
+        source_path, source_kind, state_key = self._resolve_source_entry(source_id)
+        if source_kind != "custom":
+            raise ValueError("仅自定义壁纸源支持编辑")
+
+        source_payload = payload.get("source") or {}
+        new_identifier = str(source_payload.get("identifier") or "").strip()
+        if not new_identifier:
+            raise ValueError("壁纸源 identifier 不能为空")
+        if not IDENTIFIER_PATTERN.match(new_identifier):
+            raise ValueError("identifier 不符合 littletree_wallpaper_source_v3 规范")
+
+        name = str(source_payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("壁纸源名称不能为空")
+
+        version = _stringify(source_payload.get("version") or "1.0.0") or "1.0.0"
+        if not VERSION_PATTERN.match(version):
+            raise ValueError("version 必须符合语义化版本格式，例如 1.0.0")
+
+        raw_api_payloads = payload.get("apis")
+        if isinstance(raw_api_payloads, list) and raw_api_payloads:
+            api_payloads = [item for item in raw_api_payloads if isinstance(item, dict)]
+        else:
+            legacy_api_payload = payload.get("api")
+            api_payloads = [legacy_api_payload] if isinstance(legacy_api_payload, dict) else []
+        if not api_payloads:
+            raise ValueError("至少需要一个 API 配置")
+
+        config_payload = payload.get("config") or {}
+        categories_payload = payload.get("categories") or {}
+
+        new_slug = _slugify_source_path(new_identifier.replace(".", "_"))
+        if new_slug != source_path.name:
+            new_source_dir = self.sources_dir / new_slug
+            if new_source_dir.exists():
+                raise ValueError("目标壁纸源目录已存在，无法重命名")
+
+        categories_document = self._build_created_categories_document(
+            categories_payload=categories_payload,
+            fallback_categories=source_payload.get("categories"),
+            source_name=name,
+        )
+        categories = categories_document.get("categories", [])
+        if not categories:
+            raise ValueError("至少需要一个分类")
+        category_ids = {str(item.get("id") or "") for item in categories if str(item.get("id") or "")}
+
+        source_document = self._build_created_source_document(
+            source_payload=source_payload,
+            categories=categories,
+        )
+        config_document = self._build_created_config_document(
+            source_payload=source_payload,
+            config_payload=config_payload,
+        )
+
+        # Clear old API files before rewriting
+        api_dir = source_path / "apis"
+        if api_dir.exists():
+            for api_file in api_dir.glob("*.toml"):
+                api_file.unlink()
+        api_dir.mkdir(parents=True, exist_ok=True)
+
+        used_api_filenames: set[str] = set()
+        for api_payload in api_payloads:
+            api_name = str(api_payload.get("name") or "").strip()
+            if not api_name:
+                raise ValueError("至少需要一个 API 名称")
+
+            request_payload = api_payload.get("request") or {}
+            request_url = str(request_payload.get("url") or "").strip()
+            response_payload = api_payload.get("response") or {}
+            response_format = str(response_payload.get("format") or "json").strip() or "json"
+            if response_format == "raw":
+                response_format = "binary"
+            response_type = str(response_payload.get("type") or "multi").strip() or "multi"
+
+            if response_format not in {"static_dict", "static_list"} and not request_url:
+                raise ValueError(f"API {api_name} 的请求地址不能为空")
+
+            mapping_payload = api_payload.get("mapping") or {}
+            item_mapping = mapping_payload.get("item_mapping") or {}
+            if isinstance(item_mapping, list):
+                item_mapping = _normalize_key_value_rows(item_mapping)
+            if not item_mapping:
+                item_mapping = _normalize_key_value_rows(mapping_payload.get("fields"))
+            if not item_mapping and any(
+                _stringify(mapping_payload.get(key))
+                for key in (
+                    "image_path",
+                    "title_path",
+                    "preview_path",
+                    "width_path",
+                    "height_path",
+                    "description_path",
+                )
+            ):
+                item_mapping = _build_legacy_item_mapping(mapping_payload)
+            if response_format not in {
+                "image_url",
+                "image_raw",
+                "raw",
+                "binary",
+                "static_dict",
+                "static_list",
+            } and not _stringify(item_mapping.get("image")):
+                raise ValueError(f"API {api_name} 的图片字段映射不能为空")
+
+            api_categories = _normalize_string_list(api_payload.get("categories"))
+            if not api_categories:
+                raise ValueError(f"API {api_name} 至少需要绑定一个分类")
+            unknown_categories = [item for item in api_categories if item not in category_ids]
+            if unknown_categories:
+                raise ValueError(f"API {api_name} 引用了未定义分类: {', '.join(unknown_categories)}")
+
+            api_filename = _slugify_source_path(api_name).replace("-", "_") or "api"
+            if api_filename in used_api_filenames:
+                raise ValueError("同一个壁纸源内存在重复的 API 名称")
+            used_api_filenames.add(api_filename)
+
+            api_document = self._build_created_api_document(
+                api_payload=api_payload,
+                response_format=response_format,
+                response_type=response_type,
+            )
+            (api_dir / f"{api_filename}.toml").write_text(
+                rtoml.dumps(api_document),
+                encoding="utf-8",
+            )
+
+        (source_path / "source.toml").write_text(
+            rtoml.dumps(source_document),
+            encoding="utf-8",
+        )
+        (source_path / "categories.toml").write_text(
+            rtoml.dumps(categories_document),
+            encoding="utf-8",
+        )
+        (source_path / "config.toml").write_text(
+            rtoml.dumps(config_document),
+            encoding="utf-8",
+        )
+
+        if new_slug != source_path.name:
+            new_source_dir = self.sources_dir / new_slug
+            source_path.rename(new_source_dir)
+            source_path = new_source_dir
+
+            disabled_ids = self._disabled_source_ids()
+            disabled_ids.discard(state_key)
+            disabled_ids.discard(source_id)
+            self._save_disabled_source_ids(disabled_ids)
+
+        logger.info("Updated wallpaper source {}", new_identifier)
+        return self._load_source_with_state(source_path, source_kind)
 
     def execute_api(
         self, source_id: str, api_name: str, parameters: dict[str, Any] | None = None
@@ -934,7 +1094,9 @@ class LTWSService:
             document["error_handling"] = error_handling_document
 
         cache_enabled = cache_payload.get("enabled")
-        if (
+        if cache_enabled is False:
+            pass
+        elif (
             cache_enabled is True
             or cache_payload.get("ttl_seconds") not in {None, ""}
             or _stringify(cache_payload.get("key_template"))
@@ -1171,7 +1333,7 @@ class LTWSService:
             return [
                 self._apply_post_process(
                     self._normalize_item(
-                        {"image": str(image_path), "title": api_name}, source_id, source_name, api_name
+                        {"image": self._local_image_url(image_path), "title": api_name}, source_id, source_name, api_name
                     ),
                     api_spec,
                 )
@@ -1309,9 +1471,23 @@ class LTWSService:
             slice_parts.append(int(p) if p else None)
         return slice(slice_parts[0], slice_parts[1], slice_parts[2] if len(slice_parts) > 2 else None)
 
+    def _build_preview_url(self, image_path: str, max_size: int = 960) -> str:
+        if self.preview_url_builder is not None:
+            return self.preview_url_builder(image_path, max_size) or self._fallback_preview_url(image_path, max_size)
+        return self._fallback_preview_url(image_path, max_size)
+
+    @staticmethod
+    def _fallback_preview_url(image_path: str, max_size: int = 960) -> str:
+        return f"/api/preview?path={quote(image_path)}&max={max_size}"
+
+    def _local_image_url(self, image_path: Path, max_size: int = 960) -> str:
+        return self._build_preview_url(str(image_path.resolve()), max_size)
+
     def _normalize_item(self, item: dict[str, Any], source_id: str, source_name: str, api_name: str) -> dict[str, Any]:
         image_url = item.get("image") or item.get("image_url") or ""
         preview_url = item.get("preview") or item.get("preview_url") or image_url
+        image_url = self._proxy_local_image_url(image_url)
+        preview_url = self._proxy_local_image_url(preview_url)
         wallpaper = WallpaperItem(
             id=item.get("id") or hashlib.sha1(f"{source_id}|{api_name}|{image_url}".encode("utf-8")).hexdigest(),
             source_id=source_id,
@@ -1331,6 +1507,17 @@ class LTWSService:
         )
         return wallpaper.to_dict()
 
+    def _proxy_local_image_url(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        raw = value.strip()
+        if not raw or raw.startswith(("http://", "https://", "/api/preview", "data:")):
+            return raw
+        path = Path(raw)
+        if path.is_file():
+            return self._local_image_url(path)
+        return raw
+
     def _apply_post_process(self, item: dict[str, Any], api_spec: dict[str, Any]) -> dict[str, Any]:
         post_process = api_spec.get("post_process", {})
         if not post_process:
@@ -1344,6 +1531,8 @@ class LTWSService:
             result[key if key != "image" else "image_url"] = self._render_template(template, current_variables)
             if key == "image":
                 result["preview_url"] = result["image_url"]
+        result["image_url"] = self._proxy_local_image_url(result.get("image_url"))
+        result["preview_url"] = self._proxy_local_image_url(result.get("preview_url"))
         return result
 
     def _find_api_spec(self, spec: dict[str, Any], api_name: str) -> dict[str, Any]:
@@ -1717,7 +1906,8 @@ class LTWSService:
         age_seconds = time.time() - cache_file.stat().st_mtime
         if age_seconds > ttl:
             return None
-        return json.loads(cache_file.read_text(encoding="utf-8"))
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+        return self._refresh_preview_urls(payload)
 
     def _save_cache(
         self,
@@ -1731,7 +1921,69 @@ class LTWSService:
         if not cache_spec.get("enabled"):
             return
         cache_file = self._cache_file_for_spec(spec, api_spec, source_id, parameters)
-        cache_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        stripped = self._strip_preview_tokens(payload)
+        cache_file.write_text(json.dumps(stripped, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _strip_preview_tokens(self, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [self._strip_item_preview_tokens(item) for item in payload]
+
+    def _strip_item_preview_tokens(self, item: dict[str, Any]) -> dict[str, Any]:
+        next_item = dict(item)
+        for key in ("image_url", "preview_url"):
+            value = next_item.get(key)
+            if isinstance(value, str):
+                next_item[key] = self._strip_preview_token(value)
+        metadata = next_item.get("metadata")
+        if isinstance(metadata, dict):
+            next_item["metadata"] = {
+                k: self._strip_preview_token(v) if isinstance(v, str) and k in ("image_url", "preview_url") else v
+                for k, v in metadata.items()
+            }
+        return next_item
+
+    def _strip_preview_token(self, url: str) -> str:
+        if not isinstance(url, str) or not url.startswith("/api/preview?"):
+            return url
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        path = params.get("path")
+        max_size = params.get("max", ["960"])[0]
+        if not path:
+            return url
+        return f"/api/preview?path={quote(path[0])}&max={max_size}"
+
+    def _refresh_preview_urls(self, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [self._refresh_item_preview_urls(item) for item in payload]
+
+    def _refresh_item_preview_urls(self, item: dict[str, Any]) -> dict[str, Any]:
+        next_item = dict(item)
+        for key in ("image_url", "preview_url"):
+            value = next_item.get(key)
+            if isinstance(value, str):
+                next_item[key] = self._refresh_preview_url(value)
+        metadata = next_item.get("metadata")
+        if isinstance(metadata, dict):
+            next_item["metadata"] = {
+                k: self._refresh_preview_url(v) if isinstance(v, str) and k in ("image_url", "preview_url") else v
+                for k, v in metadata.items()
+            }
+        return next_item
+
+    def _refresh_preview_url(self, url: str) -> str:
+        if not isinstance(url, str) or not url.startswith("/api/preview?"):
+            return url
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        path = params.get("path")
+        if not path:
+            return url
+        max_size_str = params.get("max", ["960"])[0]
+        try:
+            max_size = int(max_size_str)
+        except ValueError:
+            max_size = 960
+        refreshed = self._build_preview_url(unquote(path[0]), max_size)
+        return refreshed or url
 
     def _is_ltws_source_path(self, source: Path) -> bool:
         if source.suffix.lower() == ".ltws":

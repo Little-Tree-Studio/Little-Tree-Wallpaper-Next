@@ -54,6 +54,18 @@ _BLOCKED_MEMBERS = frozenset(
 
 _MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB guard for RPC payloads
 
+# RPC methods that must not themselves produce log entries. Inspecting the logs
+# (e.g. the stats/count shown on the Help page) would otherwise inflate its own
+# numbers on every refresh, since each call is logged by the middleware and the
+# RPC dispatcher.
+_QUIET_RPC_METHODS = frozenset({"get_log_stats", "get_debug_log"})
+
+
+def _rpc_method_from_path(path: str) -> str | None:
+    """Return the RPC method name for a ``/api/rpc/{method}`` path, else None."""
+    prefix = "/api/rpc/"
+    return path[len(prefix):] if path.startswith(prefix) else None
+
 
 def _token_matches(supplied: str | None, expected: str) -> bool:
     """Constant-time comparison so token checks are not timing-leaky."""
@@ -95,25 +107,31 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: StarletteRequest, call_next):  # type: ignore[override]
+        # Quiet RPC methods (log inspection) must not be access-logged, otherwise
+        # every refresh would add entries and inflate the displayed count.
+        quiet = _rpc_method_from_path(request.url.path) in _QUIET_RPC_METHODS
         start = time.perf_counter()
         try:
             response = await call_next(request)
         except HTTPException as exc:
             # FastAPI raises these before a Response is built; log by status.
-            duration_ms = (time.perf_counter() - start) * 1000
-            logger.log(
-                _log_level_for_status(exc.status_code),
-                "{} {} -> {} ({:.1f}ms)",
-                request.method,
-                request.url.path,
-                exc.status_code,
-                duration_ms,
-            )
+            if not quiet:
+                duration_ms = (time.perf_counter() - start) * 1000
+                logger.log(
+                    _log_level_for_status(exc.status_code),
+                    "{} {} -> {} ({:.1f}ms)",
+                    request.method,
+                    request.url.path,
+                    exc.status_code,
+                    duration_ms,
+                )
             raise
         except Exception:
             duration_ms = (time.perf_counter() - start) * 1000
             logger.exception("Request {} {} crashed after {:.1f}ms", request.method, request.url.path, duration_ms)
             raise
+        if quiet:
+            return response
         duration_ms = (time.perf_counter() - start) * 1000
         # Health checks are polled frequently; keep them at DEBUG.
         level = "DEBUG" if request.url.path == "/api/health" else _log_level_for_status(response.status_code)
@@ -235,7 +253,8 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         if not isinstance(args, list):
             raise HTTPException(status_code=400, detail="args must be a list")
 
-        logger.debug("RPC {} called with {} argument(s)", method, len(args))
+        if method not in _QUIET_RPC_METHODS:
+            logger.debug("RPC {} called with {} argument(s)", method, len(args))
         # BackendAPI methods are synchronous (requests/file IO). Run them in the
         # Starlette threadpool so the event loop is never blocked.
         try:
@@ -248,7 +267,8 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
                 status_code=500,
                 content={"error": {"message": str(exc), "type": type(exc).__name__}},
             )
-        logger.debug("RPC {} completed", method)
+        if method not in _QUIET_RPC_METHODS:
+            logger.debug("RPC {} completed", method)
         return {"result": result}
 
     @app.get("/api/preview")
@@ -310,6 +330,19 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         if saved_path:
             logger.info("Saved file as {}", saved_path)
         return {"path": saved_path}
+
+    @app.post("/api/copy-image")
+    async def copy_image(
+        request: Request,
+        _: None = Depends(verify_token),
+    ) -> dict[str, Any]:
+        """Copy a raw binary image upload to the system clipboard."""
+        body = await request.body()
+        if len(body) > _MAX_BODY_BYTES:
+            logger.warning("copy-image rejected oversized body ({} bytes)", len(body))
+            raise HTTPException(status_code=413, detail="request body too large")
+        ok = await run_in_threadpool(api.copy_image_to_clipboard, body)
+        return {"ok": ok}
 
     # Serve the built frontend last so /api/* routes always take precedence.
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")

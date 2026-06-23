@@ -5,23 +5,24 @@ import {
 } from '@heroui/react';
 import {
   Image as ImageIcon, Heart, Copy, RefreshCw,
-  Plus, Trash2, Upload,
+  Plus, Trash2, Upload, Pencil,
   Play, AlertCircle, Wand2, ChevronDown, ChevronRight, Braces,
 } from 'lucide-react';
 import {
   getWallpaperSources, setWallpaperSourceEnabled, deleteWallpaperSource,
-  executeWallpaperSource, pickAndImportSource, createWallpaperSource,
-  downloadFile, setWallpaper, addFavorite, copyToClipboard,
+  executeWallpaperSource, pickAndImportSource, createWallpaperSource, updateWallpaperSource,
+  downloadFile, setWallpaper, addFavorite, copyToClipboard, localPreviewUrl,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import { logError } from '@/lib/log';
 import type {
   WallpaperSource, WallpaperSourceApiParameter,
-  WallpaperSourceCreatorPayload,
+  WallpaperSourceCreatorPayload, WallpaperSourceCategory,
 } from '@/api/backend';
 
 interface WallpaperSourcesPanelProps {
   onExecute?: (items: any[]) => void;
+  mode?: 'main' | 'management';
 }
 
 function getSourceParameterDefaultValue(param: WallpaperSourceApiParameter): string | boolean {
@@ -212,6 +213,87 @@ function parsePathExpression(expr: string): PathGenState {
   return state;
 }
 
+/* ───── 壁纸源分类树辅助 ───── */
+interface CreatorCategory extends WallpaperSourceCategory {
+  parentId?: string | null;
+}
+
+interface CategoryTreeNode extends CreatorCategory {
+  children: CategoryTreeNode[];
+  depth: number;
+}
+
+function buildCategoryTree(cats: CreatorCategory[]): CategoryTreeNode[] {
+  const map = new Map<string, CategoryTreeNode>();
+  cats.forEach((cat) => {
+    map.set(cat.id, { ...cat, children: [], depth: 0 });
+  });
+  const roots: CategoryTreeNode[] = [];
+  cats.forEach((cat) => {
+    const node = map.get(cat.id)!;
+    if (cat.parentId && map.has(cat.parentId)) {
+      const parent = map.get(cat.parentId)!;
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+  const setDepth = (nodes: CategoryTreeNode[], depth: number) => {
+    nodes.forEach((node) => {
+      node.depth = depth;
+      setDepth(node.children, depth + 1);
+    });
+  };
+  setDepth(roots, 0);
+  return roots;
+}
+
+function getCategoryDepth(cats: CreatorCategory[], id: string, visited = new Set<string>()): number {
+  if (visited.has(id)) return Infinity;
+  const cat = cats.find((c) => c.id === id);
+  if (!cat || !cat.parentId) return 0;
+  visited.add(id);
+  return 1 + getCategoryDepth(cats, cat.parentId, visited);
+}
+
+function validateCategories(cats: CreatorCategory[]): string | null {
+  if (cats.length === 0) return '请至少添加一个分类';
+  const ids = cats.map((c) => c.id.trim());
+  if (ids.some((id) => !id)) return '每个分类的 ID 都必须填写';
+  if (new Set(ids).size !== ids.length) return '分类 ID 不能重复';
+  if (cats.some((c) => !c.name.trim())) return '每个分类的名称都必须填写';
+  for (const cat of cats) {
+    const depth = getCategoryDepth(cats, cat.id);
+    if (depth === Infinity) return '分类层级存在循环引用';
+    if (depth >= 3) return '分类层级最多支持 3 级';
+  }
+  return null;
+}
+
+function flattenCategoryTreeForBackend(
+  cats: CreatorCategory[],
+): WallpaperSourceCategory[] {
+  const tree = buildCategoryTree(cats);
+  const rows: WallpaperSourceCategory[] = [];
+  const walk = (node: CategoryTreeNode, ancestors: CategoryTreeNode[]) => {
+    const category = ancestors[0]?.name ?? node.name;
+    const subcategory = ancestors[1]?.name ?? (ancestors.length >= 1 ? node.name : '');
+    const subsubcategory = ancestors[2]?.name ?? (ancestors.length >= 2 ? node.name : '');
+    rows.push({
+      id: node.id,
+      name: node.name,
+      category,
+      subcategory,
+      subsubcategory,
+      icon: node.icon,
+      description: node.description,
+    });
+    node.children.forEach((child) => walk(child, [...ancestors, node]));
+  };
+  tree.forEach((node) => walk(node, []));
+  return rows;
+}
+
 const PIPE_CATEGORIES = [
   {
     label: '字符串',
@@ -275,9 +357,19 @@ const MAPPING_FIELD_KEYS: { key: string; label: string; required?: boolean }[] =
   { key: 'tags', label: '标签' },
 ];
 
+const PARAMETER_TYPES = [
+  { value: 'text', label: '文本' },
+  { value: 'choice', label: '选项' },
+  { value: 'boolean', label: '布尔' },
+];
+
 /* ───── 请求/响应方法选项 ───── */
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
-const RESPONSE_FORMATS = ['json', 'html', 'binary'];
+const RESPONSE_FORMATS_WITH_DESC = [
+  { value: 'json', label: 'JSON', desc: '解析 JSON 响应并通过路径表达式提取字段' },
+  { value: 'html', label: 'HTML', desc: '解析 HTML 响应并通过 CSS 选择器提取字段' },
+  { value: 'binary', label: 'BINARY', desc: '响应体本身就是图片二进制数据，无需字段映射' },
+];
 const RESPONSE_TYPES = ['single', 'multi'];
 /* ───── 分页策略（含说明） ───── */
 interface PaginationOption {
@@ -494,7 +586,7 @@ function JsonTreeView({ node, selectedPath, expandedPaths, onToggle, onSelect }:
 }
 
 /* ───── 主组件 ───── */
-export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPanelProps) {
+export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: WallpaperSourcesPanelProps) {
   const [sources, setSources] = useState<WallpaperSource[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState('');
@@ -514,6 +606,132 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     categories: { categories: [{ id: 'default', name: '默认分类' }] },
     apis: [],
   });
+  const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+
+  const startCreate = () => {
+    setEditingSourceId(null);
+    setCreatorPayload({
+      source: { identifier: '', name: '', version: '1.0.0' },
+      config: { request: { global_interval_seconds: 1800, timeout_seconds: 20, max_concurrent: 2, skip_ssl_verify: false, user_agent: 'LittleTreeWallpaper/2.0' } },
+      categories: { categories: [{ id: 'default', name: '默认分类' }] },
+      apis: [],
+    });
+    setShowValidation(false);
+    setCreatorStep(1);
+    setCreatorTab('categories');
+    setShowCreator(true);
+  };
+
+  const sourceToCreatorPayload = (source: WallpaperSource): WallpaperSourceCreatorPayload => {
+    const categories: WallpaperSourceCategory[] = (source.categories || []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      category: c.category,
+      subcategory: c.subcategory,
+      subsubcategory: c.subsubcategory,
+      icon: c.icon,
+      description: c.description,
+    }));
+
+    const apis = (source.apis || []).map((api) => ({
+      name: api.name || '',
+      description: api.description,
+      logo: api.logo,
+      categories: api.categories || [],
+      contains_nsfw: api.contains_nsfw,
+      parameters: api.parameters || [],
+      request: {
+        url: api.request?.url,
+        method: api.request?.method,
+        timeout_seconds: api.request?.timeout_seconds,
+        interval_seconds: api.request?.interval_seconds,
+        body: api.request?.body,
+        body_type: api.request?.body_type,
+        headers: api.request?.headers
+          ? Object.entries(api.request.headers).map(([key, value]) => ({ key, value: String(value) }))
+          : undefined,
+      },
+      response: {
+        format: api.response?.format,
+        type: api.response?.type,
+        charset: undefined as string | undefined,
+      },
+      mapping: {
+        items: api.mapping?.items,
+        fields: api.mapping?.item_mapping,
+      },
+      post_process: api.post_process,
+      validation: api.validation
+        ? {
+            required_fields: api.validation.required_fields,
+            constraints: (api.validation.field_patterns || []).map((p: any) => ({
+              path: p.path,
+              regex: p.regex,
+              min_length: p.min_length,
+              max_length: p.max_length,
+              min: p.min,
+              max: p.max,
+              action: p.action || 'skip',
+            })),
+          }
+        : undefined,
+      error_handling: api.error_handling
+        ? {
+            on_http_4xx: api.error_handling.http_codes?.find((c: any) => c.code >= 400 && c.code < 500)?.fallback ? 'fallback' : undefined,
+            on_http_5xx: api.error_handling.http_codes?.find((c: any) => c.code >= 500)?.fallback ? 'fallback' : undefined,
+            on_empty_response: api.error_handling.on_empty_response,
+            on_mapping_failed: api.error_handling.on_mapping_failed,
+            fallback_api: api.error_handling.fallback_to,
+          }
+        : undefined,
+      cache: api.cache,
+      static_list_urls: api.static_list?.urls,
+      static_dict_items: api.static_dict?.items,
+    }));
+
+    return {
+      source: {
+        identifier: source.identifier || '',
+        name: source.name || '',
+        version: source.version || '1.0.0',
+        description: source.description,
+        details: source.details,
+        logo: source.logo,
+        footer_text: source.footer_text,
+      },
+      config: {
+        request: {
+          global_interval_seconds: source.config?.request?.global_interval_seconds ?? 1800,
+          timeout_seconds: source.config?.request?.timeout_seconds ?? 20,
+          max_concurrent: source.config?.request?.max_concurrent ?? 2,
+          skip_ssl_verify: source.config?.request?.skip_ssl_verify ?? false,
+          user_agent: source.config?.request?.user_agent ?? 'LittleTreeWallpaper/2.0',
+          headers: source.config?.request?.headers
+            ? Object.entries(source.config.request.headers).map(([key, value]) => ({ key, value: String(value) }))
+            : undefined,
+          retry: source.config?.request?.retry,
+          cache: source.config?.request?.cache,
+          variables: source.config?.request?.variables
+            ? Object.entries(source.config.request.variables).map(([key, value]) => ({ key, value: String(value) }))
+            : undefined,
+        },
+      },
+      categories: {
+        categories,
+        category_groups: source.category_groups,
+      },
+      apis,
+    };
+  };
+
+  const startEdit = (source: WallpaperSource) => {
+    setEditingSourceId(source.identifier);
+    setCreatorPayload(sourceToCreatorPayload(source));
+    setShowValidation(false);
+    setCreatorStep(1);
+    setCreatorTab('categories');
+    setShowCreator(true);
+  };
 
   /* API 折叠状态 */
   const [apiExpanded, setApiExpanded] = useState<Set<number>>(new Set());
@@ -531,6 +749,108 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
   /* 特殊值模板生成器状态 */
   const [specialGenOpen, setSpecialGenOpen] = useState(false);
   const [specialGenTarget, setSpecialGenTarget] = useState<{ target: 'mapping' | 'cache'; fieldKey: string; apiIndex: number } | null>(null);
+
+  /* 分类创建器状态 */
+  const [expandedCategoryRows, setExpandedCategoryRows] = useState<Set<string>>(new Set());
+
+  const toggleCategoryRow = (id: string) => {
+    setExpandedCategoryRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const addCategory = (parentId?: string | null) => {
+    setCreatorPayload((p) => {
+      const cats = [...(p.categories?.categories || [])] as CreatorCategory[];
+      let id = `cat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      while (cats.some((c) => c.id === id)) {
+        id = `cat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      }
+      cats.push({ id, name: '', parentId: parentId || null });
+      return { ...p, categories: { ...p.categories, categories: cats } };
+    });
+  };
+
+  const updateCategory = (id: string, patch: Partial<CreatorCategory>) => {
+    setCreatorPayload((p) => {
+      const next = [...(p.categories?.categories || [])] as CreatorCategory[];
+      const idx = next.findIndex((c) => c.id === id);
+      if (idx < 0) return p;
+      next[idx] = { ...next[idx], ...patch };
+      if (patch.id && patch.id !== id) {
+        next.forEach((c) => { if (c.parentId === id) c.parentId = patch.id!; });
+      }
+      return { ...p, categories: { ...p.categories, categories: next } };
+    });
+  };
+
+  const deleteCategory = (id: string) => {
+    setCreatorPayload((p) => {
+      const cats = [...(p.categories?.categories || [])] as CreatorCategory[];
+      const idsToDelete = new Set<string>();
+      const collect = (catId: string) => {
+        idsToDelete.add(catId);
+        cats.filter((c) => c.parentId === catId).forEach((c) => collect(c.id));
+      };
+      collect(id);
+      const next = cats.filter((c) => !idsToDelete.has(c.id));
+      return { ...p, categories: { ...p.categories, categories: next } };
+    });
+  };
+
+  const renderCategoryTree = (nodes: CategoryTreeNode[]) => {
+    return nodes.map((node) => (
+      <div key={node.id} className="space-y-1">
+        <div className="flex items-center gap-2" style={{ paddingLeft: node.depth * 16 }}>
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-2 flex-1 items-center">
+            <TextField>
+              <Input className="h-8 text-sm w-full min-w-0" value={node.id}
+                onChange={(e) => updateCategory(node.id, { id: e.target.value })} placeholder="分类ID"
+              />
+            </TextField>
+            <TextField>
+              <Input className="h-8 text-sm w-full min-w-0" value={node.name}
+                onChange={(e) => updateCategory(node.id, { name: e.target.value })} placeholder="分类名称"
+              />
+            </TextField>
+            <div className="flex items-center gap-1">
+              <Button isIconOnly variant="ghost" size="sm" onPress={() => toggleCategoryRow(node.id)} aria-label="高级">
+                {expandedCategoryRows.has(node.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </Button>
+              {node.depth < 2 && (
+                <Button isIconOnly variant="ghost" size="sm" onPress={() => addCategory(node.id)} aria-label="添加子分类">
+                  <Plus size={14} />
+                </Button>
+              )}
+              <Button isIconOnly variant="ghost" size="sm" onPress={() => deleteCategory(node.id)} aria-label="删除分类">
+                <Trash2 size={14} />
+              </Button>
+            </div>
+          </div>
+        </div>
+        {expandedCategoryRows.has(node.id) && (
+          <div className="grid grid-cols-2 gap-2" style={{ paddingLeft: node.depth * 16 }}>
+            <TextField>
+              <Label className="text-xs text-muted">图标</Label>
+              <Input className="h-8 text-sm" value={node.icon || ''}
+                onChange={(e) => updateCategory(node.id, { icon: e.target.value })} placeholder="URL / Base64"
+              />
+            </TextField>
+            <TextField>
+              <Label className="text-xs text-muted">描述</Label>
+              <Input className="h-8 text-sm" value={node.description || ''}
+                onChange={(e) => updateCategory(node.id, { description: e.target.value })} placeholder="分类描述"
+              />
+            </TextField>
+          </div>
+        )}
+        {node.children.length > 0 && renderCategoryTree(node.children)}
+      </div>
+    ));
+  };
 
   const { openViewer } = useImageViewer();
 
@@ -550,14 +870,8 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     else if (!/^\d+\.\d+\.\d+$/.test(ver)) errors.basic.version = '版本格式应为 主.次.修订，如 1.0.0';
 
     const cats = creatorPayload.categories?.categories || [];
-    if (cats.length === 0) errors.categories = '请至少添加一个分类';
-    else {
-      const catIds = cats.map((c) => c.id.trim());
-      const catNames = cats.map((c) => c.name.trim());
-      if (catIds.some((id) => !id)) errors.categories = '每个分类的 ID 都必须填写';
-      else if (catNames.some((n) => !n)) errors.categories = '每个分类的名称都必须填写';
-      else if (new Set(catIds).size !== catIds.length) errors.categories = '分类 ID 不能重复';
-    }
+    const catError = validateCategories(cats as CreatorCategory[]);
+    if (catError) errors.categories = catError;
 
     const apis = creatorPayload.apis || [];
     if (apis.length === 0) errors.apisGeneral = '请至少添加一个 API';
@@ -701,12 +1015,24 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
     });
   };
 
+  const normalizeLocalImage = (url: string | undefined): string => {
+    if (!url) return '';
+    if (url.startsWith('/api/preview') || url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
+    if (url.startsWith('file://')) return localPreviewUrl(decodeURIComponent(url.slice(7)));
+    if (/^[a-zA-Z]:\\|^\//.test(url)) return localPreviewUrl(url);
+    return url;
+  };
+
   const openResultViewer = (startIndex = 0) => {
-    openViewer(results.map((item) => ({
-      src: item.image_url, title: item.title || '壁纸', description: item.description || '',
-      source_url: item.image_url, preview_url: item.preview_url || item.image_url, source_type: item.source_id || 'source',
-      copyright: item.copyright || '',
-    })), startIndex);
+    openViewer(results.map((item) => {
+      const imageUrl = normalizeLocalImage(item.image_url);
+      const previewUrl = normalizeLocalImage(item.preview_url || imageUrl);
+      return {
+        src: imageUrl, title: item.title || '壁纸', description: item.description || '',
+        source_url: imageUrl, preview_url: previewUrl, source_type: item.source_id || 'source',
+        copyright: item.copyright || '',
+      };
+    }), startIndex);
   };
 
   /* ───── 路径生成器 ───── */
@@ -778,15 +1104,21 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <Button size="sm" variant="secondary" onPress={handleImport}><Upload size={14} /> 导入</Button>
-        <Button size="sm" variant="secondary" onPress={() => { setShowValidation(false); setCreatorStep(1); setCreatorTab('categories'); setShowCreator(true); }}><Plus size={14} /> 创建</Button>
+        {mode === 'management' && (
+          <>
+            <Button size="sm" variant="secondary" onPress={handleImport}><Upload size={14} /> 导入</Button>
+            <Button size="sm" variant="secondary" onPress={startCreate}><Plus size={14} /> 创建</Button>
+          </>
+        )}
         <Button size="sm" variant="ghost" onPress={loadSources} isDisabled={loading}>
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> 刷新
         </Button>
       </div>
 
       {validSources.length === 0 && invalidSources.length === 0 && !loading && (
-        <div className="py-10 text-center text-muted">暂无壁纸源，点击"导入"添加 .ltws 文件</div>
+        <div className="py-10 text-center text-muted">
+          {mode === 'management' ? '暂无壁纸源，点击"导入"添加 .ltws 文件' : '暂无壁纸源'}
+        </div>
       )}
 
       {validSources.length > 0 && (
@@ -816,6 +1148,11 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                   <Switch isSelected={selectedSource.enabled !== false} onChange={() => handleToggleSource(selectedSource)}>
                     <Switch.Control><Switch.Thumb /></Switch.Control>
                   </Switch>
+                  {mode === 'management' && selectedSource.can_delete && (
+                    <Button isIconOnly variant="ghost" size="sm" onPress={() => startEdit(selectedSource)} aria-label="编辑">
+                      <Pencil size={14} />
+                    </Button>
+                  )}
                   {selectedSource.can_delete && (
                     <Button isIconOnly variant="ghost" size="sm" onPress={() => handleDeleteSource(selectedSource)}>
                       <Trash2 size={14} className="text-danger" />
@@ -867,9 +1204,11 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                       })}
                     </div>
                   )}
-                  <Button size="sm" onPress={handleExecute} isDisabled={resultsLoading}>
-                    <Play size={14} /> {resultsLoading ? '执行中...' : '执行查询'}
-                  </Button>
+                  {mode !== 'management' && (
+                    <Button size="sm" onPress={handleExecute} isDisabled={resultsLoading}>
+                      <Play size={14} /> {resultsLoading ? '执行中...' : '执行查询'}
+                    </Button>
+                  )}
                 </div>
               )}
             </Card>
@@ -892,30 +1231,34 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
         </div>
       )}
 
-      {results.length > 0 && (
+      {mode !== 'management' && results.length > 0 && (
         <div className="space-y-3">
           <div className="text-sm font-medium">查询结果 ({results.length})</div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-            {results.map((item, idx) => (
-              <div key={item.id || idx} className="group relative overflow-hidden rounded-lg cursor-pointer"
-                onClick={() => openResultViewer(idx)}
-              >
-                <img src={item.preview_url || item.image_url} alt={item.title}
-                  className="h-[120px] w-full object-cover transition-transform group-hover:scale-105" loading="lazy"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
-                  <div className="text-xs text-white truncate">{item.title}</div>
-                  <div className="flex gap-1 mt-1">
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-white"
-                      onPress={() => handleSetWallpaper(item.image_url, item.title)}><ImageIcon size={12} /></Button>
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-white"
-                      onPress={() => handleFavorite(item)}><Heart size={12} /></Button>
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-white"
-                      onPress={() => copyToClipboard(item.image_url)}><Copy size={12} /></Button>
+            {results.map((item, idx) => {
+              const imageUrl = normalizeLocalImage(item.image_url);
+              const previewUrl = normalizeLocalImage(item.preview_url || imageUrl);
+              return (
+                <div key={item.id || idx} className="group relative overflow-hidden rounded-lg cursor-pointer"
+                  onClick={() => openResultViewer(idx)}
+                >
+                  <img src={previewUrl} alt={item.title}
+                    className="h-[120px] w-full object-cover transition-transform group-hover:scale-105" loading="lazy"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
+                    <div className="text-xs text-white truncate">{item.title}</div>
+                    <div className="flex gap-1 mt-1">
+                      <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-white"
+                        onPress={() => handleSetWallpaper(imageUrl, item.title)}><ImageIcon size={12} /></Button>
+                      <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-white"
+                        onPress={() => handleFavorite(item)}><Heart size={12} /></Button>
+                      <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-white"
+                        onPress={() => copyToClipboard(imageUrl)}><Copy size={12} /></Button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -925,7 +1268,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
         <Drawer.Backdrop isOpen={showCreator} onOpenChange={setShowCreator} isDismissable={false}>
           <Drawer.Content placement="right">
             <Drawer.Dialog>
-              <Drawer.Header><Drawer.Heading>创建壁纸源</Drawer.Heading></Drawer.Header>
+              <Drawer.Header><Drawer.Heading>{editingSourceId ? '编辑壁纸源' : '创建壁纸源'}</Drawer.Heading></Drawer.Header>
               <Drawer.Body>
                 {/* 面包屑导航 */}
                 <div className="flex items-center gap-3 mb-4 pb-3 border-b border-border">
@@ -944,14 +1287,15 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                   <div className="space-y-3">
                     <h3 className="text-sm font-medium text-muted mb-2">基本信息</h3>
                     <div className="space-y-3">
-                      <TextField isInvalid={!!validation.errors.basic.identifier}>
-                        <Label>标识符 (反向域名格式)</Label>
-                        <Input value={creatorPayload.source?.identifier || ''}
-                          onChange={(e) => setCreatorPayload((p) => ({ ...p, source: { ...p.source, identifier: e.target.value } }))}
-                          placeholder="com.example.my_source"
-                        />
-                        <FieldError>{validation.errors.basic.identifier}</FieldError>
-                      </TextField>
+                        <TextField isInvalid={!!validation.errors.basic.identifier}>
+                          <Label>标识符 (反向域名格式)</Label>
+                          <Input value={creatorPayload.source?.identifier || ''}
+                            disabled={!!editingSourceId}
+                            onChange={(e) => setCreatorPayload((p) => ({ ...p, source: { ...p.source, identifier: e.target.value } }))}
+                            placeholder="com.example.my_source"
+                          />
+                          <FieldError>{validation.errors.basic.identifier}</FieldError>
+                        </TextField>
                       <TextField isInvalid={!!validation.errors.basic.name}>
                         <Label>名称</Label>
                         <Input value={creatorPayload.source?.name || ''}
@@ -1069,39 +1413,13 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                       {/* ─── 分类 ─── */}
                       <Tabs.Panel id="categories">
                         <div className="space-y-3">
-                      {validation.errors.categories && <div className="text-sm text-danger">{validation.errors.categories}</div>}
-                      {(creatorPayload.categories?.categories || []).map((cat, idx) => (
-                        <div key={idx} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
-                          <TextField>
-                            <Input className="h-8 text-sm w-full min-w-0" value={cat.id}
-                              onChange={(e) => {
-                                const next = [...(creatorPayload.categories?.categories || [])];
-                                next[idx] = { ...next[idx], id: e.target.value };
-                                setCreatorPayload((p) => ({ ...p, categories: { ...p.categories, categories: next } }));
-                              }} placeholder="分类ID"
-                            />
-                          </TextField>
-                          <TextField>
-                            <Input className="h-8 text-sm w-full min-w-0" value={cat.name}
-                              onChange={(e) => {
-                                const next = [...(creatorPayload.categories?.categories || [])];
-                                next[idx] = { ...next[idx], name: e.target.value };
-                                setCreatorPayload((p) => ({ ...p, categories: { ...p.categories, categories: next } }));
-                              }} placeholder="分类名称"
-                            />
-                          </TextField>
-                          <Button isIconOnly variant="ghost" size="sm" onPress={() => {
-                            const next = (creatorPayload.categories?.categories || []).filter((_, i) => i !== idx);
-                            setCreatorPayload((p) => ({ ...p, categories: { ...p.categories, categories: next } }));
-                          }}><Trash2 size={14} /></Button>
+                          {validation.errors.categories && <div className="text-sm text-danger">{validation.errors.categories}</div>}
+                          {renderCategoryTree(buildCategoryTree((creatorPayload.categories?.categories || []) as CreatorCategory[]))}
+                          <Button size="sm" variant="secondary" onPress={() => addCategory(null)}>
+                            <Plus size={14} /> 添加分类
+                          </Button>
                         </div>
-                      ))}
-                      <Button size="sm" variant="secondary" onPress={() => {
-                        const next = [...(creatorPayload.categories?.categories || []), { id: '', name: '' }];
-                        setCreatorPayload((p) => ({ ...p, categories: { ...p.categories, categories: next } }));
-                      }}><Plus size={14} /> 添加分类</Button>
-                    </div>
-                  </Tabs.Panel>
+                      </Tabs.Panel>
 
                   {/* ─── API ─── */}
                   <Tabs.Panel id="api">
@@ -1109,7 +1427,14 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                       {validation.errors.apisGeneral && <div className="text-sm text-danger">{validation.errors.apisGeneral}</div>}
                       {(creatorPayload.apis || []).map((api, idx) => {
                         const e = validation.errors.apis[idx] || {};
-                        const cats = (creatorPayload.categories?.categories || []).map((c) => ({ id: c.id, name: c.name || c.id }));
+                        const catTree = buildCategoryTree((creatorPayload.categories?.categories || []) as CreatorCategory[]);
+                        const renderCatOptions = (nodes: CategoryTreeNode[]): React.ReactNode[] =>
+                          nodes.flatMap((node) => [
+                            <ListBox.Item key={node.id} id={node.id} textValue={node.name}>
+                              <span style={{ paddingLeft: node.depth * 12 }}>{node.name}</span>
+                            </ListBox.Item>,
+                            ...(node.children.length > 0 ? renderCatOptions(node.children) : []),
+                          ]);
                         const pOpt = PAGINATION_OPTIONS.find((o) => o.value === (api.pagination?.strategy || ''));
                         return (
                           <div key={idx} className="rounded-lg border border-border bg-surface p-0 overflow-hidden">
@@ -1174,7 +1499,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                               >
                                 <ComboBox.InputGroup><Input className="h-8 text-sm" placeholder="选择分类" /><ComboBox.Trigger /></ComboBox.InputGroup>
                                 <ComboBox.Popover><ListBox>
-                                  {cats.map((c) => <ListBox.Item key={c.id} id={c.id} textValue={c.name}>{c.name}</ListBox.Item>)}
+                                  {renderCatOptions(catTree)}
                                 </ListBox></ComboBox.Popover>
                               </ComboBox>
                               <FieldError>{e.category}</FieldError>
@@ -1189,26 +1514,31 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                               <FieldError>{e.url}</FieldError>
                             </TextField>
                             <div className="grid grid-cols-3 gap-2">
-                              <ComboBox selectedKey={api.request?.method || 'GET'}
-                                onSelectionChange={(k) => updateApi(idx, { request: { ...api.request, method: String(k) } })}
-                              >
-                                <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                <ComboBox.Popover><ListBox>
-                                  {HTTP_METHODS.map((m) => <ListBox.Item key={m} id={m} textValue={m}>{m}</ListBox.Item>)}
-                                </ListBox></ComboBox.Popover>
-                              </ComboBox>
                               <TextField>
+                                <Label className="text-xs text-muted">请求方法</Label>
+                                <ComboBox selectedKey={api.request?.method || 'GET'}
+                                  onSelectionChange={(k) => updateApi(idx, { request: { ...api.request, method: String(k) } })}
+                                >
+                                  <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                  <ComboBox.Popover><ListBox>
+                                    {HTTP_METHODS.map((m) => <ListBox.Item key={m} id={m} textValue={m}>{m}</ListBox.Item>)}
+                                  </ListBox></ComboBox.Popover>
+                                </ComboBox>
+                              </TextField>
+                              <TextField>
+                                <Label className="text-xs text-muted">超时(秒)</Label>
                                 <Input type="number" className="h-8 text-sm"
                                   value={String(api.request?.timeout_seconds ?? '')}
                                   onChange={(ev) => updateApi(idx, { request: { ...api.request, timeout_seconds: Number(ev.target.value) } })}
-                                  placeholder="超时(秒)"
+                                  placeholder="20"
                                 />
                               </TextField>
                               <TextField>
+                                <Label className="text-xs text-muted">间隔(秒)</Label>
                                 <Input type="number" className="h-8 text-sm"
                                   value={String(api.request?.interval_seconds ?? '')}
                                   onChange={(ev) => updateApi(idx, { request: { ...api.request, interval_seconds: Number(ev.target.value) } })}
-                                  placeholder="间隔(秒)"
+                                  placeholder="0"
                                 />
                               </TextField>
                             </div>
@@ -1253,32 +1583,229 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                               ><Plus size={12} /> 添加 Header</Button>
                             </div>
 
-                            {/* Response */}
-                            <div className="grid grid-cols-3 gap-2">
-                              <ComboBox selectedKey={api.response?.format || 'json'}
-                                onSelectionChange={(k) => updateApi(idx, { response: { ...api.response, format: String(k) } })}
-                              >
-                                <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                <ComboBox.Popover><ListBox>
-                                  {RESPONSE_FORMATS.map((f) => <ListBox.Item key={f} id={f} textValue={f.toUpperCase()}>{f.toUpperCase()}</ListBox.Item>)}
-                                </ListBox></ComboBox.Popover>
-                              </ComboBox>
-                              <ComboBox selectedKey={api.response?.type || 'multi'}
-                                onSelectionChange={(k) => updateApi(idx, { response: { ...api.response, type: String(k) } })}
-                              >
-                                <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                <ComboBox.Popover><ListBox>
-                                  {RESPONSE_TYPES.map((t) => <ListBox.Item key={t} id={t} textValue={t === 'single' ? '单条' : '多条'}>{t === 'single' ? '单条' : '多条'}</ListBox.Item>)}
-                                </ListBox></ComboBox.Popover>
-                              </ComboBox>
-                              <TextField>
-                                <Input className="h-8 text-sm" value={api.response?.charset || ''}
-                                  onChange={(ev) => updateApi(idx, { response: { ...api.response, charset: ev.target.value } })}
-                                  placeholder="字符编码"
-                                />
-                              </TextField>
+                            {/* 用户参数 */}
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <Label className="text-xs text-muted block">用户参数</Label>
+                                  <Description className="text-[10px] text-muted">声明在 URL / 请求体中使用的模板变量，客户端会展示给用户填写</Description>
+                                </div>
+                                <Button size="sm" variant="secondary" className="h-7 text-xs"
+                                  onPress={() => updateApi(idx, { parameters: [...(api.parameters || []), { key: '', label: '', type: 'text', default: '' }] })}
+                                ><Plus size={12} /> 添加参数</Button>
+                              </div>
+                              {(api.parameters || []).map((param, pi) => {
+                                const pkey = param.key || `__param_${pi}`;
+                                const ptype = param.type || 'text';
+                                return (
+                                  <div key={pkey} className="rounded-lg border border-border bg-surface-secondary p-2 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-[10px] text-muted shrink-0">参数 #{pi + 1}</span>
+                                      <Button isIconOnly variant="ghost" size="sm" className="h-6 w-6 shrink-0"
+                                        onPress={() => {
+                                          const next = (api.parameters || []).filter((_, i) => i !== pi);
+                                          updateApi(idx, { parameters: next });
+                                        }}
+                                      ><Trash2 size={12} /></Button>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <TextField>
+                                        <Label className="text-[10px] text-muted">变量名 (key)</Label>
+                                        <Input className="h-8 text-sm" value={param.key || ''}
+                                          onChange={(ev) => {
+                                            const next = [...(api.parameters || [])];
+                                            next[pi] = { ...next[pi], key: ev.target.value };
+                                            updateApi(idx, { parameters: next });
+                                          }} placeholder="如 resolution"
+                                        />
+                                      </TextField>
+                                      <TextField>
+                                        <Label className="text-[10px] text-muted">显示标签</Label>
+                                        <Input className="h-8 text-sm" value={param.label || ''}
+                                          onChange={(ev) => {
+                                            const next = [...(api.parameters || [])];
+                                            next[pi] = { ...next[pi], label: ev.target.value };
+                                            updateApi(idx, { parameters: next });
+                                          }} placeholder="如 分辨率"
+                                        />
+                                      </TextField>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="space-y-1">
+                                        <Label className="text-[10px] text-muted block">类型</Label>
+                                        <ComboBox selectedKey={ptype}
+                                          onSelectionChange={(k) => {
+                                            const next = [...(api.parameters || [])];
+                                            const nextType = String(k || 'text') as 'text' | 'choice' | 'boolean';
+                                            next[pi] = { ...next[pi], type: nextType };
+                                            updateApi(idx, { parameters: next });
+                                          }}
+                                        >
+                                          <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                          <ComboBox.Popover><ListBox>
+                                            {PARAMETER_TYPES.map((t) => <ListBox.Item key={t.value} id={t.value} textValue={t.label}>{t.label}</ListBox.Item>)}
+                                          </ListBox></ComboBox.Popover>
+                                        </ComboBox>
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label className="text-[10px] text-muted block">默认值</Label>
+                                        {ptype === 'boolean' ? (
+                                          <Switch isSelected={Boolean(param.default)}
+                                            onChange={(v) => {
+                                              const next = [...(api.parameters || [])];
+                                              next[pi] = { ...next[pi], default: v };
+                                              updateApi(idx, { parameters: next });
+                                            }}
+                                          ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                                        ) : (
+                                          <Input className="h-8 text-sm w-full min-w-0" value={String(param.default ?? '')}
+                                            onChange={(ev) => {
+                                              const next = [...(api.parameters || [])];
+                                              next[pi] = { ...next[pi], default: ev.target.value };
+                                              updateApi(idx, { parameters: next });
+                                            }} placeholder="默认值"
+                                          />
+                                        )}
+                                      </div>
+                                    </div>
+                                    {ptype === 'choice' && (
+                                      <TextField>
+                                        <Label className="text-[10px] text-muted">可选项（英文逗号分隔）</Label>
+                                        <Input className="h-8 text-sm" value={(param.choices || []).join(', ')}
+                                          onChange={(ev) => {
+                                            const next = [...(api.parameters || [])];
+                                            next[pi] = { ...next[pi], choices: ev.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
+                                            updateApi(idx, { parameters: next });
+                                          }} placeholder="如 1920x1080, 2560x1440"
+                                        />
+                                      </TextField>
+                                    )}
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <TextField>
+                                        <Label className="text-[10px] text-muted">占位提示</Label>
+                                        <Input className="h-8 text-sm" value={param.placeholder || ''}
+                                          onChange={(ev) => {
+                                            const next = [...(api.parameters || [])];
+                                            next[pi] = { ...next[pi], placeholder: ev.target.value };
+                                            updateApi(idx, { parameters: next });
+                                          }} placeholder="输入提示"
+                                        />
+                                      </TextField>
+                                      <TextField>
+                                        <Label className="text-[10px] text-muted">说明</Label>
+                                        <Input className="h-8 text-sm" value={param.description || ''}
+                                          onChange={(ev) => {
+                                            const next = [...(api.parameters || [])];
+                                            next[pi] = { ...next[pi], description: ev.target.value };
+                                            updateApi(idx, { parameters: next });
+                                          }} placeholder="参数说明"
+                                        />
+                                      </TextField>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Switch isSelected={Boolean(param.hidden)}
+                                        onChange={(v) => {
+                                          const next = [...(api.parameters || [])];
+                                          next[pi] = { ...next[pi], hidden: v };
+                                          updateApi(idx, { parameters: next });
+                                        }}
+                                      ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                                      <span className="text-xs text-muted">隐藏参数（不展示在 UI，但仍以默认值参与模板）</span>
+                                    </div>
+                                    {(ptype === 'text') && (
+                                      <div className="grid grid-cols-2 gap-2">
+                                        <TextField>
+                                          <Label className="text-[10px] text-muted">最小长度</Label>
+                                          <Input type="number" className="h-8 text-sm" value={String(param.min_length ?? '')}
+                                            onChange={(ev) => {
+                                              const next = [...(api.parameters || [])];
+                                              next[pi] = { ...next[pi], min_length: ev.target.value ? Number(ev.target.value) : undefined };
+                                              updateApi(idx, { parameters: next });
+                                            }} placeholder="可选"
+                                          />
+                                        </TextField>
+                                        <TextField>
+                                          <Label className="text-[10px] text-muted">最大长度</Label>
+                                          <Input type="number" className="h-8 text-sm" value={String(param.max_length ?? '')}
+                                            onChange={(ev) => {
+                                              const next = [...(api.parameters || [])];
+                                              next[pi] = { ...next[pi], max_length: ev.target.value ? Number(ev.target.value) : undefined };
+                                              updateApi(idx, { parameters: next });
+                                            }} placeholder="可选"
+                                          />
+                                        </TextField>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
-                            {e.format && <div className="text-sm text-danger">{e.format}</div>}
+
+                            {/* Response */}
+                            <div className="space-y-2">
+                              <div>
+                                <Label className="text-xs text-muted block">返回设置</Label>
+                                <Description className="text-[10px] text-muted block">选择 API 响应格式，决定客户端如何解析返回数据</Description>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="space-y-1">
+                                  <Label className="text-[10px] text-muted block">响应格式</Label>
+                                  <ComboBox selectedKey={api.response?.format || 'json'}
+                                    onSelectionChange={(k) => {
+                                      const format = String(k);
+                                      const isBinary = format === 'binary';
+                                      updateApi(idx, {
+                                        response: {
+                                          ...api.response,
+                                          format,
+                                          type: isBinary ? 'single' : (api.response?.type === 'single' && api.response?.format === 'binary' ? 'multi' : (api.response?.type || 'multi')),
+                                          charset: isBinary ? undefined : api.response?.charset,
+                                        },
+                                      });
+                                    }}
+                                  >
+                                    <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                    <ComboBox.Popover><ListBox>
+                                      {RESPONSE_FORMATS_WITH_DESC.map((f) => (
+                                        <ListBox.Item key={f.value} id={f.value} textValue={f.label}>
+                                          <div className="flex flex-col">
+                                            <Label>{f.label}</Label>
+                                            <Description>{f.desc}</Description>
+                                          </div>
+                                        </ListBox.Item>
+                                      ))}
+                                    </ListBox></ComboBox.Popover>
+                                  </ComboBox>
+                                  {e.format && <div className="text-sm text-danger">{e.format}</div>}
+                                </div>
+                                {api.response?.format !== 'binary' ? (
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div className="space-y-1">
+                                      <Label className="text-[10px] text-muted block">返回类型</Label>
+                                      <ComboBox selectedKey={api.response?.type || 'multi'}
+                                        onSelectionChange={(k) => updateApi(idx, { response: { ...api.response, type: String(k) } })}
+                                      >
+                                        <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                        <ComboBox.Popover><ListBox>
+                                          {RESPONSE_TYPES.map((t) => <ListBox.Item key={t} id={t} textValue={t === 'single' ? '单条' : '多条'}>{t === 'single' ? '单条' : '多条'}</ListBox.Item>)}
+                                        </ListBox></ComboBox.Popover>
+                                      </ComboBox>
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label className="text-[10px] text-muted block">字符编码</Label>
+                                      <Input className="h-8 text-sm w-full min-w-0" value={api.response?.charset || ''}
+                                        onChange={(ev) => updateApi(idx, { response: { ...api.response, charset: ev.target.value } })}
+                                        placeholder="如 utf-8"
+                                      />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="rounded-lg border border-border bg-surface-secondary p-2 text-xs text-muted leading-relaxed">
+                                    当前格式为 <strong>BINARY</strong>，响应体即图片数据，条目类型固定为「单条」，无需设置字符编码。
+                                  </div>
+                                )}
+                              </div>
+                            </div>
 
                             {/* Mapping Fields */}
                             {api.response?.type === 'multi' && api.response?.format !== 'binary' && (
@@ -1307,7 +1834,7 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
 
                             {api.response?.format !== 'binary' ? (
                               <div className="space-y-2">
-                                <Label className="text-xs text-muted">字段映射 (fields)</Label>
+                                <Label className="text-xs text-muted block mb-1">字段映射 (fields)</Label>
                                 <Description className="text-[10px] text-muted">
                                   {api.response?.type === 'multi' ? '定义从每个条目中提取哪些字段，image 字段必填' : '定义从响应中提取哪些字段，image 字段必填'}
                                 </Description>
@@ -1892,16 +2419,34 @@ export default function WallpaperSourcesPanel({ onExecute }: WallpaperSourcesPan
                     return;
                   }
                   try {
-                    await createWallpaperSource(creatorPayload);
+                    const payloadForBackend: WallpaperSourceCreatorPayload = {
+                      ...creatorPayload,
+                      categories: {
+                        ...creatorPayload.categories,
+                        categories: flattenCategoryTreeForBackend((creatorPayload.categories?.categories || []) as CreatorCategory[]),
+                      },
+                    };
+                    if (editingSourceId) {
+                      const result = await updateWallpaperSource(editingSourceId, payloadForBackend);
+                      if (result && typeof result === 'object' && 'error' in result) {
+                        throw new Error(String((result as any).error));
+                      }
+                    } else {
+                      const result = await createWallpaperSource(payloadForBackend);
+                      if (result && typeof result === 'object' && 'error' in result) {
+                        throw new Error(String((result as any).error));
+                      }
+                    }
                     setShowCreator(false);
                     setShowValidation(false);
                     setCreatorStep(1);
+                    setEditingSourceId(null);
                     await loadSources();
                   } catch (e) {
-                    logError('Create source failed', e);
-                    alert('创建失败: ' + (e instanceof Error ? e.message : String(e)));
+                    logError(editingSourceId ? 'Update source failed' : 'Create source failed', e);
+                    alert((editingSourceId ? '更新失败: ' : '创建失败: ') + (e instanceof Error ? e.message : String(e)));
                   }
-                }}>完成</Button>
+                }}>{editingSourceId ? '保存' : '完成'}</Button>
               </>
             )}
           </Drawer.Footer>

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Card, Button, Tabs, Skeleton, Chip, ComboBox, Input, Label, ListBox,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Download, Heart, Copy, ChevronLeft, ChevronRight, RefreshCw, Save,
-  ExternalLink,
+  ExternalLink, SlidersHorizontal,
 } from 'lucide-react';
 import {
   queryBing, querySpotlight, setWallpaper,
@@ -14,7 +15,7 @@ import {
 import { useImageViewer } from '@/components/ImageViewer';
 import { logError } from '@/lib/log';
 import IntelliMarketsPanel from '@/components/IntelliMarketsPanel';
-import WallpaperSourcesPanel from '@/components/WallpaperSourcesPanel';
+import WallpaperSourceBrowser from './WallpaperSourceBrowser';
 
 function formatBingDate(item: any, category: string): string {
   if (category === 'daily') return '今日';
@@ -111,6 +112,7 @@ function SpotlightSkeleton() {
 }
 
 export default function Resource() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('bing');
   const [bingTab, setBingTab] = useState('daily');
   const [spotlightTab, setSpotlightTab] = useState('local');
@@ -414,7 +416,12 @@ export default function Resource() {
         </Tabs.Panel>
 
         <Tabs.Panel id="sources">
-          <WallpaperSourcesPanel />
+          <div className="mb-3 flex items-center justify-end">
+            <Button size="sm" variant="secondary" onPress={() => navigate('/resource/source-management')}>
+              <SlidersHorizontal size={14} /> 管理壁纸源
+            </Button>
+          </div>
+          <WallpaperSourceBrowser />
         </Tabs.Panel>
       </Tabs>
     </div>

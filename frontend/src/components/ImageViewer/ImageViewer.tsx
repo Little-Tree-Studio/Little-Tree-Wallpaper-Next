@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, RotateCw, ZoomIn, ZoomOut, Maximize, Heart, Image as ImageIcon,
   Copy, ChevronLeft, ChevronRight, Save, PanelsTopLeft, ExternalLink,
+  ClipboardCopy,
 } from 'lucide-react';
 import { Button, Tooltip, toast } from '@heroui/react';
 import { useImageViewer } from './context';
 import {
   copyToClipboard, addFavorite, saveAsWithProgress,
   setWallpaperWithProgress, openWithSystemWithProgress,
+  copyImageToClipboardWithProgress,
 } from '@/api/backend';
 
 interface TooltipIconButtonProps {
@@ -212,6 +214,16 @@ export default function ImageViewer() {
     await saveAsWithProgress(url, `${safeName}.jpg`);
   };
 
+  const handleCopyImage = async () => {
+    if (!currentItem) return;
+    const url = currentItem.src || currentItem.source_url;
+    if (!url) {
+      toast.danger('没有可复制的图片', { timeout: 0 });
+      return;
+    }
+    await copyImageToClipboardWithProgress(url);
+  };
+
   const handleCopyUrl = async () => {
     if (!currentItem) return;
     let url = currentItem.source_url;
@@ -377,6 +389,13 @@ export default function ImageViewer() {
           tooltip="另存为"
         >
           <Save size={18} />
+        </TooltipIconButton>
+        <TooltipIconButton
+          onPress={handleCopyImage}
+          ariaLabel="复制图片"
+          tooltip="复制图片"
+        >
+          <ClipboardCopy size={18} />
         </TooltipIconButton>
         {items.length > 1 && (
           <>

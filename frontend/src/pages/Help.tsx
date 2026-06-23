@@ -5,14 +5,14 @@ import {
 } from '@heroui/react';
 import type { Key } from '@heroui/react';
 import {
-  ArrowLeft, Download, FileText, FolderOpen, Trash2, Shield, RefreshCw,
+  Download, FileText, FolderOpen, Trash2, Shield, RefreshCw,
   LifeBuoy, BookOpen, MessageSquareWarning, ChevronDown, ChevronRight,
-  ExternalLink,
+  ExternalLink, Copy,
 } from 'lucide-react';
 import {
   getLogStats, setLogFileLevel, clearLogs, getDebugLog, saveDebugLog,
   openDebugLogFile, openDebugLogDirectory, getCrashReports, openCrashReport,
-  openUrl, type LogStats,
+  openUrl, copyToClipboard, type LogStats,
 } from '@/api/backend';
 
 interface CrashReport {
@@ -32,6 +32,8 @@ const LEVEL_LABELS: Record<string, string> = {
   ERROR: '错误',
   CRITICAL: '严重（最少）',
 };
+
+const FEEDBACK_URL = 'https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/issues';
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
@@ -116,7 +118,11 @@ export default function Help() {
       setStats(result);
       setRecentLog(null);
       setShowRecent(false);
-      toast.success(`已清除 ${result.removed} 个日志文件`, { timeout: 3000 });
+      if (result.failed > 0) {
+        toast.warning(`已清理 ${result.removed} 个历史日志文件，但有 ${result.failed} 个文件未能处理（可能正被其他程序占用）`, { timeout: 0 });
+      } else {
+        toast.success(`已清理 ${result.removed} 个历史日志文件，当前运行日志已清空`, { timeout: 3000 });
+      }
     } catch {
       toast.danger('清除日志失败', { timeout: 0 });
     } finally {
@@ -169,39 +175,43 @@ export default function Help() {
     }
   };
 
+  const handleCopyPath = async (text: string) => {
+    try {
+      await copyToClipboard(text);
+      toast.success('已复制路径', { timeout: 2000 });
+    } catch {
+      toast.danger('复制失败', { timeout: 0 });
+    }
+  };
+
   const levels = stats?.levels || [];
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
-      <div className="flex items-center gap-2">
-        <Button isIconOnly variant="ghost" onPress={() => window.history.back()} aria-label="返回">
-          <ArrowLeft size={18} />
-        </Button>
-        <h1 className="text-2xl font-bold">帮助与反馈</h1>
-      </div>
+      <h1 className="text-2xl font-bold">帮助与反馈</h1>
 
       <Card className="space-y-4 p-4">
         <Section title="帮助">
           <div className="grid gap-2 sm:grid-cols-3">
             <Button
               variant="secondary"
-              className="flex h-auto flex-col items-start gap-1 p-3"
-              onPress={() => openUrl('https://docs.zsxiaoshu.cn/')}
+              className="flex h-auto w-full flex-col items-start gap-1 p-3"
+              onPress={() => openUrl('https://docs.zsxiaoshu.cn/docs/wallpaper/')}
             >
               <span className="flex items-center gap-1.5 text-sm font-medium"><BookOpen size={16} /> 使用文档</span>
               <span className="text-xs text-muted">查看使用说明与常见问题</span>
             </Button>
             <Button
               variant="secondary"
-              className="flex h-auto flex-col items-start gap-1 p-3"
-              onPress={() => openUrl('https://github.com/SRInternet-Studio/Wallpaper-generator/issues')}
+              className="flex h-auto w-full flex-col items-start gap-1 p-3"
+              onPress={() => openUrl(FEEDBACK_URL)}
             >
               <span className="flex items-center gap-1.5 text-sm font-medium"><MessageSquareWarning size={16} /> 问题反馈</span>
               <span className="text-xs text-muted">提交 Bug 或功能建议</span>
             </Button>
             <Button
               variant="secondary"
-              className="flex h-auto flex-col items-start gap-1 p-3"
+              className="flex h-auto w-full flex-col items-start gap-1 p-3"
               onPress={() => openUrl('https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/')}
             >
               <span className="flex items-center gap-1.5 text-sm font-medium"><Shield size={16} /> 用户协议</span>
@@ -220,9 +230,17 @@ export default function Help() {
             <StatTile label="占用空间" value={stats ? formatBytes(stats.size_bytes) : '—'} />
           </div>
           {stats?.directory && (
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted">日志目录</span>
-              <span className="max-w-[60%] truncate text-xs text-muted">{stats.directory}</span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="shrink-0 text-xs text-muted">日志目录</span>
+              <button
+                type="button"
+                onClick={() => handleCopyPath(stats.directory)}
+                className="flex min-w-0 max-w-[65%] items-center gap-1 truncate text-xs text-muted transition-colors hover:text-foreground"
+                title="点击复制路径"
+              >
+                <span className="truncate">{stats.directory}</span>
+                <Copy size={11} className="shrink-0" />
+              </button>
             </div>
           )}
 
@@ -304,7 +322,7 @@ export default function Help() {
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">异常退出报告</span>
               <Button size="sm" variant="ghost" onPress={() => loadCrashReports()}>
-                <Shield size={14} /> 刷新
+                <RefreshCw size={14} /> 刷新
               </Button>
             </div>
             {crashReports.length > 0 ? (
@@ -331,11 +349,15 @@ export default function Help() {
         </Section>
       </Card>
 
-      <p className="flex items-center justify-center gap-1 text-center text-xs text-muted">
+      <button
+        type="button"
+        onClick={() => openUrl(FEEDBACK_URL)}
+        className="mx-auto flex items-center justify-center gap-1 text-center text-xs text-muted transition-colors hover:text-foreground"
+      >
         <LifeBuoy size={12} />
         如遇问题，请通过「问题反馈」提交并附上日志文件，便于我们定位。
         <ExternalLink size={12} />
-      </p>
+      </button>
 
       <Modal.Backdrop isOpen={showClearConfirm} onOpenChange={(open) => !open && setShowClearConfirm(false)}>
         <Modal.Container size="sm">

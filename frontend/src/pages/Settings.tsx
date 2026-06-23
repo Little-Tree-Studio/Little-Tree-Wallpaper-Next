@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
   Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
-  TagGroup, useFilter,
+  TagGroup, useFilter, Checkbox, CheckboxGroup,
 } from '@heroui/react';
 import type { Key } from '@heroui/react';
 import {
-  ArrowLeft, FolderOpen, Plus, Trash2, Wand2, ChevronDown, Heart, Package,
+  FolderOpen, Plus, Trash2, Wand2, ChevronDown, Heart, Package,
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download,
 } from 'lucide-react';
 import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences } from '@/api/backend';
@@ -20,6 +20,20 @@ export default function Settings() {
   const [settings, setLocalSettings] = useState<AppSettings | null>(null);
   const [activeTab, setActiveTab] = useState(tab || 'general');
   const [storageOverview, setStorageOverview] = useState<any>(null);
+  const [nsfwDialogOpen, setNsfwDialogOpen] = useState(false);
+  const [nsfwConfirmAdult, setNsfwConfirmAdult] = useState(false);
+  const [nsfwConfirmLegal, setNsfwConfirmLegal] = useState(false);
+  const nsfwConfirmValue = useMemo(
+    () => [
+      ...(nsfwConfirmAdult ? ['adult'] : []),
+      ...(nsfwConfirmLegal ? ['legal'] : []),
+    ],
+    [nsfwConfirmAdult, nsfwConfirmLegal]
+  );
+  const handleNsfwConfirmChange = (values: string[]) => {
+    setNsfwConfirmAdult(values.includes('adult'));
+    setNsfwConfirmLegal(values.includes('legal'));
+  };
 
   useEffect(() => {
     getSettings().then((s) => setLocalSettings(s as AppSettings));
@@ -51,10 +65,7 @@ export default function Settings() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
-      <div className="flex items-center gap-2">
-        <Button isIconOnly variant="ghost" onPress={() => window.history.back()}><ArrowLeft size={18} /></Button>
-        <h1 className="text-2xl font-bold">设置</h1>
-      </div>
+      <h1 className="text-2xl font-bold">设置</h1>
 
       <Tabs selectedKey={activeTab} onSelectionChange={(k) => setActiveTab(String(k))}>
         <Tabs.ListContainer>
@@ -145,7 +156,15 @@ export default function Settings() {
 
         <Tabs.Panel id="content">
           <Card className="space-y-4 p-4">
-            <Row label="显示 NSFW 内容"><Switch aria-label="显示 NSFW 内容" isSelected={settings.wallpaper.allow_NSFW} onChange={(v) => update('wallpaper.allow_NSFW', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            <Row label="显示 NSFW 内容"><Switch aria-label="显示 NSFW 内容" isSelected={settings.wallpaper.allow_NSFW} onChange={(v) => {
+              if (v) {
+                setNsfwConfirmAdult(false);
+                setNsfwConfirmLegal(false);
+                setNsfwDialogOpen(true);
+              } else {
+                update('wallpaper.allow_NSFW', false);
+              }
+            }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             <Separator />
             <Section title="商店源">
               <Row label="使用自定义源"><Switch aria-label="使用自定义源" isSelected={settings.store.use_custom_source} onChange={(v) => update('store.use_custom_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
@@ -234,6 +253,52 @@ export default function Settings() {
           <AboutPanel />
         </Tabs.Panel>
       </Tabs>
+
+        <Modal.Backdrop isOpen={nsfwDialogOpen} onOpenChange={setNsfwDialogOpen} isDismissable={false}>
+        <Modal.Container size="sm">
+          <Modal.Dialog className="min-w-[340px]">
+            <Modal.Header><Modal.Heading>确认开启 NSFW 内容</Modal.Heading></Modal.Header>
+            <Modal.Body>
+              <div className="space-y-4">
+                <p className="text-sm text-muted">
+                  开启「显示 NSFW 内容」后，壁纸源中标记为包含 NSFW 的 API 将会显示并可用。请确认以下事项：
+                </p>
+                <div className="space-y-3">
+                  <CheckboxGroup value={nsfwConfirmValue} onChange={handleNsfwConfirmChange}>
+                    <Checkbox value="adult">
+                      <Checkbox.Content className="flex-row items-center">
+                        <Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
+                        <span className="whitespace-nowrap">我已年满 18 周岁</span>
+                      </Checkbox.Content>
+                    </Checkbox>
+                    <Checkbox value="legal">
+                      <Checkbox.Content className="flex-row items-center">
+                        <Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
+                        <span className="whitespace-nowrap">我所在的国家/地区允许访问 NSFW 内容</span>
+                      </Checkbox.Content>
+                    </Checkbox>
+                  </CheckboxGroup>
+                </div>
+                <div className="rounded-lg border border-border bg-surface-secondary p-3 text-xs text-muted leading-relaxed">
+                  NSFW 内容可能包含不适宜在工作场合或公共场所查看的图片。本应用仅作为工具提供内容访问能力，不对第三方壁纸源的内容负责。访问此类内容须遵守当地法律法规，因违反相关规定而产生的后果由用户自行承担。
+                </div>
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="ghost" onPress={() => setNsfwDialogOpen(false)}>取消</Button>
+              <Button
+                isDisabled={!nsfwConfirmAdult || !nsfwConfirmLegal}
+                onPress={() => {
+                  update('wallpaper.allow_NSFW', true);
+                  setNsfwDialogOpen(false);
+                }}
+              >
+                确认开启
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
     </div>
   );
 }
@@ -583,32 +648,32 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
         {providers.length === 0 && (
           <p className="text-sm text-muted">尚未配置任何图片生成提供商</p>
         )}
-            <RadioGroup
-              value={activeId}
-              onChange={(v) => onUpdate('generate.active_provider_id', v)}
-              className="space-y-2"
+        <RadioGroup
+          value={activeId}
+          onChange={(v) => onUpdate('generate.active_provider_id', v)}
+          className="space-y-2"
+        >
+          {providers.map((p) => (
+            <Radio
+              key={p.id}
+              value={p.id}
+              className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}
             >
-              {providers.map((p) => (
-                <Radio
-                  key={p.id}
-                  value={p.id}
-                  className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}
-                >
-                  <div className="flex flex-1 items-center gap-3">
-                    <Radio.Control>
-                      <Radio.Indicator />
-                    </Radio.Control>
-                    <Radio.Content>
-                      <div className="text-sm font-medium">{p.name}</div>
-                      <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
-                    </Radio.Content>
-                  </div>
-                  <Button isIconOnly variant="ghost" size="sm" onPress={() => removeProvider(p.id)}>
-                    <Trash2 size={14} className="text-danger" />
-                  </Button>
-                </Radio>
-              ))}
-            </RadioGroup>
+              <div className="flex flex-1 items-center gap-3">
+                <Radio.Control>
+                  <Radio.Indicator />
+                </Radio.Control>
+                <Radio.Content>
+                  <div className="text-sm font-medium">{p.name}</div>
+                  <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
+                </Radio.Content>
+              </div>
+              <Button isIconOnly variant="ghost" size="sm" onPress={() => removeProvider(p.id)}>
+                <Trash2 size={14} className="text-danger" />
+              </Button>
+            </Radio>
+          ))}
+        </RadioGroup>
       </Section>
 
       <Separator />
@@ -792,9 +857,6 @@ function AboutPanel() {
         <p className="text-sm text-muted">
           一款桌面壁纸管理应用，支持多种壁纸来源、AI 生成、自动更换、收藏管理等功能。
         </p>
-        <p className="mt-3 text-xs text-muted">
-          日志与诊断已移至「帮助与反馈」页面。
-        </p>
       </Card>
 
       <Accordion variant="surface">
@@ -867,7 +929,7 @@ function AboutPanel() {
                         <Table.Row>
                           <Table.Cell>Cu_32767</Table.Cell>
                           <Table.Cell>0.91￥</Table.Cell>
-                        </Table.Row>                        
+                        </Table.Row>
                         <Table.Row>
                           <Table.Cell>wzr</Table.Cell>
                           <Table.Cell>0.01￥</Table.Cell>

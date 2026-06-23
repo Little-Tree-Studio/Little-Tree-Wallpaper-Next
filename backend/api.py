@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -12,7 +14,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from loguru import logger
 
@@ -44,6 +46,7 @@ class BackendAPI:
             cache_dir=get_cache_dir(),
             builtin_examples_dir=get_data_dir() / "builtin" / "ltws",
             settings=self.store,
+            preview_url_builder=self._build_preview_url,
         )
         # Per-session secret token injected by the launcher (main.py). It is used
         # to build authenticated preview URLs and is never written to disk.
@@ -155,6 +158,17 @@ class BackendAPI:
         import requests
 
         try:
+            preview_path = self._extract_preview_path(url)
+            if preview_path is not None:
+                path = Path(preview_path)
+                if path.is_file() and self.is_path_safe(str(path)):
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    if not filename:
+                        filename = path.name or "download.jpg"
+                    dest = save_dir / self._sanitize_filename(filename)
+                    shutil.copy2(path, dest)
+                    return str(dest)
+
             h = dict(headers or {})
             h.setdefault("User-Agent", self.store.get("sniff.user_agent", "Mozilla/5.0"))
             resp = requests.get(url, headers=h, timeout=60, stream=True)
@@ -175,6 +189,20 @@ class BackendAPI:
         except Exception as e:
             logger.error("Download failed: {}", e)
             return None
+
+    @staticmethod
+    def _extract_preview_path(url: str) -> str | None:
+        """If ``url`` is a local /api/preview URL, return the decoded path."""
+        if not url:
+            return None
+        parsed = urlparse(url)
+        if parsed.path != "/api/preview":
+            return None
+        params = parse_qs(parsed.query)
+        paths = params.get("path")
+        if not paths:
+            return None
+        return unquote(paths[0])
 
     def get_current_wallpaper(self) -> dict[str, str] | None:
         path = get_sys_wallpaper()
@@ -473,6 +501,164 @@ class BackendAPI:
             pyperclip.copy(text)
         except Exception as e:
             logger.error(f"Clipboard error: {e}")
+
+    def copy_image_to_clipboard(self, data: bytes) -> bool:
+        """Copy image bytes to the system clipboard.
+
+        Supports Windows (via DIB), macOS (via osascript) and Linux
+        (via xclip or wl-copy). Falls back to saving a temporary PNG when
+        a native image clipboard format is not available.
+        """
+        try:
+            from PIL import Image
+
+            image = Image.open(io.BytesIO(data))
+            logger.debug(
+                "copy_image_to_clipboard platform={} size={} mode={}",
+                sys.platform,
+                image.size,
+                image.mode,
+            )
+            if sys.platform == "win32":
+                # Prefer pywin32 when available; it handles window/thread
+                # clipboard ownership correctly inside pywebview.
+                try:
+                    import win32clipboard
+
+                    return self._copy_image_to_clipboard_win32_pywin32(image)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("pywin32 clipboard unavailable ({}), falling back to ctypes", exc)
+                    return self._copy_image_to_clipboard_win32(image)
+            if sys.platform == "darwin":
+                return self._copy_image_to_clipboard_darwin(image)
+            return self._copy_image_to_clipboard_linux(image)
+        except Exception as e:
+            logger.error("Copy image to clipboard failed: {}", e)
+            return False
+
+    @staticmethod
+    def _copy_image_to_clipboard_win32_pywin32(image: Any) -> bool:
+        """Copy a PIL image to the Windows clipboard using pywin32."""
+        import io as _io
+
+        import win32clipboard
+
+        output = _io.BytesIO()
+        image.convert("RGB").save(output, "BMP")
+        dib_data = output.getvalue()[14:]
+        output.close()
+
+        try:
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
+            return True
+        except Exception as e:
+            logger.error("win32clipboard copy failed: {}", e)
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                win32clipboard.CloseClipboard()
+
+    @staticmethod
+    def _copy_image_to_clipboard_win32(image: Any) -> bool:
+        """Copy a PIL image to the Windows clipboard as CF_DIB."""
+        import ctypes
+        from ctypes import wintypes
+
+        output = io.BytesIO()
+        image.convert("RGB").save(output, "BMP")
+        # Strip the BITMAPFILEHEADER so the remaining bytes are CF_DIB.
+        dib_data = output.getvalue()[14:]
+        output.close()
+
+        CF_DIB = 8
+        GMEM_MOVEABLE = 0x0002
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        if not user32.OpenClipboard(0):
+            err = ctypes.get_last_error()
+            logger.error("OpenClipboard failed: error={}", err)
+            return False
+        try:
+            user32.EmptyClipboard()
+            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+            if not h_mem:
+                err = ctypes.get_last_error()
+                logger.error("GlobalAlloc failed: error={}", err)
+                return False
+            ptr = kernel32.GlobalLock(h_mem)
+            if not ptr:
+                err = ctypes.get_last_error()
+                logger.error("GlobalLock failed: error={}", err)
+                kernel32.GlobalFree(h_mem)
+                return False
+            try:
+                ctypes.memmove(ptr, dib_data, len(dib_data))
+            finally:
+                kernel32.GlobalUnlock(h_mem)
+            if not user32.SetClipboardData(CF_DIB, h_mem):
+                err = ctypes.get_last_error()
+                logger.error("SetClipboardData failed: error={}", err)
+                kernel32.GlobalFree(h_mem)
+                return False
+            return True
+        finally:
+            user32.CloseClipboard()
+
+    @staticmethod
+    def _copy_image_to_clipboard_darwin(image: Any) -> bool:
+        """Copy a PIL image to the macOS clipboard via a temporary PNG."""
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            image.save(f, "PNG")
+            path = f.name
+
+        try:
+            script = f'set the clipboard to (read (POSIX file "{path}") as PNG)'
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode == 0
+        finally:
+            with contextlib.suppress(Exception):
+                os.unlink(path)
+
+    @staticmethod
+    def _copy_image_to_clipboard_linux(image: Any) -> bool:
+        """Copy a PIL image to the Linux clipboard via xclip or wl-copy."""
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            image.save(f, "PNG")
+            path = f.name
+
+        try:
+            for cmd, args in (
+                (["xclip", "-selection", "clipboard", "-t", "image/png", "-i", path], None),
+                (["wl-copy", "--type", "image/png"], path),
+            ):
+                try:
+                    if args is None:
+                        result = subprocess.run(cmd)
+                    else:
+                        with open(args, "rb") as img:
+                            result = subprocess.run(cmd, stdin=img)
+                    if result.returncode == 0:
+                        return True
+                except FileNotFoundError:
+                    continue
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                os.unlink(path)
 
     @staticmethod
     def _sanitize_filename(name: str) -> str:
@@ -800,6 +986,13 @@ class BackendAPI:
             return self.ltws_service.create_source(payload)
         except Exception as e:
             logger.error(f"create_wallpaper_source error: {e}")
+            return {"error": str(e)}
+
+    def update_wallpaper_source(self, source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self.ltws_service.update_source(source_id, payload)
+        except Exception as e:
+            logger.error(f"update_wallpaper_source error: {e}")
             return {"error": str(e)}
 
     def export_wallpaper_source(self, source_id: str, suggested_name: str | None = None) -> dict[str, Any] | None:
