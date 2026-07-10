@@ -3,7 +3,9 @@ import {
   Card, Button, Input, ComboBox, ListBox, TextArea, NumberField,
 } from '@heroui/react';
 import { Wand2, Download, Image as ImageIcon, Loader2, Trash2, Settings } from 'lucide-react';
-import { getSetting, downloadFile, setWallpaper, addToHistory } from '@/api/backend';
+import {
+  getSetting, downloadWithProgress, setWallpaperWithProgress, addToHistory,
+} from '@/api/backend';
 import { generateImage, SIZE_OPTIONS } from '@/api/generate';
 import type { ImageProviderConfig } from '@/types';
 
@@ -83,25 +85,16 @@ export default function Generate() {
     }
   };
 
-  const handleDownload = useCallback(async (img: GeneratedImage) => {
+  const handleDownload = useCallback((img: GeneratedImage) => {
     if (!img.url) return;
-    try {
-      await downloadFile(img.url, `generated-${img.id}.png`);
-    } catch {
-      // ignore
-    }
+    return downloadWithProgress(img.url, `generated-${img.id}.png`);
   }, []);
 
   const handleSetWallpaper = useCallback(async (img: GeneratedImage) => {
     if (!img.url) return;
-    try {
-      const path = await downloadFile(img.url, `generated-${img.id}.png`);
-      if (path) {
-        await setWallpaper(path);
-        await addToHistory(path, img.prompt.slice(0, 30), 'generated');
-      }
-    } catch {
-      // ignore
+    const path = await setWallpaperWithProgress(img.url, `generated-${img.id}.png`);
+    if (path) {
+      await addToHistory(path, img.prompt.slice(0, 30), 'generated');
     }
   }, []);
 

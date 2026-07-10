@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
@@ -16,9 +17,33 @@ import Tools from '@/pages/Tools';
 import ColorPalette from '@/pages/ColorPalette';
 import { ImageViewerProvider, ImageViewer } from '@/components/ImageViewer';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import BetaWarningModal from '@/components/BetaWarningModal';
+import BetaWatermark from '@/components/BetaWatermark';
+import { getBuildInfo } from '@/api/backend';
 import { Toast } from '@heroui/react';
+import { logError } from '@/lib/log';
 
 function App() {
+  const [betaVersion, setBetaVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await getBuildInfo();
+        if (cancelled) return;
+        if (info.build_type === 'beta') {
+          setBetaVersion(info.version);
+        }
+      } catch (e) {
+        logError('getBuildInfo failed', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <ThemeProvider>
       <ImageViewerProvider>
@@ -44,6 +69,13 @@ function App() {
         </Routes>
       </HashRouter>
       <ImageViewer />
+      {betaVersion !== null && (
+        <BetaWarningModal
+          version={betaVersion}
+          onDismiss={() => setBetaVersion(null)}
+        />
+      )}
+      <BetaWatermark />
       <Toast.Provider placement="bottom end" />
     </ImageViewerProvider>
     </ThemeProvider>

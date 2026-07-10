@@ -8,12 +8,13 @@ import {
   ExternalLink, SlidersHorizontal,
 } from 'lucide-react';
 import {
-  queryBing, querySpotlight, setWallpaper,
-  downloadFile, copyToClipboard, addFavorite,
-  downloadWithProgress, saveAsWithProgress, openUrl,
+  queryBing, querySpotlight,
+  copyToClipboard, addFavorite,
+  downloadWithProgress, saveAsWithProgress, setWallpaperWithProgress, openUrl,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import { logError } from '@/lib/log';
+import { safeNameForFile } from '@/lib/download';
 import IntelliMarketsPanel from '@/components/IntelliMarketsPanel';
 import WallpaperSourceBrowser from './WallpaperSourceBrowser';
 
@@ -177,10 +178,9 @@ export default function Resource() {
     }
   }, [activeTab, bingTab, spotlightTab, bingLoadedFor, spotlightLoadedFor, bingLoading, spotlightLoading, fetchBing, fetchSpotlight]);
 
-  const handleSetWallpaper = async (url: string, title: string) => {
-    const safeName = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 50) || 'wallpaper';
-    const path = await downloadFile(url, `${safeName}.jpg`);
-    if (path) await setWallpaper(path);
+  const handleSetWallpaper = (url: string, title: string) => {
+    const safeName = safeNameForFile(title, 'wallpaper');
+    return setWallpaperWithProgress(url, `${safeName}.jpg`);
   };
 
   const handleFavorite = async (item: any) => {
@@ -283,8 +283,8 @@ export default function Resource() {
                     <div className="flex flex-wrap gap-2">
                       <Button size="sm" onPress={() => handleSetWallpaper(getBingUrlForQuality(currentBing, bingQuality), currentBing.title)}><ImageIcon size={14} /> 设为壁纸</Button>
                       <Button size="sm" variant="secondary" onPress={() => handleFavorite(currentBing)}><Heart size={14} /> 收藏</Button>
-                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(getBingUrlForQuality(currentBing, bingQuality), `${currentBing.title?.slice(0,30) || 'bing'}.jpg`)}><Download size={14} /> 下载</Button>
-                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(getBingUrlForQuality(currentBing, bingQuality), `${currentBing.title?.slice(0,30) || 'bing'}.jpg`)}><Save size={14} /> 另存为</Button>
+                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(getBingUrlForQuality(currentBing, bingQuality), `${safeNameForFile(currentBing.title, 'bing')}.jpg`)}><Download size={14} /> 下载</Button>
+                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(getBingUrlForQuality(currentBing, bingQuality), `${safeNameForFile(currentBing.title, 'bing')}.jpg`)}><Save size={14} /> 另存为</Button>
                       <Button size="sm" variant="secondary" onPress={() => {
                         const link = absoluteBingUrl(currentBing.metadata?.click_url);
                         if (link) openUrl(link);
@@ -375,8 +375,8 @@ export default function Resource() {
                     <div className="flex flex-wrap gap-2">
                       <Button size="sm" onPress={() => handleSetWallpaper(currentSpotlight.image_url, currentSpotlight.title || 'spotlight')}><ImageIcon size={14} /> 设为壁纸</Button>
                       <Button size="sm" variant="secondary" onPress={() => handleFavorite(currentSpotlight)}><Heart size={14} /> 收藏</Button>
-                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(currentSpotlight.image_url, `${currentSpotlight.title?.slice(0,30) || 'spotlight'}.jpg`)}><Download size={14} /> 下载</Button>
-                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(currentSpotlight.image_url, `${currentSpotlight.title?.slice(0,30) || 'spotlight'}.jpg`)}><Save size={14} /> 另存为</Button>
+                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(currentSpotlight.image_url, `${safeNameForFile(currentSpotlight.title, 'spotlight')}.jpg`)}><Download size={14} /> 下载</Button>
+                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(currentSpotlight.image_url, `${safeNameForFile(currentSpotlight.title, 'spotlight')}.jpg`)}><Save size={14} /> 另存为</Button>
                       <Button size="sm" variant="ghost" onPress={() => copyToClipboard(currentSpotlight.image_url)}><Copy size={14} /> 复制链接</Button>
                       <Button size="sm" variant="ghost" onPress={() => openSpotlightViewer(selectedSpotlightIndex)}><ImageIcon size={14} /> 查看</Button>
                       <Button size="sm" variant="ghost" onPress={() => setSelectedSpotlightIndex(Math.max(0, selectedSpotlightIndex - 1))} isDisabled={selectedSpotlightIndex === 0}><ChevronLeft size={14} /> 上一张</Button>

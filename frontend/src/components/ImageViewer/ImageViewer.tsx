@@ -11,6 +11,7 @@ import {
   setWallpaperWithProgress, openWithSystemWithProgress,
   copyImageToClipboardWithProgress,
 } from '@/api/backend';
+import { safeNameForFile } from '@/lib/download';
 
 interface TooltipIconButtonProps {
   onPress: (e?: any) => void;
@@ -174,7 +175,7 @@ export default function ImageViewer() {
       toast.danger('没有可用的图片来源', { timeout: 0 });
       return;
     }
-    const safeName = (currentItem.title || 'wallpaper').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    const safeName = safeNameForFile(currentItem.title, 'wallpaper');
     await setWallpaperWithProgress(url || '', `${safeName}.jpg`, currentItem.local_path);
   };
 
@@ -185,7 +186,7 @@ export default function ImageViewer() {
       toast.danger('没有可用的图片来源', { timeout: 0 });
       return;
     }
-    const safeName = (currentItem.title || 'image').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    const safeName = safeNameForFile(currentItem.title, 'image');
     await openWithSystemWithProgress(url || '', `${safeName}.jpg`, currentItem.local_path);
   };
 
@@ -205,7 +206,7 @@ export default function ImageViewer() {
 
   const handleSaveAs = async () => {
     if (!currentItem) return;
-    const safeName = (currentItem.title || 'wallpaper').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    const safeName = safeNameForFile(currentItem.title, 'wallpaper');
     const url = currentItem.src || currentItem.source_url;
     if (!url) {
       toast.danger('没有可保存的数据', { timeout: 0 });

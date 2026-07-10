@@ -10,7 +10,7 @@ import {
   FolderOpen, Plus, Trash2, Wand2, ChevronDown, Heart, Package,
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download,
 } from 'lucide-react';
-import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences } from '@/api/backend';
+import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
 import { useThemeContext } from '@/components/ThemeProvider';
 import type { AppSettings, ImageProviderConfig, CustomSentence } from '@/types';
 import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
@@ -841,9 +841,42 @@ function AppearanceSettingsPanel({ settings, onUpdate }: { settings: AppSettings
 }
 
 function AboutPanel() {
+  const [app, setApp] = useState<import('@/api/backend').AppInfo | null>(null);
+  const [build, setBuild] = useState<import('@/api/backend').BuildInfo | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getAppInfo(), getBuildInfo()])
+      .then(([a, b]) => {
+        if (cancelled) return;
+        setApp(a);
+        setBuild(b);
+      })
+      .catch((e) => console.error('AboutPanel load failed', e));
+    return () => { cancelled = true; };
+  }, []);
+
   const handleOpenUrl = (url: string) => {
     openUrl(url);
   };
+
+  const formatBuildTime = (iso: string) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+  };
+
+  const displayVersion = build ? `v${build.version}` : 'v2.0.0';
+  const displayType = build ? (build.source_run ? '源码运行' : build.build_type) : '—';
+  const displayBuildTime = build ? formatBuildTime(build.build_time) : '—';
+  const displayCommit = build?.git_commit || '—';
+  const displayBuiltBy = build?.built_by || '—';
 
   return (
     <div className="space-y-4">
@@ -852,11 +885,46 @@ function AboutPanel() {
           <img src="./logo.png" alt="小树壁纸" className="h-16 w-16 rounded-xl object-cover" />
         </div>
         <div className="text-2xl font-bold">小树壁纸 Next</div>
-        <div className="text-muted">v2.0.0</div>
+        <div className="text-muted">{displayVersion}</div>
         <Separator className="my-4" />
         <p className="text-sm text-muted">
           一款桌面壁纸管理应用，支持多种壁纸来源、AI 生成、自动更换、收藏管理等功能。
         </p>
+      </Card>
+
+      <Card className="space-y-3 p-4">
+        <h3 className="text-sm font-semibold text-muted">版本信息</h3>
+        <div className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+          <div className="flex justify-between gap-2">
+            <span className="text-muted">版本号</span>
+            <span className="font-mono">{displayVersion}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-muted">构建类型</span>
+            <span className="font-mono">{displayType}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-muted">构建时间</span>
+            <span className="font-mono">{displayBuildTime}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-muted">Git Commit</span>
+            <span className="font-mono">{displayCommit}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-muted">构建方式</span>
+            <span className="font-mono">{displayBuiltBy}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-muted">包名</span>
+            <span className="font-mono">{app?.package_name || '—'}</span>
+          </div>
+        </div>
+        {build?.source_run && (
+          <p className="text-xs text-muted">
+            当前为源码运行模式，上述版本号、提交哈希、构建时间等元数据由后端自动合成，仅供本地调试参考。
+          </p>
+        )}
       </Card>
 
       <Accordion variant="surface">
@@ -1007,14 +1075,14 @@ function AboutPanel() {
                 <div className="space-y-2">
                   <p className="font-medium text-foreground">UI 组件与样式</p>
                   <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/react@3.1.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/styles@3.1.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwindcss@4.3.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/react@3.0.5 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/styles@3.0.5 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwindcss@4.0.0 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@tailwindcss/vite@4.3.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lucide-react@1.17.0 (ISC)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwind-merge@3.4.0 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwind-variants@3.2.2 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tw-animate-css@1.4.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lucide-react@0.460.0 (ISC)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">clsx@2.1.1 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">input-otp@1.4.2 (MIT)</span>
                   </div>
@@ -1058,8 +1126,8 @@ function AboutPanel() {
                 <div className="space-y-2">
                   <p className="font-medium text-foreground">构建工具</p>
                   <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">vite@6.4.2 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@vitejs/plugin-react@4.7.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">vite@6.0.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@vitejs/plugin-react@6.0.2 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">esbuild@0.25.12 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">rollup@4.60.4 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">typescript@5.9.3 (Apache-2.0)</span>
@@ -1101,27 +1169,22 @@ function AboutPanel() {
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pyperclip@1.11.0 (BSD)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">loguru@0.7.3 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiohttp@3.14.0 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">certifi@2026.5.20 (MPL-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiohappyeyeballs@2.6.2 (PSF-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiosignal@1.4.0 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">attrs@26.1.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">bottle@0.13.4 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">cffi@2.0.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">charset-normalizer@3.4.7 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">clr-loader@0.3.1 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">colorama@0.4.6 (BSD)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">frozenlist@1.8.0 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">idna@3.18 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">multidict@6.7.1 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">propcache@0.5.2 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">proxy-tools@0.1.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pycparser@3.0 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pythonnet@3.1.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">six@1.17.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">typing-extensions@4.15.0 (PSF-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">urllib3@2.7.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">win32-setctime@1.2.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">yarl@1.24.2 (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">certifi@2026.6.17 (MPL-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">fastapi@0.115.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">uvicorn@0.32.0 (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">PyYAML@6.0.2 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">rtoml@0.12.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pywin32@306 (PSF-2.0)</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">Python 构建与打包</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pyinstaller@6.21.0 (GPL-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">hatchling@1.27.0 (MIT)</span>
                   </div>
                 </div>
 

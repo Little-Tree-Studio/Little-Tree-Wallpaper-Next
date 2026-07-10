@@ -201,7 +201,7 @@ def get_sys_wallpaper(windows_way: str = "reg") -> str | None:
                             current_section = line[1:-1]
                             continue
                         if current_section == "Desktop":
-                            for key in ("wallpaper=", "desktop_bg=", "bg="):
+                            for key in ("Wallpaper=", "desktop_bg=", "bg="):
                                 if line.startswith(key):
                                     path = _expanduser(line.split("=", 1)[1].strip())
                                     if os.path.isfile(path):
@@ -376,8 +376,8 @@ def _get_desktop_environments() -> set[str]:
 
 
 def _safe_applescript_string(s: str) -> str:
-    """转义 AppleScript 字符串中的双引号，防止脚本注入/语法错误。"""
-    return s.replace('"', '\\"')
+    """转义 AppleScript 字符串中的特殊字符，防止脚本注入/语法错误。"""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def set_wallpaper(path: str) -> None:
@@ -501,10 +501,10 @@ def set_wallpaper(path: str) -> None:
     if "deepin" in desktops:
         uri = Path(path).as_uri()
         candidates = [
-            ("com.deepin.wrap.gnome.desktop.background", "picture-uri"),
-            ("com.deepin.wrap.gnome.desktop.background", "background"),
             ("com.deepin.dde.appearance", "picture-uri"),
             ("com.deepin.dde.appearance", "background"),
+            ("com.deepin.wrap.gnome.desktop.background", "picture-uri"),
+            ("com.deepin.wrap.gnome.desktop.background", "background"),
         ]
         for schema, gkey in candidates:
             r = subprocess.run(
@@ -536,7 +536,7 @@ def set_wallpaper(path: str) -> None:
 
     if "hyprland" in desktops:
         r = subprocess.run(
-            ["hyprctl", "hyprpaper", "reload", f",{path}"],
+            ["hyprctl", "hyprpaper", "reload", f",'{path}'"],
             capture_output=True,
         )
         if r.returncode == 0:

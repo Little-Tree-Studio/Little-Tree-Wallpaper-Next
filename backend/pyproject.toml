@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "little-tree-wallpaper"
 version = "2.0.0"
-description = "小树壁纸 Next - 桌面壁纸管理应用后端"
+description = "A modern cross-platform wallpaper manager for Bing, Windows Spotlight, custom sources and more."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -74,4 +74,6 @@ warn_unused_configs = true
 ignore_missing_imports = true
 
 [dependency-groups]
-dev = []
+dev = [
+    "pyinstaller>=6.21.0",
+]

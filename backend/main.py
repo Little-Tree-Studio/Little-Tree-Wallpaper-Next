@@ -27,6 +27,7 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
 
 from backend.api import BackendAPI  # noqa: E402
+from backend.app_meta import APP_NAME, BUILD_TIME, GIT_COMMIT, VERSION  # noqa: E402
 from backend.logging_setup import LOG_DIR  # noqa: E402
 from backend.logging_setup import configure as configure_logging
 from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir  # noqa: E402
@@ -64,8 +65,9 @@ def _write_log_header() -> None:
     header = "\n".join(
         [
             "=" * 60,
-            "Little Tree Wallpaper Next - Session started",
-            f"Version: {_app_version()}",
+            f"{APP_NAME} - Session started",
+            f"Version: {VERSION} (commit {GIT_COMMIT or 'dev'})",
+            f"Built:   {BUILD_TIME or 'unknown'}",
             f"Platform: {sys.platform}",
             f"Python: {sys.version.replace(chr(10), ' ')}",
             f"Cache directory: {get_cache_dir()}",
@@ -76,13 +78,8 @@ def _write_log_header() -> None:
 
 
 def _app_version() -> str:
-    """Return the application version from package metadata if available."""
-    try:
-        from importlib.metadata import version
-
-        return version("little-tree-wallpaper")
-    except Exception:
-        return "2.0.0"
+    """Return the application version constant from :mod:`backend.app_meta`."""
+    return VERSION
 
 
 def _latest_log_file() -> Path | None:
@@ -232,7 +229,7 @@ def _ensure_frontend(frontend_dir: Path) -> Path:
     frontend_dir.mkdir(parents=True, exist_ok=True)
     index_html.write_text(
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<title>小树壁纸 Next</title></head>"
+        f"<title>{APP_NAME}</title></head>"
         "<body><div id='root'><h1>前端未构建</h1>"
         "<p>请在 frontend 目录运行 npm install && npm run build</p></div></body></html>",
         encoding="utf-8",
@@ -267,7 +264,7 @@ def main() -> None:
 
     try:
         webview.create_window(
-            title="小树壁纸 Next",
+            title=APP_NAME,
             url=launch_url,
             width=1200,
             height=800,

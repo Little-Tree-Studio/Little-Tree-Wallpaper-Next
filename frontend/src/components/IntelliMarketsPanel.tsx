@@ -81,6 +81,48 @@ function SourceIcon({ src, size = 32 }: { src?: string | null; size?: number }) 
   return <img src={src} alt="" className={cls} style={style} onError={() => setErr(true)} />;
 }
 
+function GalleryImage({
+  src,
+  fallbackSrc,
+  alt,
+  className,
+  onError,
+}: {
+  src: string;
+  fallbackSrc?: string;
+  alt?: string;
+  className?: string;
+  onError?: (e: React.SyntheticEvent<HTMLImageElement, Event>) => void;
+}) {
+  const [failed, setFailed] = useState(false);
+  const [usingFallback, setUsingFallback] = useState(false);
+
+  if (failed) {
+    return (
+      <div className={`flex flex-col items-center justify-center gap-1 bg-surface-secondary text-muted ${className || ''}`}>
+        <ImageIcon size={24} />
+        <span className="text-xs">加载失败</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={usingFallback && fallbackSrc ? fallbackSrc : src}
+      alt={alt}
+      className={className}
+      onError={(e) => {
+        if (!usingFallback && fallbackSrc && fallbackSrc !== src) {
+          setUsingFallback(true);
+        } else {
+          setFailed(true);
+        }
+        onError?.(e);
+      }}
+    />
+  );
+}
+
 function SourceItem({
   source,
   selected,
@@ -578,15 +620,14 @@ export default function IntelliMarketsPanel() {
                           <div className="relative w-full bg-surface-secondary" style={{ aspectRatio: '4 / 3' }}>
                             {hasSrc ? (
                               <>
-                                <img
+                                <GalleryImage
                                   src={imgSrc}
+                                  fallbackSrc={item.image_url !== imgSrc ? item.image_url : undefined}
                                   alt={item.title}
                                   className="block h-full w-full object-cover"
-                                onError={(e) => {
-                                  logError(`[IM] img onError: ${item.id} ${imgSrc.slice(0, 80)}`, e);
-                                  const el = e.target as HTMLImageElement;
-                                  el.style.display = 'none';
-                                }}
+                                  onError={(e) => {
+                                    logError(`[IM] img onError: ${item.id} ${imgSrc.slice(0, 80)}`, e);
+                                  }}
                                 />
                               </>
                             ) : (

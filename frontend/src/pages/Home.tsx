@@ -2,14 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { Card, Button, Skeleton } from '@heroui/react';
 import { RefreshCw, History, ImageIcon, Copy, Heart, FolderOutput, Monitor, Download, Save } from 'lucide-react';
 import {
-  getCurrentWallpaper, setWallpaper, getSentence, getBingWallpaper,
+  getCurrentWallpaper, getSentence, getBingWallpaper,
   copyToClipboard, addFavorite,
   recordCurrentWallpaper, getBootstrapCache,
-  downloadWithProgress, saveAsWithProgress,
+  downloadWithProgress, saveAsWithProgress, setWallpaperWithProgress,
   getSettings,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import type { Hitokoto } from '@/types';
+import { safeNameForFile } from '@/lib/download';
 
 export default function Home() {
   const [wallpaper, setWallpaperInfo] = useState<{ path: string; filename: string; preview_url?: string } | null>(null);
@@ -106,22 +107,21 @@ export default function Home() {
 
   const handleSetBing = async () => {
     if (!bing?.image_url) return;
-    const path = await downloadWithProgress(bing.image_url, 'bing_today.jpg');
+    const path = await setWallpaperWithProgress(bing.image_url, 'bing_today.jpg');
     if (path) {
-      await setWallpaper(path);
       await refreshWallpaper();
     }
   };
 
   const handleDownloadBing = async () => {
     if (!bing?.image_url) return;
-    const safeName = (bing.title || 'bing').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    const safeName = safeNameForFile(bing.title, 'bing');
     await downloadWithProgress(bing.image_url, `${safeName}.jpg`);
   };
 
   const handleSaveAsBing = async () => {
     if (!bing?.image_url) return;
-    const safeName = (bing.title || 'bing').replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    const safeName = safeNameForFile(bing.title, 'bing');
     await saveAsWithProgress(bing.image_url, `${safeName}.jpg`);
   };
 

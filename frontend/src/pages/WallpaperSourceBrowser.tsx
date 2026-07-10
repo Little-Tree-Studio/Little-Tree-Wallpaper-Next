@@ -7,11 +7,14 @@ import {
 } from 'lucide-react';
 import {
   getWallpaperSources, executeWallpaperSource,
-  downloadFile, setWallpaper, addFavorite, copyToClipboard, localPreviewUrl,
+  addFavorite, copyToClipboard, localPreviewUrl,
+  setWallpaperWithProgress,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
+import SourceIcon from '@/components/SourceIcon';
 import { logError } from '@/lib/log';
-import type { WallpaperSource, WallpaperSourceApiParameter } from '@/api/backend';
+import { safeNameForFile } from '@/lib/download';
+import type { WallpaperSource, WallpaperSourceApi, WallpaperSourceApiParameter } from '@/api/backend';
 
 function getSourceParameterDefaultValue(param: WallpaperSourceApiParameter): string | boolean {
   const type = String(param.type ?? 'text').toLowerCase();
@@ -40,14 +43,31 @@ function normalizeSourceParameterValue(param: WallpaperSourceApiParameter, value
 
 interface CategoryNode {
   name: string;
+  icon?: string;
   subcategories: {
     name: string;
-    subsubcategories: string[];
+    icon?: string;
+    subsubcategories: {
+      name: string;
+      icon?: string;
+    }[];
   }[];
 }
 
 function aggregateCategories(sources: WallpaperSource[]): CategoryNode[] {
-  const root = new Map<string, Map<string, Set<string>>>();
+  const root = new Map<
+    string,
+    {
+      icon?: string;
+      subMap: Map<
+        string,
+        {
+          icon?: string;
+          ssMap: Map<string, string | undefined>;
+        }
+      >;
+    }
+  >();
   let hasUncategorized = false;
 
   for (const source of sources) {
@@ -58,22 +78,34 @@ function aggregateCategories(sources: WallpaperSource[]): CategoryNode[] {
     }
     for (const c of cats) {
       const category = c.category || '未分类';
-      const subMap = root.get(category) ?? new Map<string, Set<string>>();
-      root.set(category, subMap);
       const subcategory = c.subcategory || '';
-      if (!subcategory) continue;
-      const ssSet = subMap.get(subcategory) ?? new Set<string>();
-      subMap.set(subcategory, ssSet);
       const subsubcategory = c.subsubcategory || '';
-      if (subsubcategory) ssSet.add(subsubcategory);
+      const icon = c.icon?.trim() || undefined;
+
+      const entry = root.get(category) ?? { subMap: new Map<string, { icon?: string; ssMap: Map<string, string | undefined> }>() };
+      if (icon && !entry.icon) entry.icon = icon;
+      root.set(category, entry);
+
+      if (!subcategory) continue;
+
+      const subEntry = entry.subMap.get(subcategory) ?? { ssMap: new Map<string, string | undefined>() };
+      if (icon && !subEntry.icon) subEntry.icon = icon;
+      entry.subMap.set(subcategory, subEntry);
+
+      if (subsubcategory) {
+        if (icon && !subEntry.ssMap.has(subsubcategory)) subEntry.ssMap.set(subsubcategory, icon);
+        else if (!subEntry.ssMap.has(subsubcategory)) subEntry.ssMap.set(subsubcategory, undefined);
+      }
     }
   }
 
-  const nodes: CategoryNode[] = Array.from(root.entries()).map(([name, subMap]) => ({
+  const nodes: CategoryNode[] = Array.from(root.entries()).map(([name, { icon, subMap }]) => ({
     name,
-    subcategories: Array.from(subMap.entries()).map(([subName, ssSet]) => ({
+    icon,
+    subcategories: Array.from(subMap.entries()).map(([subName, { icon: subIcon, ssMap }]) => ({
       name: subName,
-      subsubcategories: Array.from(ssSet),
+      icon: subIcon,
+      subsubcategories: Array.from(ssMap.entries()).map(([ssName, ssIcon]) => ({ name: ssName, icon: ssIcon })),
     })),
   }));
 
@@ -84,19 +116,60 @@ function aggregateCategories(sources: WallpaperSource[]): CategoryNode[] {
   return nodes;
 }
 
-function sourceMatchesCategory(
-  source: WallpaperSource,
+interface ApiItem {
+  source: WallpaperSource;
+  api: WallpaperSourceApi;
+  categoryPaths: { category: string; subcategory: string; subsubcategory: string }[];
+}
+
+function buildSourceCategoryMap(source: WallpaperSource): Map<string, { category: string; subcategory: string; subsubcategory: string }> {
+  const map = new Map<string, { category: string; subcategory: string; subsubcategory: string }>();
+  for (const c of source.categories ?? []) {
+    map.set(c.id, {
+      category: c.category || '未分类',
+      subcategory: c.subcategory || '',
+      subsubcategory: c.subsubcategory || '',
+    });
+  }
+  return map;
+}
+
+function flattenApis(sources: WallpaperSource[]): ApiItem[] {
+  const items: ApiItem[] = [];
+  for (const source of sources) {
+    if (!source.apis || source.apis.length === 0) continue;
+    const catMap = buildSourceCategoryMap(source);
+    for (const api of source.apis) {
+      const paths: { category: string; subcategory: string; subsubcategory: string }[] = [];
+      if (api.categories && api.categories.length > 0) {
+        for (const catId of api.categories) {
+          const path = catMap.get(catId);
+          if (path) paths.push(path);
+        }
+      }
+      if (paths.length === 0) {
+        paths.push({ category: '未分类', subcategory: '', subsubcategory: '' });
+      }
+      items.push({ source, api, categoryPaths: paths });
+    }
+  }
+  return items;
+}
+
+function apiMatchesCategory(
+  item: ApiItem,
   category?: string,
   subcategory?: string,
   subsubcategory?: string,
 ): boolean {
   if (!category) return true;
-  if (category === '未分类') return !source.categories || source.categories.length === 0;
-  const cats = source.categories ?? [];
-  return cats.some((c) => {
-    if ((c.category || '未分类') !== category) return false;
-    if (subcategory && (c.subcategory || '') !== subcategory) return false;
-    if (subsubcategory && (c.subsubcategory || '') !== subsubcategory) return false;
+  if (category === '未分类') {
+    return item.categoryPaths.some((p) => p.category === '未分类');
+  }
+  return item.categoryPaths.some((p) => {
+    if (p.category !== category) return false;
+    if (subcategory && p.subcategory !== subcategory) return false;
+    if (subsubcategory && p.subsubcategory !== subsubcategory) return false;
     return true;
   });
 }
@@ -139,20 +212,20 @@ export default function WallpaperSourceBrowser() {
     [currentCategory, selectedSubcategory],
   );
 
-  const filteredSources = useMemo(
-    () => sources.filter((s) => sourceMatchesCategory(s, selectedCategory || undefined, selectedSubcategory || undefined, selectedSubsubcategory || undefined)),
-    [sources, selectedCategory, selectedSubcategory, selectedSubsubcategory],
+  const allApis = useMemo(() => flattenApis(sources), [sources]);
+
+  const filteredApis = useMemo(
+    () => allApis.filter((item) => apiMatchesCategory(item, selectedCategory || undefined, selectedSubcategory || undefined, selectedSubsubcategory || undefined)),
+    [allApis, selectedCategory, selectedSubcategory, selectedSubsubcategory],
   );
 
-  const selectedSource = useMemo(
-    () => sources.find((s) => s.identifier === selectedSourceId),
-    [sources, selectedSourceId],
+  const selectedItem = useMemo(
+    () => allApis.find((item) => item.source.identifier === selectedSourceId && item.api.name === selectedApiName),
+    [allApis, selectedSourceId, selectedApiName],
   );
 
-  const selectedApi = useMemo(
-    () => selectedSource?.apis?.find((a) => a.name === selectedApiName),
-    [selectedSource, selectedApiName],
-  );
+  const selectedSource = selectedItem?.source;
+  const selectedApi = selectedItem?.api;
 
   const loadSources = useCallback(async () => {
     setLoading(true);
@@ -183,38 +256,32 @@ export default function WallpaperSourceBrowser() {
   }, [categories, selectedCategory]);
 
   useEffect(() => {
-    if (filteredSources.length === 0) {
+    if (filteredApis.length === 0) {
       setSelectedSourceId('');
+      setSelectedApiName('');
       return;
     }
-    if (!selectedSourceId || !filteredSources.some((s) => s.identifier === selectedSourceId)) {
-      setSelectedSourceId(filteredSources[0].identifier);
+    if (!selectedSourceId || !selectedApiName || !filteredApis.some((item) => item.source.identifier === selectedSourceId && item.api.name === selectedApiName)) {
+      const first = filteredApis[0];
+      setSelectedSourceId(first.source.identifier);
+      setSelectedApiName(first.api.name);
     }
-  }, [filteredSources, selectedSourceId]);
+  }, [filteredApis, selectedSourceId, selectedApiName]);
 
   useEffect(() => {
-    const source = sources.find((s) => s.identifier === selectedSourceId);
-    if (!source) {
-      setSelectedApiName('');
+    if (!selectedApi) {
       setParameterValues({});
       return;
     }
-    const api = source.apis?.find((a) => a.name === selectedApiName) ?? source.apis?.[0];
-    if (api) {
-      if (selectedApiName !== api.name) setSelectedApiName(api.name);
-      setParameterValues((prev) => {
-        const next: Record<string, unknown> = {};
-        api.parameters?.forEach((param, i) => {
-          const key = param.key || `__param_${i}`;
-          next[key] = key in prev ? prev[key] : getSourceParameterDefaultValue(param);
-        });
-        return next;
+    setParameterValues((prev) => {
+      const next: Record<string, unknown> = {};
+      selectedApi.parameters?.forEach((param, i) => {
+        const key = param.key || `__param_${i}`;
+        next[key] = key in prev ? prev[key] : getSourceParameterDefaultValue(param);
       });
-    } else {
-      setSelectedApiName('');
-      setParameterValues({});
-    }
-  }, [selectedSourceId, sources, selectedApiName]);
+      return next;
+    });
+  }, [selectedApi]);
 
   const handleExecute = useCallback(async () => {
     if (!selectedSourceId || !selectedApiName) return;
@@ -238,10 +305,9 @@ export default function WallpaperSourceBrowser() {
     }
   }, [selectedSourceId, selectedApiName, sources, parameterValues]);
 
-  const handleSetWallpaper = useCallback(async (url: string, title: string) => {
-    const safeName = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 50) || 'wallpaper';
-    const path = await downloadFile(url, `${safeName}.jpg`);
-    if (path) await setWallpaper(path);
+  const handleSetWallpaper = useCallback((url: string, title: string) => {
+    const safeName = safeNameForFile(title, 'wallpaper');
+    return setWallpaperWithProgress(url, `${safeName}.jpg`);
   }, []);
 
   const handleFavorite = useCallback(async (item: any) => {
@@ -326,7 +392,10 @@ export default function WallpaperSourceBrowser() {
                 <TagGroup.List>
                   {categories.map((c) => (
                     <Tag key={c.name} id={c.name} textValue={c.name}>
-                      {c.name}
+                      <span className="flex items-center gap-1">
+                        {c.icon && <SourceIcon src={c.icon} name={c.name} size="xs" />}
+                        {c.name}
+                      </span>
                     </Tag>
                   ))}
                 </TagGroup.List>
@@ -345,7 +414,10 @@ export default function WallpaperSourceBrowser() {
                   <TagGroup.List>
                     {currentCategory.subcategories.map((s) => (
                       <Tag key={s.name} id={s.name} textValue={s.name}>
-                        {s.name}
+                        <span className="flex items-center gap-1">
+                          {s.icon && <SourceIcon src={s.icon} name={s.name} size="xs" />}
+                          {s.name}
+                        </span>
                       </Tag>
                     ))}
                   </TagGroup.List>
@@ -363,8 +435,11 @@ export default function WallpaperSourceBrowser() {
                 >
                   <TagGroup.List>
                     {currentSubcategory.subsubcategories.map((ss) => (
-                      <Tag key={ss} id={ss} textValue={ss}>
-                        {ss}
+                      <Tag key={ss.name} id={ss.name} textValue={ss.name}>
+                        <span className="flex items-center gap-1">
+                          {ss.icon && <SourceIcon src={ss.icon} name={ss.name} size="xs" />}
+                          {ss.name}
+                        </span>
                       </Tag>
                     ))}
                   </TagGroup.List>
@@ -373,38 +448,40 @@ export default function WallpaperSourceBrowser() {
             </div>
           )}
 
-          {filteredSources.length === 0 ? (
-            <div className="py-6 text-center text-muted">该分类下暂无壁纸源</div>
+          {filteredApis.length === 0 ? (
+            <div className="py-6 text-center text-muted">该分类下暂无 API</div>
           ) : (
             <div className="grid grid-cols-2 gap-3 px-1 sm:grid-cols-3 md:grid-cols-4">
-              {filteredSources.map((s) => (
+              {filteredApis.map((item) => (
                 <Card
-                  key={s.identifier}
+                  key={`${item.source.identifier}:${item.api.name}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setSelectedSourceId(s.identifier)}
+                  onClick={() => {
+                    setSelectedSourceId(item.source.identifier);
+                    setSelectedApiName(item.api.name);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      setSelectedSourceId(s.identifier);
+                      setSelectedSourceId(item.source.identifier);
+                      setSelectedApiName(item.api.name);
                     }
                   }}
                   className={`space-y-2 p-3 transition-colors ${
-                    selectedSourceId === s.identifier
+                    selectedSourceId === item.source.identifier && selectedApiName === item.api.name
                       ? 'ring-2 ring-primary bg-surface'
                       : 'hover:bg-surface'
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    {s.logo && (
-                      <img src={s.logo} alt="" className="h-8 w-8 rounded object-cover" />
-                    )}
+                    <SourceIcon src={item.api.logo || item.source.logo} name={item.api.name} size="md" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium">{s.name}</div>
+                      <div className="truncate font-medium">{item.api.name}</div>
                     </div>
                   </div>
-                  {s.description && (
-                    <div className="text-xs text-muted">{s.description}</div>
+                  {item.api.description && (
+                    <div className="text-xs text-muted">{item.api.description}</div>
                   )}
                 </Card>
               ))}
@@ -425,32 +502,16 @@ export default function WallpaperSourceBrowser() {
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-          {selectedSource ? (
+          {selectedApi ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3">
               <div className="flex shrink-0 items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  {selectedSource.logo && (
-                    <img src={selectedSource.logo} alt="" className="h-6 w-6 rounded object-cover" />
-                  )}
-                  <div className="font-medium">{selectedSource.name}</div>
-                  {selectedSource.apis && selectedSource.apis.length === 1 && (
-                    <span className="text-xs text-muted">{selectedSource.apis[0].name}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <SourceIcon src={selectedApi.logo || selectedSource?.logo} name={selectedApi.name} size="sm" />
+                  <div className="font-medium truncate">{selectedApi.name}</div>
+                  {selectedApi.description && (
+                    <span className="text-xs text-muted truncate">{selectedApi.description}</span>
                   )}
                 </div>
-                {selectedSource.apis && selectedSource.apis.length > 1 && (
-                  <div className="flex flex-wrap gap-1">
-                    {selectedSource.apis.map((api) => (
-                      <Button
-                        key={api.name}
-                        size="sm"
-                        variant={selectedApiName === api.name ? 'primary' : 'ghost'}
-                        onPress={() => setSelectedApiName(api.name)}
-                      >
-                        {api.name}
-                      </Button>
-                    ))}
-                  </div>
-                )}
               </div>
 
               {selectedApi && selectedApi.parameters && selectedApi.parameters.length > 0 && (
@@ -596,7 +657,7 @@ export default function WallpaperSourceBrowser() {
             </div>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted">
-              请选择壁纸源
+              请选择 API
             </div>
           )}
         </div>

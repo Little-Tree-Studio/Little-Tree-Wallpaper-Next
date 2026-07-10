@@ -31,6 +31,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
+from backend.app_meta import APP_NAME_EN, VERSION
+
 # API members that must never be callable over RPC even though they are public.
 # * service objects -> would bypass the intended API surface
 # * set_api_token   -> could change the preview-URL token (integrity/DoS) and is
@@ -53,6 +55,9 @@ _BLOCKED_MEMBERS = frozenset(
 )
 
 _MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB guard for RPC payloads
+# 200 MiB cap for the /api/save-* image uploads. 8K JPEGs top out around 25 MiB
+# so this leaves a comfortable margin without enabling truly unbounded writes.
+_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 # RPC methods that must not themselves produce log entries. Inspecting the logs
 # (e.g. the stats/count shown on the Help page) would otherwise inflate its own
@@ -205,8 +210,8 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         frontend_dir: Directory containing the built frontend (``index.html``).
     """
     app = FastAPI(
-        title="Little Tree Wallpaper",
-        version="2.0.0",
+        title=APP_NAME_EN,
+        version=VERSION,
         # Disable auto docs so the API surface is not discoverable.
         docs_url=None,
         redoc_url=None,
@@ -301,9 +306,13 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         request: Request,
         _: None = Depends(verify_token),
     ) -> dict[str, Any]:
-        """Persist a raw binary upload into the downloads directory."""
+        """Persist a raw binary upload into the downloads directory.
+
+        Uses its own (much larger) body cap so 4K/8K JPEGs can be uploaded
+        without colliding with the RPC JSON envelope limit.
+        """
         body = await request.body()
-        if len(body) > _MAX_BODY_BYTES:
+        if len(body) > _MAX_UPLOAD_BYTES:
             logger.warning("save-download rejected oversized body ({} bytes)", len(body))
             raise HTTPException(status_code=413, detail="request body too large")
         saved_path = await run_in_threadpool(api.save_blob_to_downloads, body, filename)
@@ -320,10 +329,11 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
     ) -> dict[str, Any]:
         """Prompt for a save location and persist a raw binary upload there.
 
-        Returns ``{"path": null}`` when the user cancels the dialog.
+        Uses its own body cap independent of the RPC envelope. Returns
+        ``{"path": null}`` when the user cancels the dialog.
         """
         body = await request.body()
-        if len(body) > _MAX_BODY_BYTES:
+        if len(body) > _MAX_UPLOAD_BYTES:
             logger.warning("save-as rejected oversized body ({} bytes)", len(body))
             raise HTTPException(status_code=413, detail="request body too large")
         saved_path = await run_in_threadpool(api.save_blob_as, body, filename)
@@ -336,9 +346,12 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         request: Request,
         _: None = Depends(verify_token),
     ) -> dict[str, Any]:
-        """Copy a raw binary image upload to the system clipboard."""
+        """Copy a raw binary image upload to the system clipboard.
+
+        Uses its own body cap independent of the RPC envelope.
+        """
         body = await request.body()
-        if len(body) > _MAX_BODY_BYTES:
+        if len(body) > _MAX_UPLOAD_BYTES:
             logger.warning("copy-image rejected oversized body ({} bytes)", len(body))
             raise HTTPException(status_code=413, detail="request body too large")
         ok = await run_in_threadpool(api.copy_image_to_clipboard, body)

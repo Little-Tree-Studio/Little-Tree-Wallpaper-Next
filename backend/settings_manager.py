@@ -4,10 +4,11 @@ from typing import Any
 
 from loguru import logger
 
+from .app_meta import VERSION
 from .paths import get_config_dir
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "metadata": {"version": "2.0.0"},
+    "metadata": {"version": VERSION},
     "ui": {
         "language": "zh-CN",
         "theme": "system",

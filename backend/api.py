@@ -18,8 +18,23 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from loguru import logger
 
+from backend.app_meta import (
+    VERSION,
+    get_app_info,
+    get_build_info,
+    get_metadata,
+)
 from backend.paths import ensure_dirs, get_cache_dir, get_data_dir
 from backend.services.bing import BingService
+from backend.services.download import (
+    DownloadError,
+    WriteResult,
+    stream_to_file_atomic,
+    write_blob_atomic,
+)
+from backend.services.download import (
+    sanitize_filename as _shared_sanitize_filename,
+)
 from backend.services.intelligent_market import IntelligentMarketService
 from backend.services.ltws import LTWSService
 from backend.services.sniff import SniffService
@@ -155,6 +170,13 @@ class BackendAPI:
     def _download_file_sync(
         self, url: str, save_dir: Path, filename: str | None = None, headers: dict[str, str] | None = None
     ) -> str | None:
+        """Stream ``url`` into ``save_dir`` with full integrity checks.
+
+        Returns the saved path, or ``None`` on failure. The write is staged in
+        a ``*.part`` sibling and atomically renamed into place; the size is
+        compared against the advertised ``Content-Length`` and the bytes are
+        verified to decode as an image.
+        """
         import requests
 
         try:
@@ -163,29 +185,46 @@ class BackendAPI:
                 path = Path(preview_path)
                 if path.is_file() and self.is_path_safe(str(path)):
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    if not filename:
-                        filename = path.name or "download.jpg"
-                    dest = save_dir / self._sanitize_filename(filename)
+                    name = filename or path.name or "download.jpg"
+                    dest = save_dir / _shared_sanitize_filename(name)
                     shutil.copy2(path, dest)
                     return str(dest)
 
             h = dict(headers or {})
             h.setdefault("User-Agent", self.store.get("sniff.user_agent", "Mozilla/5.0"))
-            resp = requests.get(url, headers=h, timeout=60, stream=True)
+            resp = requests.get(url, headers=h, timeout=(10, 120), stream=True)
             resp.raise_for_status()
+
+            content_type = resp.headers.get("Content-Type", "")
+            if content_type and not content_type.split(";", 1)[0].strip().lower().startswith("image/"):
+                raise DownloadError(
+                    f"服务器返回非图片内容 (Content-Type: {content_type})",
+                    code="bad_content_type",
+                )
+
             save_dir.mkdir(parents=True, exist_ok=True)
             if not filename:
-                cd = resp.headers.get("Content-Disposition", "")
-                if "filename=" in cd:
-                    filename = cd.split("filename=")[-1].strip('"')
-                else:
-                    filename = Path(url.split("?")[0].split("/")[-1]) or "download.jpg"
-            filepath = save_dir / filename
-            with open(filepath, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            return str(filepath)
+                filename = self._filename_from_response(resp, url) or "download.jpg"
+            dest = save_dir / _shared_sanitize_filename(filename)
+
+            try:
+                total_header = resp.headers.get("Content-Length")
+                expected_size = int(total_header) if (total_header and total_header.isdigit()) else None
+                with resp.raw as source:
+                    result: WriteResult = stream_to_file_atomic(
+                        dest,
+                        source,
+                        expected_size=expected_size,
+                        content_type=content_type,
+                    )
+            finally:
+                resp.close()
+
+            logger.info("Downloaded {} ({} bytes) -> {}", url, result.size, result.path)
+            return str(result.path)
+        except DownloadError as e:
+            logger.warning("Download rejected: {} ({})", e, e.code)
+            return None
         except Exception as e:
             logger.error("Download failed: {}", e)
             return None
@@ -203,6 +242,33 @@ class BackendAPI:
         if not paths:
             return None
         return unquote(paths[0])
+
+    @staticmethod
+    def _filename_from_response(resp: Any, url: str) -> str | None:
+        """Recover a filename from Content-Disposition or the URL path.
+
+        Supports the legacy ``filename="..."`` form and the RFC 5987
+        ``filename*=UTF-8''...`` form so that non-ASCII names round-trip
+        correctly. Returns ``None`` if neither yields a usable value.
+        """
+        cd = resp.headers.get("Content-Disposition", "")
+        if cd:
+            star = re.search(r"filename\*\s*=\s*([^']+)''([^;]+)", cd, re.IGNORECASE)
+            if star:
+                try:
+                    from urllib.parse import unquote
+
+                    return unquote(star.group(2))
+                except Exception:
+                    pass
+            quoted = re.search(r'filename\s*=\s*"([^"]+)"', cd, re.IGNORECASE)
+            if quoted:
+                return quoted.group(1)
+            bare = re.search(r"filename\s*=\s*([^;]+)", cd, re.IGNORECASE)
+            if bare:
+                return bare.group(1).strip().strip('"')
+        path = url.split("?", 1)[0].rsplit("/", 1)[-1]
+        return path or None
 
     def get_current_wallpaper(self) -> dict[str, str] | None:
         path = get_sys_wallpaper()
@@ -523,7 +589,6 @@ class BackendAPI:
                 # Prefer pywin32 when available; it handles window/thread
                 # clipboard ownership correctly inside pywebview.
                 try:
-                    import win32clipboard
 
                     return self._copy_image_to_clipboard_win32_pywin32(image)
                 except Exception as exc:  # noqa: BLE001
@@ -564,7 +629,6 @@ class BackendAPI:
     def _copy_image_to_clipboard_win32(image: Any) -> bool:
         """Copy a PIL image to the Windows clipboard as CF_DIB."""
         import ctypes
-        from ctypes import wintypes
 
         output = io.BytesIO()
         image.convert("RGB").save(output, "BMP")
@@ -663,9 +727,7 @@ class BackendAPI:
     @staticmethod
     def _sanitize_filename(name: str) -> str:
         """Reduce a client-supplied filename to a safe basename (no traversal)."""
-        base = Path(name or "").name
-        base = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", base).strip(" .")
-        return base or "download"
+        return _shared_sanitize_filename(name)
 
     def _pick_save_path(self, suggested_name: str) -> str | None:
         """Open a native Save dialog and return the chosen path (or None)."""
@@ -685,25 +747,36 @@ class BackendAPI:
             root.destroy()
 
     def save_blob_to_downloads(self, data: bytes, filename: str) -> str | None:
-        """Persist raw ``data`` bytes into the downloads directory."""
+        """Persist raw ``data`` bytes into the downloads directory atomically.
+
+        Returns the final path on success, ``None`` on failure. The write is
+        staged in a ``*.part`` sibling and renamed into place so that an
+        interrupted upload never leaves a half-written ``.jpg``.
+        """
         try:
             save_dir = self._downloads_dir()
             save_dir.mkdir(parents=True, exist_ok=True)
             filepath = save_dir / self._sanitize_filename(filename)
-            filepath.write_bytes(data)
-            return str(filepath)
+            result = write_blob_atomic(filepath, data)
+            logger.info("Saved download to {} ({} bytes)", result.path, result.size)
+            return str(result.path)
         except Exception as e:
             logger.error(f"Save blob to downloads error: {e}")
             return None
 
     def save_blob_as(self, data: bytes, filename: str) -> str | None:
-        """Prompt for a save location and persist raw ``data`` bytes there."""
+        """Prompt for a save location and persist raw ``data`` bytes there.
+
+        Returns the chosen path, or ``None`` if the user cancels.
+        """
         try:
             chosen = self._pick_save_path(self._sanitize_filename(filename))
             if not chosen:
                 return None
-            Path(chosen).write_bytes(data)
-            return chosen
+            dest = Path(chosen)
+            write_blob_atomic(dest, data)
+            logger.info("Saved file as {} ({} bytes)", dest, dest.stat().st_size)
+            return str(dest)
         except Exception as e:
             logger.error(f"Save blob as error: {e}")
             return None
@@ -824,10 +897,70 @@ class BackendAPI:
 
     def create_favorite_folder(self, name: str, description: str = "") -> dict[str, Any]:
         data = self._load_favorites()
-        folder = {"id": uuid.uuid4().hex, "name": name, "description": description, "order": len(data["folders"])}
+        normalized_name = name.strip()
+        normalized_description = description.strip()
+        if not normalized_name:
+            raise ValueError("收藏夹名称不能为空")
+        if any(str(folder.get("name", "")).strip() == normalized_name for folder in data.get("folders", [])):
+            raise ValueError("已存在同名收藏夹")
+        folder = {
+            "id": uuid.uuid4().hex,
+            "name": normalized_name,
+            "description": normalized_description,
+            "order": len(data["folders"]),
+        }
         data["folders"].append(folder)
         self._save_favorites(data)
         return folder
+
+    def update_favorite_folder(self, folder_id: str, name: str, description: str = "") -> dict[str, Any]:
+        data = self._load_favorites()
+        normalized_name = name.strip()
+        normalized_description = description.strip()
+        if not normalized_name:
+            raise ValueError("收藏夹名称不能为空")
+
+        target_index = -1
+        for index, folder in enumerate(data.get("folders", [])):
+            if folder.get("id") == folder_id:
+                target_index = index
+                break
+
+        if target_index < 0:
+            raise ValueError("收藏夹不存在")
+
+        for folder in data.get("folders", []):
+            if folder.get("id") != folder_id and str(folder.get("name", "")).strip() == normalized_name:
+                raise ValueError("已存在同名收藏夹")
+
+        updated_folder = {
+            **data["folders"][target_index],
+            "name": normalized_name,
+            "description": normalized_description,
+        }
+        data["folders"][target_index] = updated_folder
+        self._save_favorites(data)
+        return updated_folder
+
+    def delete_favorite_folder(self, folder_id: str) -> None:
+        if folder_id == "default":
+            raise ValueError("默认收藏夹不能删除")
+
+        data = self._load_favorites()
+        folders = data.get("folders", [])
+        target_folder = next((folder for folder in folders if folder.get("id") == folder_id), None)
+        if target_folder is None:
+            raise ValueError("收藏夹不存在")
+
+        data["folders"] = [folder for folder in folders if folder.get("id") != folder_id]
+        for index, folder in enumerate(data["folders"]):
+            folder["order"] = index
+
+        for item in data.get("items", []):
+            if item.get("folder_id") == folder_id:
+                item["folder_id"] = "default"
+
+        self._save_favorites(data)
 
     def get_store_resources(self, type: str) -> list[dict[str, Any]]:
         return []
@@ -1100,10 +1233,18 @@ class BackendAPI:
         return self._build_preview_url(image_path, max_size=max_size)
 
     def get_version(self) -> str:
-        return "2.0.0"
+        return VERSION
 
     def get_platform(self) -> str:
         return sys.platform
+
+    @staticmethod
+    def get_build_info() -> dict[str, Any]:
+        return get_build_info()
+
+    @staticmethod
+    def get_app_info() -> dict[str, str]:
+        return get_app_info()
 
     # --- New API methods for enhanced functionality ---
 
@@ -1165,6 +1306,8 @@ class BackendAPI:
             "history": self._load_history(),
             "sources": sources,
             "plugins": [],
+            "build_info": get_build_info(),
+            "app": get_metadata(),
             "runtime": {
                 "debug": {"enabled": False, "session_enabled": False, "open_devtools_on_start": True},
                 "window": {

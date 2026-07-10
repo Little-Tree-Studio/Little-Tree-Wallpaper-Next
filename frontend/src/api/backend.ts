@@ -1,5 +1,10 @@
 import { toast } from '@heroui/react';
 import { logError } from '@/lib/log';
+import {
+  fetchBlobWithProgress,
+  formatProgressDescription,
+  runWithProgressToast,
+} from '@/lib/download';
 import type {
   WallpaperInfo,
   BingWallpaper,
@@ -152,6 +157,52 @@ export async function setWallpaper(path: string): Promise<void> {
   return call('set_wallpaper', path);
 }
 
+/** Static application identity (rarely changes). Sourced from the
+ *  project-root ``build/app_info.json``. */
+export interface AppInfo {
+  /** Localised application name (Chinese). */
+  name: string;
+  /** English application name. */
+  name_en: string;
+  /** Python / npm package name, e.g. ``"little-tree-wallpaper"``. */
+  package_name: string;
+  /** One-line description, suitable for the about screen. */
+  description: string;
+  /** Author / vendor name. */
+  author: string;
+  /** Public repository URL, or empty when not published. */
+  repo_url: string;
+}
+
+export interface BuildInfo {
+  /** Build channel: ``"beta"`` (development) or ``"stable"`` (release). The
+   *  value is baked into the binary at packaging time and cannot be changed
+   *  at runtime. */
+  build_type: string;
+  /** Application version, e.g. ``"2.0.0"``. For source runs this is
+   *  ``"0.0.0"`` (no build provenance). */
+  version: string;
+  /** ISO-8601 timestamp the build was produced. For source runs this is
+   *  the process start time. */
+  build_time: string;
+  /** Short git commit hash the build was produced from. ``"source"`` for
+   *  a source run. */
+  git_commit: string;
+  /** How the build was produced (``"manual"``, ``"pyinstaller"``, ...).
+   *  ``"source"`` when running from source. */
+  built_by: string;
+  /** True when the app is running from source (``build.json`` missing). */
+  source_run: boolean;
+}
+
+export async function getAppInfo(): Promise<AppInfo> {
+  return call<AppInfo>('get_app_info');
+}
+
+export async function getBuildInfo(): Promise<BuildInfo> {
+  return call<BuildInfo>('get_build_info');
+}
+
 export async function getBingWallpaper(): Promise<BingWallpaper | null> {
   return call('get_bing_wallpaper');
 }
@@ -226,29 +277,6 @@ export async function saveBlobAs(blob: Blob, filename: string): Promise<string |
   }
 }
 
-async function fetchBlobWithProgress(
-  url: string,
-  onProgress: (percent: number | null, received: number, total: number | null) => void
-): Promise<Blob> {
-  const res = await fetch(url, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const total = Number(res.headers.get('content-length')) || null;
-  const reader = res.body!.getReader();
-  const chunks: BlobPart[] = [];
-  let received = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    onProgress(total ? Math.round((received / total) * 100) : null, received, total);
-  }
-
-  return new Blob(chunks);
-}
-
 export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
   await waitForApi();
   try {
@@ -267,182 +295,195 @@ export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
 }
 
 export async function copyImageToClipboardWithProgress(url: string): Promise<boolean> {
-  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+  const blob = await runWithProgressToast<Blob | null>(
+    {
+      loadingLabel: '正在拉取数据…',
+      loadingDescription: formatProgressDescription,
+      failureLabel: '拉取数据失败，请重试',
+    },
+    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders() })
+  );
+  if (!blob) return false;
 
-  try {
-    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-      toast.close(loadingId);
-      const desc = percent !== null
-        ? `已下载 ${percent}%`
-        : `已下载 ${(received / 1024).toFixed(1)} KB`;
-      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
-    });
-
-    toast.close(loadingId);
-    loadingId = toast('正在复制到剪贴板…', { isLoading: true, timeout: 0 });
-    const ok = await copyImageToClipboard(blob);
-    toast.close(loadingId);
-    if (ok) {
-      toast.success('已复制图片', { timeout: 3000 });
-    } else {
-      toast.danger('复制图片失败', { timeout: 0 });
-    }
-    return ok;
-  } catch (e) {
-    toast.close(loadingId);
-    toast.danger('拉取数据失败，请重试', { timeout: 0 });
-    return false;
-  }
+  const copied = await runWithProgressToast<boolean>(
+    {
+      loadingLabel: '正在复制到剪贴板…',
+      successLabel: '已复制图片',
+      failureLabel: '复制图片失败',
+    },
+    async () => copyImageToClipboard(blob)
+  );
+  return copied === true;
 }
 
 export async function downloadWithProgress(url: string, filename: string): Promise<string | null> {
-  let loadingId = toast('正在下载…', { isLoading: true, timeout: 0 });
-
-  try {
-    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-      toast.close(loadingId);
-      const desc = percent !== null
-        ? `已下载 ${percent}%`
-        : `已下载 ${(received / 1024).toFixed(1)} KB`;
-      loadingId = toast('正在下载…', { isLoading: true, timeout: 0, description: desc });
-    });
-
-    toast.close(loadingId);
-    const path = await saveBlobToDownloads(blob, filename);
-    if (path) {
-      toast.success('下载完成', { timeout: 3000 });
-    } else {
-      toast.danger('保存失败', { timeout: 0 });
+  return runWithProgressToast<string | null>(
+    {
+      loadingLabel: '正在下载…',
+      loadingDescription: formatProgressDescription,
+      successLabel: '下载完成',
+      failureLabel: '下载失败，请重试',
+    },
+    async (onProgress) => {
+      const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders() });
+      const path = await saveBlobToDownloads(blob, filename);
+      if (!path) {
+        toast.danger('保存失败', { timeout: 0 });
+      }
+      return path;
     }
-    return path;
-  } catch (e) {
-    toast.close(loadingId);
-    toast.danger('下载失败，请重试', { timeout: 0 });
-    return null;
-  }
+  );
 }
 
 export async function saveAsWithProgress(url: string, filename: string): Promise<string | null> {
-  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
-
-  try {
-    // fetch() works for both http(s) and data: URLs, so the flow is unified.
-    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-      toast.close(loadingId);
-      const desc = percent !== null
-        ? `已下载 ${percent}%`
-        : `已下载 ${(received / 1024).toFixed(1)} KB`;
-      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
-    });
-
-    toast.close(loadingId);
-    const path = await saveBlobAs(blob, filename);
-    if (path) {
-      toast.success('保存成功', { timeout: 3000 });
-    } else {
-      toast.info('已取消保存', { timeout: 0 });
+  const result = await runWithProgressToast<{ path: string | null; cancelled: boolean }>(
+    {
+      loadingLabel: '正在拉取数据…',
+      loadingDescription: formatProgressDescription,
+      successLabel: '保存成功',
+      failureLabel: '拉取数据失败，请重试',
+    },
+    async (onProgress) => {
+      const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders() });
+      const path = await saveBlobAs(blob, filename);
+      return { path, cancelled: path === null };
     }
-    return path;
-  } catch (e) {
-    toast.close(loadingId);
-    toast.danger('拉取数据失败，请重试', { timeout: 0 });
+  );
+  if (!result) return null;
+  if (result.cancelled) {
+    toast.info('已取消保存', { timeout: 0 });
     return null;
   }
+  return result.path;
 }
 
-/**
- * 与 saveAsWithProgress 相同的拉取数据流程，但下载完成后将文件设为系统壁纸。
- * 如果是本地路径（localPath）则直接设为壁纸，跳过下载。
- */
 export async function setWallpaperWithProgress(
   url: string,
   filename: string,
   localPath?: string | null,
 ): Promise<string | null> {
   if (localPath) {
-    try {
-      await setWallpaper(localPath);
-      toast.success('已设为壁纸', { timeout: 3000 });
-      return localPath;
-    } catch {
-      toast.danger('设为壁纸失败', { timeout: 0 });
-      return null;
-    }
+    return runWithProgressToast<string | null>(
+      {
+        loadingLabel: '正在应用壁纸…',
+        successLabel: '已设为壁纸',
+        failureLabel: '设为壁纸失败',
+      },
+      async () => {
+        await setWallpaper(localPath);
+        return localPath;
+      }
+    );
   }
 
-  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+  // Two-stage flow: fetch with progress toast, then save + apply via
+  // toast.promise. This keeps the progress bar visible for the slow part
+  // (download) and switches to an unambiguous "已设为壁纸" toast for the
+  // quick part.
+  const blob = await runWithProgressToast<Blob | null>(
+    {
+      loadingLabel: '正在拉取数据…',
+      loadingDescription: formatProgressDescription,
+      failureLabel: '拉取数据失败，请重试',
+    },
+    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders() })
+  );
+  if (!blob) return null;
 
-  try {
-    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-      toast.close(loadingId);
-      const desc = percent !== null
-        ? `已下载 ${percent}%`
-        : `已下载 ${(received / 1024).toFixed(1)} KB`;
-      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
-    });
-
-    toast.close(loadingId);
-    loadingId = toast('正在应用壁纸…', { isLoading: true, timeout: 0 });
-    const path = await saveBlobToDownloads(blob, filename);
-    if (!path) {
-      toast.close(loadingId);
-      toast.danger('保存临时文件失败', { timeout: 0 });
-      return null;
+  const result = await toast.promise(
+    (async () => {
+      const path = await saveBlobToDownloads(blob, filename);
+      if (!path) {
+        throw new Error('保存临时文件失败');
+      }
+      await setWallpaper(path);
+      return path;
+    })(),
+    {
+      loading: '正在应用壁纸…',
+      success: '已设为壁纸',
+      error: (err) => `设为壁纸失败: ${err instanceof Error ? err.message : String(err)}`,
     }
-    await setWallpaper(path);
-    toast.close(loadingId);
-    toast.success('已设为壁纸', { timeout: 3000 });
-    return path;
-  } catch {
-    toast.close(loadingId);
-    toast.danger('拉取数据失败，请重试', { timeout: 0 });
-    return null;
-  }
+  );
+  return (result as string | null) ?? null;
 }
 
-/**
- * 使用系统默认应用打开图片。
- * 如果有本地路径直接打开；否则先拉取数据保存到下载目录再打开。
- */
 export async function openWithSystemWithProgress(
   url: string,
   filename: string,
   localPath?: string | null,
 ): Promise<string | null> {
   if (localPath) {
-    try {
-      await openFile(localPath);
-      return localPath;
-    } catch {
-      toast.danger('打开失败', { timeout: 0 });
-      return null;
-    }
+    return runWithProgressToast<string | null>(
+      {
+        loadingLabel: '正在打开…',
+        successLabel: '已打开',
+        failureLabel: '打开失败',
+      },
+      async () => {
+        await openFile(localPath);
+        return localPath;
+      }
+    );
   }
 
-  let loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0 });
+  const blob = await runWithProgressToast<Blob | null>(
+    {
+      loadingLabel: '正在拉取数据…',
+      loadingDescription: formatProgressDescription,
+      failureLabel: '拉取数据失败，请重试',
+    },
+    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders() })
+  );
+  if (!blob) return null;
 
-  try {
-    const blob = await fetchBlobWithProgress(url, (percent, received, _total) => {
-      toast.close(loadingId);
-      const desc = percent !== null
-        ? `已下载 ${percent}%`
-        : `已下载 ${(received / 1024).toFixed(1)} KB`;
-      loadingId = toast('正在拉取数据…', { isLoading: true, timeout: 0, description: desc });
-    });
-
-    toast.close(loadingId);
-    const path = await saveBlobToDownloads(blob, filename);
-    if (!path) {
-      toast.danger('保存临时文件失败', { timeout: 0 });
-      return null;
+  const result = await toast.promise(
+    (async () => {
+      const path = await saveBlobToDownloads(blob, filename);
+      if (!path) {
+        throw new Error('保存临时文件失败');
+      }
+      await openFile(path);
+      return path;
+    })(),
+    {
+      loading: '正在打开…',
+      success: '已打开',
+      error: (err) => `打开失败: ${err instanceof Error ? err.message : String(err)}`,
     }
-    await openFile(path);
-    return path;
-  } catch {
-    toast.close(loadingId);
-    toast.danger('拉取数据失败，请重试', { timeout: 0 });
-    return null;
-  }
+  );
+  return (result as string | null) ?? null;
+}
+
+export interface DownloadManyOptions {
+  concurrency?: number;
+  onItemStart?: (item: { url: string; filename: string }, index: number) => void;
+  onItemComplete?: (item: { url: string; filename: string }, index: number, result: string | null) => void;
+}
+
+export async function downloadManyWithProgress(
+  items: Array<{ url: string; filename: string }>,
+  options: DownloadManyOptions = {}
+): Promise<Array<{ url: string; filename: string; path: string | null }>> {
+  const { concurrency = 3, onItemStart, onItemComplete } = options;
+  const results: Array<{ url: string; filename: string; path: string | null }> = items.map((i) => ({
+    ...i,
+    path: null,
+  }));
+  let cursor = 0;
+
+  const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      const item = items[index];
+      onItemStart?.(item, index);
+      const path = await downloadWithProgress(item.url, item.filename);
+      results[index].path = path;
+      onItemComplete?.(item, index, path);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 export async function sniffImages(url: string): Promise<SniffedImage[]> {
@@ -478,6 +519,14 @@ export async function removeFavorite(id: string): Promise<void> {
 
 export async function createFavoriteFolder(name: string, description?: string): Promise<FavoriteFolder> {
   return call('create_favorite_folder', name, description);
+}
+
+export async function updateFavoriteFolder(id: string, name: string, description?: string): Promise<FavoriteFolder> {
+  return call('update_favorite_folder', id, name, description);
+}
+
+export async function deleteFavoriteFolder(id: string): Promise<void> {
+  return call('delete_favorite_folder', id);
 }
 
 export async function ensureTag(name: string): Promise<void> {

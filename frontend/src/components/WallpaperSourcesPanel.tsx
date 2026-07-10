@@ -1,20 +1,24 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Card, Button, Tabs, ComboBox, Input, Label, ListBox,
-  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, toast,
+  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, AlertDialog, toast,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Heart, Copy, RefreshCw,
-  Plus, Trash2, Upload, Pencil,
+  Plus, Trash2, Upload, Pencil, Download,
   Play, AlertCircle, Wand2, ChevronDown, ChevronRight, Braces,
 } from 'lucide-react';
 import {
   getWallpaperSources, setWallpaperSourceEnabled, deleteWallpaperSource,
   executeWallpaperSource, pickAndImportSource, createWallpaperSource, updateWallpaperSource,
-  downloadFile, setWallpaper, addFavorite, copyToClipboard, localPreviewUrl,
+  exportWallpaperSource,
+  addFavorite, copyToClipboard, localPreviewUrl,
+  setWallpaperWithProgress,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
+import SourceIcon from '@/components/SourceIcon';
 import { logError } from '@/lib/log';
+import { safeNameForFile } from '@/lib/download';
 import type {
   WallpaperSource, WallpaperSourceApiParameter,
   WallpaperSourceCreatorPayload, WallpaperSourceCategory,
@@ -293,6 +297,49 @@ function flattenCategoryTreeForBackend(
   tree.forEach((node) => walk(node, []));
   return rows;
 }
+
+function rebuildCategoryParentIds(cats: WallpaperSourceCategory[]): CreatorCategory[] {
+  const nodes: CreatorCategory[] = cats.map((c) => ({
+    id: c.id,
+    name: c.name,
+    category: c.category,
+    subcategory: c.subcategory,
+    subsubcategory: c.subsubcategory,
+    icon: c.icon,
+    description: c.description,
+    parentId: null as string | null,
+  }));
+
+  const hasSubSub = (n: CreatorCategory) => !!(n.subsubcategory && String(n.subsubcategory).trim());
+  const isLevel1 = (n: CreatorCategory) => !hasSubSub(n) && (n.category || '') === n.name;
+
+  const level1ByName = new Map<string, CreatorCategory>();
+  for (const n of nodes) {
+    if (isLevel1(n)) level1ByName.set(n.name, n);
+  }
+
+  const level2ByKey = new Map<string, CreatorCategory>();
+  for (const n of nodes) {
+    if (isLevel1(n) || hasSubSub(n)) continue;
+    const root = level1ByName.get(n.category || '');
+    if (root) {
+      n.parentId = root.id;
+      level2ByKey.set(`${n.category}\0${n.name}`, n);
+    } else {
+      n.parentId = null;
+      level1ByName.set(n.name, n);
+    }
+  }
+
+  for (const n of nodes) {
+    if (!hasSubSub(n)) continue;
+    const parent = level2ByKey.get(`${n.category || ''}\0${n.subcategory || ''}`);
+    if (parent) n.parentId = parent.id;
+  }
+
+  return nodes;
+}
+
 
 const PIPE_CATEGORIES = [
   {
@@ -607,6 +654,9 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
     apis: [],
   });
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WallpaperSource | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const startCreate = () => {
     setEditingSourceId(null);
@@ -623,15 +673,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
   };
 
   const sourceToCreatorPayload = (source: WallpaperSource): WallpaperSourceCreatorPayload => {
-    const categories: WallpaperSourceCategory[] = (source.categories || []).map((c) => ({
-      id: c.id,
-      name: c.name,
-      category: c.category,
-      subcategory: c.subcategory,
-      subsubcategory: c.subsubcategory,
-      icon: c.icon,
-      description: c.description,
-    }));
+    const categories = rebuildCategoryParentIds(source.categories || []);
 
     const apis = (source.apis || []).map((api) => ({
       name: api.name || '',
@@ -936,7 +978,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
       });
       setParameterValues(next);
     } else { setSelectedApiName(''); setParameterValues({}); }
-  }, [selectedSourceId, sources]);
+  }, [selectedSourceId, selectedApiName, sources]);
 
   /* ───── 数据加载 ───── */
   const loadSources = async () => {
@@ -958,12 +1000,28 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
   };
 
   const handleDeleteSource = async (source: WallpaperSource) => {
-    if (!confirm(`确定要删除壁纸源 "${source.name}" 吗？`)) return;
     try {
       await deleteWallpaperSource(source.identifier);
       if (selectedSourceId === source.identifier) setSelectedSourceId('');
       await loadSources();
-    } catch (e) { logError('Failed to delete source', e); }
+      toast.success(`已删除壁纸源 "${source.name}"`);
+    } catch (e) { logError('Failed to delete source', e); toast.danger('删除壁纸源失败'); }
+  };
+
+  const confirmDelete = async () => {
+    const target = deleteTarget;
+    if (!target) return;
+    await handleDeleteSource(target);
+    setDeleteTarget(null);
+  };
+
+  const handleExportSource = async (source: WallpaperSource) => {
+    setExporting(true);
+    try {
+      const result = await exportWallpaperSource(source.identifier, source.name);
+      if (result?.saved_path) toast.success(`已导出到 ${result.saved_path}`);
+    } catch (e) { logError('Export source failed', e); toast.danger('导出失败'); }
+    finally { setExporting(false); }
   };
 
   const handleExecute = async () => {
@@ -996,10 +1054,9 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
   const validSources = sources.filter((s) => !s.invalid);
   const invalidSources = sources.filter((s) => s.invalid);
 
-  const handleSetWallpaper = async (url: string, title: string) => {
-    const safeName = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 50) || 'wallpaper';
-    const path = await downloadFile(url, `${safeName}.jpg`);
-    if (path) await setWallpaper(path);
+  const handleSetWallpaper = (url: string, title: string) => {
+    const safeName = safeNameForFile(title, 'wallpaper');
+    return setWallpaperWithProgress(url, `${safeName}.jpg`);
   };
 
   const handleFavorite = async (item: any) => {
@@ -1129,7 +1186,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                 variant={selectedSourceId === s.identifier ? 'primary' : 'ghost'}
                 onPress={() => setSelectedSourceId(s.identifier)} className="flex items-center gap-1"
               >
-                {s.logo && <img src={s.logo} alt="" className="h-4 w-4 rounded" />}
+                <SourceIcon src={s.logo} name={s.name} size="xs" />
                 {s.name}{!s.enabled && <span className="text-xs opacity-60">(已禁用)</span>}
               </Button>
             ))}
@@ -1138,7 +1195,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
             <Card className="p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  {selectedSource.logo && <img src={selectedSource.logo} alt="" className="h-8 w-8 rounded" />}
+                  <SourceIcon src={selectedSource.logo} name={selectedSource.name} size="lg" />
                   <div>
                     <div className="font-medium">{selectedSource.name}</div>
                     <div className="text-xs text-muted">{selectedSource.identifier} &middot; v{selectedSource.version}</div>
@@ -1153,8 +1210,15 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                       <Pencil size={14} />
                     </Button>
                   )}
+                  {mode === 'management' && selectedSource.can_delete && (
+                    <Button isIconOnly variant="ghost" size="sm" isDisabled={exporting}
+                      onPress={() => handleExportSource(selectedSource)} aria-label="导出"
+                    >
+                      <Download size={14} />
+                    </Button>
+                  )}
                   {selectedSource.can_delete && (
-                    <Button isIconOnly variant="ghost" size="sm" onPress={() => handleDeleteSource(selectedSource)}>
+                    <Button isIconOnly variant="ghost" size="sm" onPress={() => setDeleteTarget(selectedSource)}>
                       <Trash2 size={14} className="text-danger" />
                     </Button>
                   )}
@@ -1167,7 +1231,11 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                       <Button key={api.name} size="sm"
                         variant={selectedApiName === api.name ? 'primary' : 'ghost'}
                         onPress={() => setSelectedApiName(api.name)}
-                      >{api.name}</Button>
+                        className="flex items-center gap-1"
+                      >
+                        <SourceIcon src={api.logo} name={api.name} size="xs" />
+                        {api.name}
+                      </Button>
                     ))}
                   </div>
                   {selectedApi && selectedApi.parameters && selectedApi.parameters.length > 0 && (
@@ -1225,7 +1293,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                 <AlertCircle size={16} className="text-danger" />
                 <div><div className="text-sm">{s.name || s.identifier}</div><div className="text-xs text-muted">{s.error}</div></div>
               </div>
-              {s.can_delete && <Button isIconOnly variant="ghost" size="sm" onPress={() => handleDeleteSource(s)}><Trash2 size={14} className="text-danger" /></Button>}
+              {s.can_delete && <Button isIconOnly variant="ghost" size="sm" onPress={() => setDeleteTarget(s)}><Trash2 size={14} className="text-danger" /></Button>}
             </Card>
           ))}
         </div>
@@ -1431,7 +1499,10 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                         const renderCatOptions = (nodes: CategoryTreeNode[]): React.ReactNode[] =>
                           nodes.flatMap((node) => [
                             <ListBox.Item key={node.id} id={node.id} textValue={node.name}>
-                              <span style={{ paddingLeft: node.depth * 12 }}>{node.name}</span>
+                              <span className="flex items-center gap-2" style={{ paddingLeft: node.depth * 12 }}>
+                                {node.icon && <SourceIcon src={node.icon} name={node.name} size="xs" />}
+                                {node.name}
+                              </span>
                             </ListBox.Item>,
                             ...(node.children.length > 0 ? renderCatOptions(node.children) : []),
                           ]);
@@ -2333,7 +2404,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                                     <Description className="text-[10px] text-muted">为该接口单独设置缓存策略，优先级高于全局缓存配置</Description>
                                     <div className="flex items-center gap-2">
                                       <span className="text-sm">启用缓存</span>
-                                      <Switch isSelected={api.cache?.enabled ?? true}
+                                      <Switch isSelected={api.cache?.enabled ?? false}
                                         onChange={(v) => updateApi(idx, { cache: { ...api.cache, enabled: v } })}
                                       ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
                                     </div>
@@ -2385,6 +2456,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                             request: { url: '', method: 'GET' },
                             response: { format: 'json', type: 'multi' },
                             mapping: { items: '', fields: { image: '' } },
+                            cache: { enabled: false },
                           }],
                         }));
                         setApiExpanded((prev) => new Set(prev).add(newIdx));
@@ -2411,13 +2483,14 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
             ) : (
               <>
                 <Button variant="ghost" onPress={() => { setCreatorStep(1); setShowValidation(false); }}>上一步</Button>
-                <Button onPress={async () => {
+                <Button isPending={saving} onPress={async () => {
                   setShowValidation(true);
                   if (rawValidation.hasContent) {
                     if (rawValidation.tabErrors.categories) setCreatorTab('categories');
                     else if (rawValidation.tabErrors.api) setCreatorTab('api');
                     return;
                   }
+                  setSaving(true);
                   try {
                     const payloadForBackend: WallpaperSourceCreatorPayload = {
                       ...creatorPayload,
@@ -2437,6 +2510,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                         throw new Error(String((result as any).error));
                       }
                     }
+                    toast.success(editingSourceId ? '壁纸源已更新' : '壁纸源已创建');
                     setShowCreator(false);
                     setShowValidation(false);
                     setCreatorStep(1);
@@ -2444,8 +2518,10 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                     await loadSources();
                   } catch (e) {
                     logError(editingSourceId ? 'Update source failed' : 'Create source failed', e);
-                    alert((editingSourceId ? '更新失败: ' : '创建失败: ') + (e instanceof Error ? e.message : String(e)));
-                  }
+                    toast.danger(editingSourceId ? '更新失败' : '创建失败', {
+                      description: e instanceof Error ? e.message : String(e), timeout: 5000,
+                    });
+                  } finally { setSaving(false); }
                 }}>{editingSourceId ? '保存' : '完成'}</Button>
               </>
             )}
@@ -2776,6 +2852,32 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
             </Drawer.Dialog>
           </Drawer.Content>
         </Drawer.Backdrop>
+      )}
+
+      {/* ═══════════ 删除确认对话框 ═══════════ */}
+      {deleteTarget && (
+        <AlertDialog.Backdrop isOpen={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
+          <AlertDialog.Container>
+            <AlertDialog.Dialog className="sm:max-w-[400px]">
+              <AlertDialog.CloseTrigger />
+              <AlertDialog.Header>
+                <AlertDialog.Icon status="danger">
+                  <Trash2 size={20} />
+                </AlertDialog.Icon>
+                <AlertDialog.Heading>删除壁纸源？</AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                <p>
+                  确定要删除壁纸源 <strong>{deleteTarget.name || deleteTarget.identifier}</strong> 吗？此操作不可撤销。
+                </p>
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button slot="close" variant="tertiary">取消</Button>
+                <Button slot="close" variant="danger" onPress={confirmDelete}>删除</Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
       )}
     </div>
   );

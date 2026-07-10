@@ -973,7 +973,7 @@ class LTWSService:
         cache_payload = request_payload.get("cache") or {}
         cache_document = _strip_empty_sections(
             {
-                "enabled": bool(cache_payload.get("enabled", True)),
+                "enabled": bool(cache_payload.get("enabled", False)),
                 "default_ttl_seconds": _coerce_int(cache_payload.get("default_ttl_seconds"), 21600, 1),
                 "max_memory_mb": _coerce_int(cache_payload.get("max_memory_mb"), 32, 1),
             }
@@ -1094,15 +1094,14 @@ class LTWSService:
             document["error_handling"] = error_handling_document
 
         cache_enabled = cache_payload.get("enabled")
-        if cache_enabled is False:
-            pass
-        elif (
-            cache_enabled is True
+        has_cache_settings = (
+            cache_enabled is not None
             or cache_payload.get("ttl_seconds") not in {None, ""}
             or _stringify(cache_payload.get("key_template"))
-        ):
+        )
+        if has_cache_settings:
             document["cache"] = {
-                "enabled": bool(cache_payload.get("enabled", True)),
+                "enabled": bool(cache_enabled if cache_enabled is not None else False),
                 "ttl_seconds": max(1, int(cache_payload.get("ttl_seconds") or 3600)),
                 "key_template": str(cache_payload.get("key_template") or "").strip()
                 or f"{_slugify_source_path(document['name']).replace('-', '_')}_{{date_iso}}",

@@ -197,7 +197,6 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
                       variant="ghost"
                       isIconOnly
                       aria-label="删除"
-                      isDisabled={tag.count > 0}
                       className="text-danger"
                       onPress={() => setDeleteConfirmTag(tag.name)}
                     >
@@ -252,7 +251,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
             </Modal.Header>
             <Modal.Body>
               <p>确定要删除标签 <strong>{deleteConfirmTag}</strong> 吗？</p>
-              <p className="text-sm text-muted">该标签未在任何收藏中使用，删除后不可恢复。</p>
+              <p className="text-sm text-muted">删除后会自动从所有已使用该标签的收藏中同步移除，操作不可恢复。</p>
             </Modal.Body>
             <Modal.Footer>
               <Button variant="ghost" onPress={() => setDeleteConfirmTag(null)}>取消</Button>

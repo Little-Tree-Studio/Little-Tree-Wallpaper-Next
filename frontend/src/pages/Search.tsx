@@ -8,7 +8,8 @@ import {
   ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import {
-  searchBaiduImages, setWallpaper, downloadFile, copyToClipboard, addFavorite,
+  searchBaiduImages, copyToClipboard, addFavorite,
+  downloadWithProgress, setWallpaperWithProgress, downloadManyWithProgress,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import { logError } from '@/lib/log';
@@ -107,10 +108,8 @@ export default function SearchPage() {
 
   const clearSelection = () => setSelected(new Set());
 
-  const handleSetWallpaper = async (img: SniffedImage) => {
-    const path = await downloadFile(img.url, img.filename);
-    if (path) await setWallpaper(path);
-  };
+  const handleSetWallpaper = (img: SniffedImage) =>
+    setWallpaperWithProgress(img.url, img.filename);
 
   const handleView = (startIndex: number) => {
     const items = images.map((i) => ({
@@ -138,11 +137,11 @@ export default function SearchPage() {
     copyToClipboard(urls);
   };
 
-  const handleDownloadSelected = async () => {
-    for (const img of selectedImages) {
-      await downloadFile(img.url, img.filename);
-    }
-  };
+  const handleDownloadSelected = () =>
+    downloadManyWithProgress(
+      selectedImages.map((img) => ({ url: img.url, filename: img.filename })),
+      { concurrency: 3 }
+    );
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
@@ -253,7 +252,7 @@ export default function SearchPage() {
                 </span>
                 <span onClick={(e) => { e.stopPropagation(); }}>
                   <Tooltip delay={0}>
-                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => downloadFile(img.url, img.filename)} aria-label="下载"><Download size={14} /></Button>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => downloadWithProgress(img.url, img.filename)} aria-label="下载"><Download size={14} /></Button>
                     <Tooltip.Content><p>下载</p></Tooltip.Content>
                   </Tooltip>
                 </span>

@@ -5,22 +5,23 @@ import {
   Card, Button, Input, Drawer, Spinner, Label, Chip,
   ListBox, Modal, Autocomplete, useFilter, EmptyState,
   SearchField, Tag as HeroTag, TagGroup, TextArea, Select,
-  TextField, Checkbox, Toolbar, ButtonGroup, Separator,
+  TextField, Checkbox, Toolbar, ButtonGroup, Separator, FieldError, Description,
 } from '@heroui/react';
 import TagList from '@/components/TagList';
 import TagManager from '@/components/TagManager';
 import {
   Plus, Pencil, Trash2, ImageIcon, FolderPlus,
   RefreshCw, FolderOutput, Import, Globe, Settings2, Tag,
-  AlertTriangle, FolderOpen, FolderInput, X, CheckSquare,
+  AlertTriangle, FolderOpen, FolderInput, X, CheckSquare, FilePenLine,
 } from 'lucide-react';
 import {
   getFavorites, removeFavorite, updateFavorite,
-  createFavoriteFolder, setWallpaper, downloadFile,
+  createFavoriteFolder, updateFavoriteFolder, deleteFavoriteFolder, setWallpaper, downloadWithProgress,
   exportFavorites, selectLocalImage, localPreviewUrl,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer/context';
-import type { FavoriteItem, FavoritesData } from '@/types';
+import type { FavoriteFolder, FavoriteItem, FavoritesData } from '@/types';
+import { safeNameForFile } from '@/lib/download';
 
 export default function Favorite() {
   const navigate = useNavigate();
@@ -39,6 +40,17 @@ export default function Favorite() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBatchMoveModal, setShowBatchMoveModal] = useState(false);
   const [batchMoveFolderId, setBatchMoveFolderId] = useState('');
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderDescription, setNewFolderDescription] = useState('');
+  const [createFolderError, setCreateFolderError] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [editingFolder, setEditingFolder] = useState<FavoriteFolder | null>(null);
+  const [editFolderName, setEditFolderName] = useState('');
+  const [editFolderDescription, setEditFolderDescription] = useState('');
+  const [editFolderError, setEditFolderError] = useState('');
+  const [savingFolder, setSavingFolder] = useState(false);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const {contains} = useFilter({sensitivity: 'base'});
   const { openViewer } = useImageViewer();
 
@@ -53,6 +65,10 @@ export default function Favorite() {
   const folderOptions = useMemo(() => {
     return data.folders.map((f) => ({ id: f.id, name: f.name }));
   }, [data.folders]);
+
+  const activeFolderMeta = useMemo(() => {
+    return data.folders.find((folder) => folder.id === activeFolder) || null;
+  }, [activeFolder, data.folders]);
 
   const refresh = async () => {
     setLoading(true);
@@ -183,9 +199,110 @@ export default function Favorite() {
     refresh();
   };
 
+  const openCreateFolderModal = () => {
+    setNewFolderName('');
+    setNewFolderDescription('');
+    setCreateFolderError('');
+    setShowCreateFolderModal(true);
+  };
+
+  const closeCreateFolderModal = () => {
+    if (creatingFolder) return;
+    setShowCreateFolderModal(false);
+    setNewFolderName('');
+    setNewFolderDescription('');
+    setCreateFolderError('');
+  };
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim();
+    const description = newFolderDescription.trim();
+
+    if (!name) {
+      setCreateFolderError('请输入文件夹名称');
+      return;
+    }
+
+    if (data.folders.some((folder) => folder.name === name)) {
+      setCreateFolderError('已存在同名文件夹');
+      return;
+    }
+
+    setCreatingFolder(true);
+    setCreateFolderError('');
+    try {
+      const folder = await createFavoriteFolder(name, description || undefined);
+      await refresh();
+      setActiveFolder(folder.id);
+      setShowCreateFolderModal(false);
+      setNewFolderName('');
+      setNewFolderDescription('');
+    } catch (err) {
+      setCreateFolderError(err instanceof Error ? err.message : '创建失败，请稍后重试');
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const openEditFolderModal = (folder: FavoriteFolder) => {
+    setEditingFolder(folder);
+    setEditFolderName(folder.name);
+    setEditFolderDescription(folder.description || '');
+    setEditFolderError('');
+  };
+
+  const closeEditFolderModal = () => {
+    if (savingFolder) return;
+    setEditingFolder(null);
+    setEditFolderName('');
+    setEditFolderDescription('');
+    setEditFolderError('');
+  };
+
+  const handleSaveFolder = async () => {
+    if (!editingFolder) return;
+
+    const name = editFolderName.trim();
+    const description = editFolderDescription.trim();
+
+    if (!name) {
+      setEditFolderError('请输入文件夹名称');
+      return;
+    }
+
+    if (data.folders.some((folder) => folder.id !== editingFolder.id && folder.name === name)) {
+      setEditFolderError('已存在同名文件夹');
+      return;
+    }
+
+    setSavingFolder(true);
+    setEditFolderError('');
+    try {
+      await updateFavoriteFolder(editingFolder.id, name, description || undefined);
+      await refresh();
+      setEditingFolder(null);
+      setEditFolderName('');
+      setEditFolderDescription('');
+    } catch (err) {
+      setEditFolderError(err instanceof Error ? err.message : '保存失败，请稍后重试');
+    } finally {
+      setSavingFolder(false);
+    }
+  };
+
+  const handleDeleteFolder = async (folderId: string) => {
+    await deleteFavoriteFolder(folderId);
+    setDeletingFolderId(null);
+    if (activeFolder === folderId) {
+      setActiveFolder('default');
+    }
+    await refresh();
+  };
+
   const handleLocalize = async (item: FavoriteItem) => {
     if (!item.preview_url) return;
-    const path = await downloadFile(item.preview_url, `${item.title}.jpg`);
+    const filename = `${safeNameForFile(item.title, 'favorite')}.jpg`;
+    const path = await downloadWithProgress(item.preview_url, filename);
     if (path) {
       await updateFavorite({ ...item, local_path: path });
       refresh();
@@ -246,8 +363,40 @@ export default function Favorite() {
             {f.name}
           </Button>
         ))}
-        <Button size="sm" variant="ghost" onPress={async () => { const name = prompt('文件夹名称'); if (name) { await createFavoriteFolder(name); refresh(); } }}><FolderPlus size={14} /> 新建</Button>
+        <Button size="sm" variant="ghost" onPress={openCreateFolderModal}><FolderPlus size={14} /> 新建</Button>
       </div>
+
+      {activeFolderMeta && (
+        <Card className="p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <div className="text-sm font-medium">{activeFolderMeta.name}</div>
+              {activeFolderMeta.description ? (
+                <Description className="text-sm text-muted break-words">{activeFolderMeta.description}</Description>
+              ) : (
+                <Description className="text-sm text-muted">当前收藏夹暂无描述</Description>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              <Button size="sm" variant="ghost" isIconOnly aria-label="编辑收藏夹" onPress={() => openEditFolderModal(activeFolderMeta)}>
+                <FilePenLine size={14} />
+              </Button>
+              {activeFolderMeta.id !== 'default' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isIconOnly
+                  aria-label="删除收藏夹"
+                  className="text-danger"
+                  onPress={() => setDeletingFolderId(activeFolderMeta.id)}
+                >
+                  <Trash2 size={14} />
+                </Button>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {loading ? <div className="py-10"><Spinner size="sm" /></div> : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -541,6 +690,124 @@ export default function Favorite() {
         </Modal.Container>
       </Modal.Backdrop>
 
+      {/* 新建收藏夹 Modal */}
+      <Modal.Backdrop isOpen={showCreateFolderModal} onOpenChange={(open) => { if (!open) closeCreateFolderModal(); }}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Icon className="bg-accent-soft text-accent-soft-foreground">
+                <FolderPlus size={20} />
+              </Modal.Icon>
+              <Modal.Heading>新建收藏夹</Modal.Heading>
+              <p className="text-sm text-muted">为常用壁纸建立一个独立分组，之后可以在收藏页快速筛选。</p>
+            </Modal.Header>
+            <Modal.Body>
+              <div className="space-y-4">
+                <TextField
+                  isRequired
+                  isInvalid={!!createFolderError}
+                  className="w-full"
+                  value={newFolderName}
+                  onChange={(value) => {
+                    setNewFolderName(String(value));
+                    if (createFolderError) setCreateFolderError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleCreateFolder();
+                    }
+                  }}
+                >
+                  <Label>文件夹名称</Label>
+                  <Input autoFocus placeholder="例如：自然风景" />
+                  {createFolderError ? <FieldError>{createFolderError}</FieldError> : <Description>名称会显示在收藏分类列表中</Description>}
+                </TextField>
+
+                <TextField
+                  className="w-full"
+                  value={newFolderDescription}
+                  onChange={(value) => setNewFolderDescription(String(value))}
+                >
+                  <Label>描述</Label>
+                  <TextArea placeholder="可选，用于记录这个收藏夹的用途" rows={3} />
+                </TextField>
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="ghost" onPress={closeCreateFolderModal} isDisabled={creatingFolder}>取消</Button>
+              <Button onPress={handleCreateFolder} isDisabled={!newFolderName.trim()} isPending={creatingFolder}>
+                {({isPending}) => (
+                  <>
+                    {isPending && <Spinner color="current" size="sm" />}
+                    {isPending ? '创建中...' : '创建'}
+                  </>
+                )}
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+
+      <Modal.Backdrop isOpen={!!editingFolder} onOpenChange={(open) => { if (!open) closeEditFolderModal(); }}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Icon className="bg-accent-soft text-accent-soft-foreground">
+                <FilePenLine size={20} />
+              </Modal.Icon>
+              <Modal.Heading>编辑收藏夹</Modal.Heading>
+            </Modal.Header>
+            <Modal.Body>
+              <div className="space-y-4">
+                <TextField
+                  isRequired
+                  isInvalid={!!editFolderError}
+                  className="w-full"
+                  value={editFolderName}
+                  onChange={(value) => {
+                    setEditFolderName(String(value));
+                    if (editFolderError) setEditFolderError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleSaveFolder();
+                    }
+                  }}
+                >
+                  <Label>文件夹名称</Label>
+                  <Input autoFocus placeholder="输入收藏夹名称" />
+                  {editFolderError ? <FieldError>{editFolderError}</FieldError> : <Description>可修改展示名称和分类说明</Description>}
+                </TextField>
+
+                <TextField
+                  className="w-full"
+                  value={editFolderDescription}
+                  onChange={(value) => setEditFolderDescription(String(value))}
+                >
+                  <Label>描述</Label>
+                  <TextArea placeholder="可选，显示在分类选择下方" rows={3} />
+                </TextField>
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="ghost" onPress={closeEditFolderModal} isDisabled={savingFolder}>取消</Button>
+              <Button onPress={handleSaveFolder} isDisabled={!editFolderName.trim()} isPending={savingFolder}>
+                {({isPending}) => (
+                  <>
+                    {isPending && <Spinner color="current" size="sm" />}
+                    {isPending ? '保存中...' : '保存'}
+                  </>
+                )}
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+
       {/* 批量移动 Modal */}
       <Modal.Backdrop isOpen={showBatchMoveModal} onOpenChange={(open) => !open && setShowBatchMoveModal(false)}>
         <Modal.Container size="sm">
@@ -618,6 +885,27 @@ export default function Favorite() {
                   handleDelete(deleteConfirmId);
                 }
               }}>删除</Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+
+      <Modal.Backdrop isOpen={!!deletingFolderId} onOpenChange={(open) => !open && setDeletingFolderId(null)}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.Header>
+              <Modal.Icon className="bg-danger-soft text-danger">
+                <AlertTriangle size={20} />
+              </Modal.Icon>
+              <Modal.Heading>删除收藏夹</Modal.Heading>
+            </Modal.Header>
+            <Modal.Body>
+              <p>确定要删除收藏夹 <strong>{data.folders.find((folder) => folder.id === deletingFolderId)?.name}</strong> 吗？</p>
+              <p className="text-sm text-muted">该收藏夹中的项目会自动移动到默认收藏夹，操作不可撤销。</p>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="ghost" onPress={() => setDeletingFolderId(null)}>取消</Button>
+              <Button variant="danger" onPress={() => deletingFolderId && handleDeleteFolder(deletingFolderId)}>删除</Button>
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>
