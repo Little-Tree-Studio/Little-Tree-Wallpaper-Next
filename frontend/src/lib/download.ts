@@ -64,13 +64,14 @@ export async function fetchBlobWithProgress(
 
     const totalHeader = res.headers.get('content-length');
     const total = totalHeader && /^\d+$/.test(totalHeader) ? Number(totalHeader) : null;
+    const contentType = res.headers.get('content-type')?.split(';', 1)[0].trim() || '';
     if (!res.body) {
       // Server returned no body — treat as empty download.
       if (total !== null && total !== 0) {
         throw new Error('下载不完整: 服务器未返回正文');
       }
       onProgress({ percent: 100, received: 0, total: 0 });
-      return new Blob();
+      return new Blob([], { type: contentType });
     }
 
     const reader = res.body.getReader();
@@ -97,7 +98,7 @@ export async function fetchBlobWithProgress(
       throw new Error(`下载不完整: 收到 ${received} 字节, 预期 ${total} 字节`);
     }
 
-    return new Blob(chunks);
+    return new Blob(chunks, { type: contentType });
   } finally {
     clearTimeout(timeoutId);
     externalSignal?.removeEventListener('abort', onExternalAbort);

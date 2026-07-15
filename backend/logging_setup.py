@@ -276,3 +276,20 @@ def clear_logs() -> dict[str, object]:
                     time.sleep(0.05)
 
     return {"removed": removed, "failed": len(failed), "truncated": len(current_files), **get_log_stats()}
+
+
+def prune_logs(max_files: int) -> dict[str, object]:
+    """Keep the newest log files while never removing active-session sinks."""
+    limit = max(2, int(max_files))
+    files = _iter_log_files("*.log")
+    removed = 0
+    failed = 0
+    for path in files[limit:]:
+        if _is_current_run_file(path):
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            failed += 1
+    return {"removed": removed, "failed": failed, **get_log_stats()}

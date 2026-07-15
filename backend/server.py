@@ -18,11 +18,17 @@ Security notes
 from __future__ import annotations
 
 import hmac
+import ipaddress
+import io
 import json
+import socket
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
+import requests
+from anyio import CapacityLimiter, to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -43,8 +49,12 @@ _BLOCKED_MEMBERS = frozenset(
     {
         "store",
         "bing_service",
+        "cnu_service",
+        "pexels_service",
+        "pixivel_service",
         "spotlight_service",
         "sniff_service",
+        "timeline_service",
         "im_service",
         "ltws_service",
         "set_api_token",
@@ -58,6 +68,75 @@ _MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB guard for RPC payloads
 # 200 MiB cap for the /api/save-* image uploads. 8K JPEGs top out around 25 MiB
 # so this leaves a comfortable margin without enabling truly unbounded writes.
 _MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+# CNU CDN hostnames allowed for the /api/cnu-image proxy (SSRF guard).
+_CNU_IMAGE_HOSTS = frozenset({"imgoss.cnu.cc", "img.cnu.cc"})
+
+# Pixiv CDN hostnames allowed for the /api/pixiv-image proxy (SSRF guard).
+_PIXIV_IMAGE_HOSTS = frozenset(
+    {"i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh"}
+)
+
+# Bounds for the general sniff-image proxy. The endpoint is authenticated, but
+# it still must not become an unbounded memory sink or an SSRF primitive.
+_SNIFF_IMAGE_MAX_BYTES = 64 * 1024 * 1024
+_SNIFF_IMAGE_CONTENT_TYPES = frozenset(
+    {
+        "image/avif",
+        "image/bmp",
+        "image/gif",
+        "image/vnd.microsoft.icon",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/webp",
+        "image/x-icon",
+    }
+)
+
+# Remote image fetching is synchronous and can wait on slow third-party hosts.
+# Keep it out of the default AnyIO limiter used by RPC calls so settings and
+# other control-plane requests remain responsive while a gallery is loading.
+_IMAGE_PROXY_LIMITER = CapacityLimiter(8)
+
+
+def _validate_public_http_url(value: str) -> tuple[str, str, int]:
+    """Validate a remote URL before the backend makes an outbound request."""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise ValueError("remote URL is not allowed")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("remote URL has no hostname")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("remote URL has an invalid port") from exc
+
+    try:
+        addresses = {
+            ipaddress.ip_address(info[4][0])
+            for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError("remote URL hostname could not be resolved") from exc
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("remote URL resolves to a non-public address")
+    return parsed.geturl(), host.lower(), port
+
+
+def _validate_referer(value: str | None) -> str:
+    """Accept only a bounded HTTP(S) Referer; never forward credentials."""
+    referer = (value or "").strip()
+    if not referer:
+        return ""
+    if len(referer) > 2048:
+        raise ValueError("referer is too long")
+    parsed = urlparse(referer)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password or not parsed.hostname:
+        raise ValueError("referer is not allowed")
+    return referer
+
 
 # RPC methods that must not themselves produce log entries. Inspecting the logs
 # (e.g. the stats/count shown on the Help page) would otherwise inflate its own
@@ -298,6 +377,265 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
             content=data,
             media_type=content_type,
             headers={"Cache-Control": "private, max-age=600"},
+        )
+
+    @app.get("/api/cnu-image")
+    async def cnu_image(
+        url: str,
+        _: None = Depends(verify_token),
+    ) -> Response:
+        """Proxy a CNU CDN image so the webview can load it same-origin.
+
+        The browser blocks cross-origin HTTP images from ``imgoss.cnu.cc``;
+        this endpoint fetches with the correct Referer/UA and streams the
+        bytes back, letting ``<img>`` and ``fetch()`` work transparently.
+        """
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or host not in _CNU_IMAGE_HOSTS:
+            raise HTTPException(status_code=403, detail="forbidden image source")
+
+        def _fetch() -> tuple[bytes, str]:
+            resp = requests.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LittleTreeWallpaperNext/2.0",
+                    "Referer": "http://www.cnu.cc/",
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+            return resp.content, content_type or "image/jpeg"
+
+        try:
+            data, content_type = await to_thread.run_sync(_fetch, limiter=_IMAGE_PROXY_LIMITER)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 502
+            logger.warning("CNU image proxy upstream error {} for {}", status, url)
+            raise HTTPException(status_code=502, detail=f"upstream returned {status}") from exc
+        except Exception as exc:
+            logger.warning("CNU image proxy failed for {}: {}", url, exc)
+            raise HTTPException(status_code=502, detail="image fetch failed") from exc
+
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+
+    @app.get("/api/sniff-image")
+    async def sniff_image(
+        url: str,
+        referer: str | None = None,
+        _: None = Depends(verify_token),
+    ) -> Response:
+        """Proxy a sniffed image with the source page's Referer.
+
+        Browsers cannot set a cross-origin Referer for an image reliably, and
+        they cannot fetch many hotlink-protected images because of CORS. This
+        same-origin endpoint keeps the remote request server-side.
+        """
+        try:
+            upstream_url, initial_host, _ = _validate_public_http_url(url)
+            upstream_referer = _validate_referer(referer)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="forbidden image source") from exc
+
+        def _fetch() -> tuple[bytes, str]:
+            current_url = upstream_url
+            visited: set[str] = set()
+            try:
+                configured_timeout = int(api.store.get("sniff.timeout_seconds", 40))
+            except (TypeError, ValueError):
+                configured_timeout = 40
+            timeout_seconds = max(5, min(configured_timeout, 120))
+            user_agent = str(api.store.get("sniff.user_agent", "Mozilla/5.0"))[:512]
+
+            for _ in range(5):
+                current_url, current_host, _ = _validate_public_http_url(current_url)
+                if current_url in visited:
+                    raise requests.RequestException("sniff image redirect loop detected")
+                visited.add(current_url)
+
+                headers = {
+                    "User-Agent": user_agent,
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                }
+                if upstream_referer:
+                    headers["Referer"] = upstream_referer
+
+                response = requests.get(
+                    current_url,
+                    headers=headers,
+                    timeout=(min(10, timeout_seconds), timeout_seconds),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                try:
+                    if response.is_redirect or response.is_permanent_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise requests.RequestException("sniff image redirect has no target")
+                        current_url = urljoin(current_url, location)
+                        continue
+
+                    response.raise_for_status()
+                    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                    if content_type == "image/jpg":
+                        content_type = "image/jpeg"
+                    generic_content_types = {"", "application/octet-stream", "binary/octet-stream"}
+                    if content_type == "image/svg+xml" or (
+                        content_type not in _SNIFF_IMAGE_CONTENT_TYPES
+                        and content_type not in generic_content_types
+                    ):
+                        raise requests.RequestException("sniff image upstream returned non-image content")
+
+                    content_length = response.headers.get("Content-Length", "")
+                    if content_length.isdigit() and int(content_length) > _SNIFF_IMAGE_MAX_BYTES:
+                        raise requests.RequestException("sniff image is too large")
+
+                    chunks: list[bytes] = []
+                    received = 0
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        received += len(chunk)
+                        if received > _SNIFF_IMAGE_MAX_BYTES:
+                            raise requests.RequestException("sniff image is too large")
+                        chunks.append(chunk)
+                    if received == 0:
+                        raise requests.RequestException("sniff image is empty")
+                    data = b"".join(chunks)
+                    if content_type in generic_content_types:
+                        from PIL import Image
+
+                        try:
+                            with Image.open(io.BytesIO(data)) as image:
+                                image_format = image.format or ""
+                                image.verify()
+                            content_type = Image.MIME.get(image_format, "")
+                        except Exception as exc:
+                            raise requests.RequestException("sniff image could not be decoded") from exc
+                        if content_type not in _SNIFF_IMAGE_CONTENT_TYPES:
+                            raise requests.RequestException("sniff image format is not supported")
+                    return data, content_type
+                finally:
+                    response.close()
+
+            raise requests.RequestException("too many sniff image redirects")
+
+        try:
+            data, content_type = await to_thread.run_sync(_fetch, limiter=_IMAGE_PROXY_LIMITER)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 502
+            logger.warning("Sniff image proxy upstream error {} for {}", status, initial_host)
+            raise HTTPException(status_code=502, detail=f"upstream returned {status}") from exc
+        except Exception as exc:
+            logger.warning("Sniff image proxy failed for {}: {}", initial_host, exc)
+            raise HTTPException(status_code=502, detail="image fetch failed") from exc
+
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/api/pixiv-image")
+    async def pixiv_image(
+        url: str,
+        _: None = Depends(verify_token),
+    ) -> Response:
+        """Proxy a Pixiv CDN image so the webview can load it same-origin.
+
+        Pixiv's CDN blocks requests without a ``pixiv.net`` Referer; this
+        endpoint fetches with the correct headers and streams the bytes back.
+        """
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or host not in _PIXIV_IMAGE_HOSTS:
+            raise HTTPException(status_code=403, detail="forbidden image source")
+
+        upstream_url = url
+        if host in {"i.pximg.net", "pximg.cocomi.eu.org"}:
+            upstream_url = parsed._replace(scheme="https", netloc="i.yuki.sh").geturl()
+
+        def _fetch() -> tuple[bytes, str]:
+            current_url = upstream_url
+            visited: set[str] = set()
+            for _ in range(4):
+                if current_url in visited:
+                    raise requests.RequestException("Pixiv image redirect loop detected")
+                visited.add(current_url)
+                current_parsed = urlparse(current_url)
+                current_host = (current_parsed.hostname or "").lower()
+                if current_parsed.scheme not in ("http", "https") or current_host not in _PIXIV_IMAGE_HOSTS:
+                    raise requests.RequestException("Pixiv image redirect target is not allowed")
+                referer = (
+                    "https://pxelk.cocomi.eu.org/"
+                    if current_host in {"pximg.cocomi.eu.org", "i.yuki.sh"}
+                    else "https://www.pixiv.net/"
+                )
+                resp = requests.get(
+                    current_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                        "Referer": referer,
+                        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    },
+                    timeout=30,
+                    allow_redirects=False,
+                )
+                if resp.is_redirect or resp.is_permanent_redirect:
+                    location = resp.headers.get("Location")
+                    resp.close()
+                    if not location:
+                        raise requests.RequestException("Pixiv image redirect has no target")
+                    current_url = urljoin(current_url, location)
+                    continue
+                resp.raise_for_status()
+                content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                if content_type not in {
+                    "image/avif",
+                    "image/bmp",
+                    "image/gif",
+                    "image/jpeg",
+                    "image/png",
+                    "image/webp",
+                }:
+                    raise requests.RequestException("Pixiv image upstream returned non-image content")
+                data = resp.content
+                from PIL import Image
+
+                with Image.open(io.BytesIO(data)) as image:
+                    image.verify()
+                return data, content_type
+            raise requests.RequestException("Too many Pixiv image redirects")
+
+        try:
+            data, content_type = await to_thread.run_sync(_fetch, limiter=_IMAGE_PROXY_LIMITER)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 502
+            logger.warning("Pixiv image proxy upstream error {} for {}", status, upstream_url)
+            raise HTTPException(status_code=502, detail=f"upstream returned {status}") from exc
+        except Exception as exc:
+            logger.warning("Pixiv image proxy failed for {}: {}", upstream_url, exc)
+            raise HTTPException(status_code=502, detail="image fetch failed") from exc
+
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @app.post("/api/save-download")

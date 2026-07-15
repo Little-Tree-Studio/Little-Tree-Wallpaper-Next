@@ -13,6 +13,117 @@ from urllib.parse import unquote, urlparse
 from loguru import logger
 
 
+def get_display_resolutions() -> list[dict[str, object]]:
+    """Return active display resolutions with the primary display first."""
+    displays: list[dict[str, object]] = []
+    if os.name == "nt":
+        try:
+            import win32api
+            import win32con
+
+            for index, (handle, _device_context, _rect) in enumerate(win32api.EnumDisplayMonitors()):
+                try:
+                    info = win32api.GetMonitorInfo(handle)
+                    device = str(info.get("Device") or f"DISPLAY{index + 1}")
+                    settings = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
+                    width = int(settings.PelsWidth)
+                    height = int(settings.PelsHeight)
+                    if width <= 0 or height <= 0:
+                        continue
+                    displays.append(
+                        {
+                            "id": device,
+                            "name": f"显示器 {index + 1}",
+                            "width": width,
+                            "height": height,
+                            "is_primary": bool(int(info.get("Flags", 0)) & 1),
+                        }
+                    )
+                except Exception as exc:
+                    logger.debug("读取显示器 {} 分辨率失败: {}", index + 1, exc)
+        except Exception as exc:
+            logger.debug("Windows 显示器枚举失败: {}", exc)
+
+    elif sys.platform == "darwin":
+        try:
+            import json
+
+            output = _try_subprocess(["system_profiler", "SPDisplaysDataType", "-json"])
+            payload = json.loads(output) if output else {}
+            index = 0
+            for adapter in payload.get("SPDisplaysDataType", []):
+                for display in adapter.get("spdisplays_ndrvs", []):
+                    resolution = str(
+                        display.get("_spdisplays_resolution")
+                        or display.get("spdisplays_resolution")
+                        or ""
+                    )
+                    match = re.search(r"(\d+)\s*x\s*(\d+)", resolution)
+                    if not match:
+                        continue
+                    index += 1
+                    displays.append(
+                        {
+                            "id": str(display.get("_name") or f"display-{index}"),
+                            "name": str(display.get("_name") or f"显示器 {index}"),
+                            "width": int(match.group(1)),
+                            "height": int(match.group(2)),
+                            "is_primary": display.get("spdisplays_main") == "spdisplays_yes" or index == 1,
+                        }
+                    )
+        except Exception as exc:
+            logger.debug("macOS 显示器枚举失败: {}", exc)
+
+    elif sys.platform.startswith("linux"):
+        try:
+            output = _try_subprocess(["xrandr", "--query"])
+            for line in (output or "").splitlines():
+                match = re.match(
+                    r"^(\S+)\s+connected(?:\s+(primary))?\s+(\d+)x(\d+)[+-]\d+[+-]\d+",
+                    line.strip(),
+                )
+                if not match:
+                    continue
+                displays.append(
+                    {
+                        "id": match.group(1),
+                        "name": match.group(1),
+                        "width": int(match.group(3)),
+                        "height": int(match.group(4)),
+                        "is_primary": bool(match.group(2)),
+                    }
+                )
+        except Exception as exc:
+            logger.debug("Linux 显示器枚举失败: {}", exc)
+
+    if not displays:
+        try:
+            import tkinter as tk
+
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                width = int(root.winfo_screenwidth())
+                height = int(root.winfo_screenheight())
+            finally:
+                root.destroy()
+            if width > 0 and height > 0:
+                displays.append(
+                    {
+                        "id": "primary",
+                        "name": "主显示器",
+                        "width": width,
+                        "height": height,
+                        "is_primary": True,
+                    }
+                )
+        except Exception as exc:
+            logger.debug("主显示器分辨率回退读取失败: {}", exc)
+
+    displays.sort(key=lambda item: not bool(item["is_primary"]))
+    return displays
+
+
 def _try_subprocess(cmd: list[str], **kwargs) -> str | None:
     try:
         return subprocess.check_output(cmd, text=True, **kwargs).strip()

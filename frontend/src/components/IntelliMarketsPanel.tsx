@@ -310,6 +310,7 @@ export default function IntelliMarketsPanel() {
         source_url: item.metadata?.original_url || item.image_url,
         preview_url: item.preview_url || item.image_url,
         source_type: item.source_id || 'intelligent_market',
+        source_name: selected?.friendly_name || item.source_name || 'IntelliMarkets',
         copyright: item.copyright || '',
       };
     });

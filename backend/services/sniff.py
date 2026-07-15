@@ -125,19 +125,33 @@ class SniffService:
     def __init__(self):
         self._tracking_regex = re.compile("|".join(self.TRACKING_PATTERNS), re.IGNORECASE)
 
-    def sniff_images(self, url: str, user_agent: str, timeout_seconds: int = 15) -> list[dict]:
+    def sniff_images(
+        self,
+        url: str,
+        user_agent: str,
+        timeout_seconds: int = 15,
+        referer: str = "",
+        use_source_as_referer: bool = True,
+    ) -> list[dict]:
         if not url.startswith(("http://", "https://")):
             url = "http://" + url
 
         logger.info("Sniffing images from {}", url)
         headers = {"User-Agent": user_agent, "Accept": "text/html,*/*"}
+        page_referer = url if use_source_as_referer else referer.strip()
+        if page_referer.startswith(("http://", "https://")):
+            headers["Referer"] = page_referer
         try:
-            resp = requests.get(url, headers=headers, timeout=timeout_seconds)
+            resp = requests.get(url, headers=headers, timeout=timeout_seconds, allow_redirects=True)
             resp.raise_for_status()
             html = resp.text
+            page_url = resp.url or url
         except requests.exceptions.RequestException as e:
             logger.warning("Fetch failed {}: {}", url, e)
             return []
+
+        if use_source_as_referer:
+            page_referer = page_url
 
         found_urls: set[str] = set()
 
@@ -150,8 +164,8 @@ class SniffService:
 
         found_urls.update(self.IMAGE_REGEX.findall(html))
 
-        results = self._process_results(url, found_urls)
-        logger.info("Sniffed {} images from {}", len(results), url)
+        results = self._process_results(page_url, found_urls, page_referer)
+        logger.info("Sniffed {} images from {}", len(results), page_url)
         return results
 
     def _extract_ssr_images(self, html: str) -> set[str]:
@@ -204,7 +218,7 @@ class SniffService:
             # 如果字符串本身就是一个完整的图片 URL
             urls.add(obj)
 
-    def _process_results(self, base_url: str, raw_urls: set[str]) -> list[dict]:
+    def _process_results(self, base_url: str, raw_urls: set[str], referer: str = "") -> list[dict]:
         results: list[dict] = []
         seen_urls: set[str] = set()
 
@@ -235,7 +249,10 @@ class SniffService:
                     "title": title,
                     "image_url": absolute_url,
                     "preview_url": absolute_url,
-                    "metadata": {"page_url": base_url},
+                    "metadata": {
+                        "page_url": base_url,
+                        "referer": referer,
+                    },
                 }
             )
         return results

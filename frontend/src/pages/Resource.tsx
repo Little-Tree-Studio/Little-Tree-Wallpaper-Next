@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
   Card, Button, Tabs, Skeleton, Chip, ComboBox, Input, Label, ListBox,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Download, Heart, Copy, ChevronLeft, ChevronRight, RefreshCw, Save,
-  ExternalLink, SlidersHorizontal,
+  ExternalLink,
 } from 'lucide-react';
 import {
   queryBing, querySpotlight,
@@ -17,6 +17,9 @@ import { logError } from '@/lib/log';
 import { safeNameForFile } from '@/lib/download';
 import IntelliMarketsPanel from '@/components/IntelliMarketsPanel';
 import WallpaperSourceBrowser from './WallpaperSourceBrowser';
+import CnuPanel from '@/components/CnuPanel';
+import PixivelPanel from '@/components/PixivelPanel';
+import TimelinePanel from '@/components/TimelinePanel';
 
 function formatBingDate(item: any, category: string): string {
   if (category === 'daily') return '今日';
@@ -113,10 +116,16 @@ function SpotlightSkeleton() {
 }
 
 export default function Resource() {
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('bing');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(
+    requestedTab === 'cnu' ? 'cnu'
+      : requestedTab === 'pixivel' ? 'pixivel'
+        : requestedTab === 'timeline' ? 'timeline'
+          : 'bing'
+  );
   const [bingTab, setBingTab] = useState('daily');
-  const [spotlightTab, setSpotlightTab] = useState('local');
+  const [spotlightTab, setSpotlightTab] = useState('online');
   const [bingGallery, setBingGallery] = useState<any[]>([]);
   const [spotlightGallery, setSpotlightGallery] = useState<any[]>([]);
   const [bingLoading, setBingLoading] = useState(false);
@@ -146,7 +155,7 @@ export default function Resource() {
     }
   }, []);
 
-  const fetchSpotlight = useCallback(async (source: string = 'local', forceRefresh: boolean = false) => {
+  const fetchSpotlight = useCallback(async (source: string = 'online', forceRefresh: boolean = false) => {
     setSpotlightLoading(true);
     setSpotlightGallery([]);
     setSelectedSpotlightIndex(0);
@@ -178,21 +187,22 @@ export default function Resource() {
     }
   }, [activeTab, bingTab, spotlightTab, bingLoadedFor, spotlightLoadedFor, bingLoading, spotlightLoading, fetchBing, fetchSpotlight]);
 
-  const handleSetWallpaper = (url: string, title: string) => {
+  const handleSetWallpaper = (url: string, title: string, localPath?: string | null) => {
     const safeName = safeNameForFile(title, 'wallpaper');
-    return setWallpaperWithProgress(url, `${safeName}.jpg`);
+    return setWallpaperWithProgress(url, `${safeName}.jpg`, localPath);
   };
 
   const handleFavorite = async (item: any) => {
+    const originalPath = spotlightOriginalPath(item);
     await addFavorite({
       folder_id: 'default',
       title: item.title || '未命名',
       description: item.description || '',
       tags: [],
       preview_url: item.preview_url || item.image_url,
-      local_path: null,
+      local_path: originalPath,
       source_type: item.source_id || 'unknown',
-      source_url: item.image_url,
+      source_url: originalPath || item.image_url,
     });
   };
 
@@ -214,12 +224,20 @@ export default function Resource() {
     openViewer(items, startIndex);
   };
 
+  const spotlightOriginalPath = (item: any): string | null => {
+    const meta = item?.metadata;
+    if (meta && typeof meta === 'object' && typeof meta.original_image_url === 'string') {
+      return meta.original_image_url;
+    }
+    return null;
+  };
+
   const openSpotlightViewer = (startIndex = 0) => {
     const items = spotlightGallery.map((item) => ({
-      src: item.image_url,
+      src: item.preview_url || item.image_url,
       title: item.title || 'Windows 聚焦',
       description: item.description || '',
-      source_url: item.image_url,
+      source_url: spotlightOriginalPath(item) || item.image_url,
       preview_url: item.preview_url || item.image_url,
       source_type: 'spotlight',
     }));
@@ -230,11 +248,18 @@ export default function Resource() {
     <div className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-bold">资源</h1>
 
-      <Tabs selectedKey={activeTab} onSelectionChange={(k) => setActiveTab(String(k))}>
+      <Tabs selectedKey={activeTab} onSelectionChange={(key) => {
+        const nextTab = String(key);
+        setActiveTab(nextTab);
+        setSearchParams(nextTab === 'bing' ? {} : { tab: nextTab }, { replace: true });
+      }}>
         <Tabs.ListContainer>
           <Tabs.List aria-label="资源来源">
             <Tabs.Tab id="bing">Bing 壁纸<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="spotlight">Windows 聚焦<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="timeline">拾光壁纸<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="cnu">CNU 摄影<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="pixivel">Pixiv 排行榜<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="intellimarkets">IntelliMarkets<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="sources">壁纸源<Tabs.Indicator /></Tabs.Tab>
           </Tabs.List>
@@ -347,8 +372,8 @@ export default function Resource() {
 
         <Tabs.Panel id="spotlight">
           <div className="mb-3 flex items-center gap-2">
-            <Button size="sm" variant={spotlightTab === 'local' ? 'primary' : 'ghost'} onPress={() => setSpotlightTab('local')}>本地</Button>
             <Button size="sm" variant={spotlightTab === 'online' ? 'primary' : 'ghost'} onPress={() => setSpotlightTab('online')}>在线</Button>
+            <Button size="sm" variant={spotlightTab === 'local' ? 'primary' : 'ghost'} onPress={() => setSpotlightTab('local')}>本地</Button>
             <Button size="sm" variant="ghost" onPress={() => fetchSpotlight(spotlightTab, true)} isDisabled={spotlightLoading}><RefreshCw size={14} className={spotlightLoading ? 'animate-spin' : ''} /></Button>
           </div>
 
@@ -373,11 +398,11 @@ export default function Resource() {
                     <div className="text-sm text-muted">{currentSpotlight.description}</div>
                     <div className="text-xs text-muted">{selectedSpotlightIndex + 1} / {spotlightGallery.length}</div>
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" onPress={() => handleSetWallpaper(currentSpotlight.image_url, currentSpotlight.title || 'spotlight')}><ImageIcon size={14} /> 设为壁纸</Button>
+                      <Button size="sm" onPress={() => handleSetWallpaper(currentSpotlight.image_url, currentSpotlight.title || 'spotlight', spotlightOriginalPath(currentSpotlight))}><ImageIcon size={14} /> 设为壁纸</Button>
                       <Button size="sm" variant="secondary" onPress={() => handleFavorite(currentSpotlight)}><Heart size={14} /> 收藏</Button>
-                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(currentSpotlight.image_url, `${safeNameForFile(currentSpotlight.title, 'spotlight')}.jpg`)}><Download size={14} /> 下载</Button>
-                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(currentSpotlight.image_url, `${safeNameForFile(currentSpotlight.title, 'spotlight')}.jpg`)}><Save size={14} /> 另存为</Button>
-                      <Button size="sm" variant="ghost" onPress={() => copyToClipboard(currentSpotlight.image_url)}><Copy size={14} /> 复制链接</Button>
+                      <Button size="sm" variant="secondary" onPress={() => downloadWithProgress(currentSpotlight.image_url, `${safeNameForFile(currentSpotlight.title, 'spotlight')}.jpg`, spotlightOriginalPath(currentSpotlight))}><Download size={14} /> 下载</Button>
+                      <Button size="sm" variant="secondary" onPress={() => saveAsWithProgress(currentSpotlight.image_url, `${safeNameForFile(currentSpotlight.title, 'spotlight')}.jpg`, spotlightOriginalPath(currentSpotlight))}><Save size={14} /> 另存为</Button>
+                      <Button size="sm" variant="ghost" onPress={() => copyToClipboard(spotlightOriginalPath(currentSpotlight) || currentSpotlight.image_url)}><Copy size={14} /> 复制链接</Button>
                       <Button size="sm" variant="ghost" onPress={() => openSpotlightViewer(selectedSpotlightIndex)}><ImageIcon size={14} /> 查看</Button>
                       <Button size="sm" variant="ghost" onPress={() => setSelectedSpotlightIndex(Math.max(0, selectedSpotlightIndex - 1))} isDisabled={selectedSpotlightIndex === 0}><ChevronLeft size={14} /> 上一张</Button>
                       <Button size="sm" variant="ghost" onPress={() => setSelectedSpotlightIndex(Math.min(spotlightGallery.length - 1, selectedSpotlightIndex + 1))} isDisabled={selectedSpotlightIndex >= spotlightGallery.length - 1}>下一张 <ChevronRight size={14} /></Button>
@@ -415,12 +440,19 @@ export default function Resource() {
           </div>
         </Tabs.Panel>
 
+        <Tabs.Panel id="cnu">
+          <CnuPanel active={activeTab === 'cnu'} />
+        </Tabs.Panel>
+
+        <Tabs.Panel id="timeline">
+          <TimelinePanel active={activeTab === 'timeline'} />
+        </Tabs.Panel>
+
+        <Tabs.Panel id="pixivel">
+          <PixivelPanel active={activeTab === 'pixivel'} />
+        </Tabs.Panel>
+
         <Tabs.Panel id="sources">
-          <div className="mb-3 flex items-center justify-end">
-            <Button size="sm" variant="secondary" onPress={() => navigate('/resource/source-management')}>
-              <SlidersHorizontal size={14} /> 管理壁纸源
-            </Button>
-          </div>
           <WallpaperSourceBrowser />
         </Tabs.Panel>
       </Tabs>

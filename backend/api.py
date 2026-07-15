@@ -9,12 +9,14 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 import webbrowser
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from loguru import logger
 
@@ -26,6 +28,7 @@ from backend.app_meta import (
 )
 from backend.paths import ensure_dirs, get_cache_dir, get_data_dir
 from backend.services.bing import BingService
+from backend.services.cnu import CNUService
 from backend.services.download import (
     DownloadError,
     WriteResult,
@@ -37,21 +40,47 @@ from backend.services.download import (
 )
 from backend.services.intelligent_market import IntelligentMarketService
 from backend.services.ltws import LTWSService
+from backend.services.pexels import PexelsService
+from backend.services.pixivel import PixivelService
 from backend.services.sniff import SniffService
 from backend.services.spotlight import SpotlightService
-from backend.services.sys_wallpaper import get_sys_wallpaper
+from backend.services.storage import StorageService
+from backend.services.sys_wallpaper import get_display_resolutions, get_sys_wallpaper
 from backend.services.sys_wallpaper import set_wallpaper as set_sys_wallpaper
+from backend.services.timeline import TimelineService
 from backend.settings_manager import get_settings_store
 
 ensure_dirs()
+
+
+def _favorites_transaction(method: Any) -> Any:
+    @wraps(method)
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self.store.transaction(), self._favorites_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _storage_references_transaction(method: Any) -> Any:
+    @wraps(method)
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self.store.transaction(), self._storage_references_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class BackendAPI:
     def __init__(self) -> None:
         self.store = get_settings_store()
         self.bing_service = BingService()
+        self.cnu_service = CNUService()
+        self.pexels_service = PexelsService()
+        self.pixivel_service = PixivelService()
         self.spotlight_service = SpotlightService()
         self.sniff_service = SniffService()
+        self.timeline_service = TimelineService()
         self.im_service = IntelligentMarketService(
             cache_dir=get_cache_dir(),
             settings_store=self.store,
@@ -66,14 +95,42 @@ class BackendAPI:
         # Per-session secret token injected by the launcher (main.py). It is used
         # to build authenticated preview URLs and is never written to disk.
         self._api_token: str | None = None
+        self._favorites_lock = threading.RLock()
+        self._storage_references_lock = threading.RLock()
+        self._storage_task_lock = threading.Lock()
+        self._storage_task_state: dict[str, Any] = {
+            "id": "",
+            "running": False,
+            "kind": "",
+            "title": "",
+            "message": "",
+            "current": 0,
+            "total": 1,
+            "success": None,
+            "error": "",
+            "moved": 0,
+            "undeleted": 0,
+            "started_at": "",
+            "finished_at": "",
+        }
         self._ensure_favorites()
         self._ensure_history()
+        self.storage_service = StorageService(
+            self.store,
+            self._downloads_dir,
+            self._favorites_path,
+            self._protected_storage_paths,
+        )
+        self.storage_service.start_automatic_maintenance()
 
     def set_api_token(self, token: str) -> None:
         """Inject the per-session token used to authorize preview URLs."""
         self._api_token = token
 
     def _favorites_path(self) -> Path:
+        raw = self.store.get("storage.favorites_directory")
+        if isinstance(raw, str) and raw.strip():
+            return Path(raw.strip()) / "favorites.json"
         return get_data_dir() / "favorites.json"
 
     def _history_path(self) -> Path:
@@ -113,50 +170,299 @@ class BackendAPI:
             return Path(raw.strip())
         return get_data_dir() / "downloads"
 
+    def _protected_storage_paths(self) -> set[Path]:
+        protected: set[Path] = set()
+        protected.add(self._favorites_path())
+        current = get_sys_wallpaper()
+        if current:
+            protected.add(Path(current))
+        try:
+            favorites = json.loads(self._favorites_path().read_text(encoding="utf-8"))
+            history = json.loads(self._history_path().read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError("收藏或历史记录无法读取，已停止可能删除文件的操作") from exc
+        favorite_items = favorites.get("items") if isinstance(favorites, dict) else None
+        if not isinstance(favorite_items, list) or not isinstance(history, list):
+            raise RuntimeError("收藏或历史记录格式异常，已停止可能删除文件的操作")
+        for item in favorite_items:
+            if not isinstance(item, dict) or not isinstance(item.get("local_path"), (str, type(None))):
+                raise RuntimeError("收藏记录格式异常，已停止可能删除文件的操作")
+            local_path = item.get("local_path")
+            if local_path:
+                protected.add(Path(str(local_path)))
+        for item in history:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), (str, type(None))):
+                raise RuntimeError("历史记录格式异常，已停止可能删除文件的操作")
+            path = item.get("path")
+            if path:
+                protected.add(Path(str(path)))
+        for key in (
+            "wallpaper.auto_change.interval.fixed_image",
+            "startup.wallpaper_change.fixed_image",
+        ):
+            path = self.store.get(key)
+            if path:
+                protected.add(Path(str(path)))
+        return protected
+
+    def _rebase_download_references(
+        self, copied: list[tuple[Path, Path]]
+    ) -> tuple[dict[str, Any], set[Path]]:
+        mapping = {
+            os.path.normcase(os.path.abspath(str(source))): str(destination)
+            for source, destination in copied
+        }
+        favorites_path = self._favorites_path()
+        history_path = self._history_path()
+        favorites = json.loads(favorites_path.read_text(encoding="utf-8"))
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        if not isinstance(favorites, dict) or not isinstance(favorites.get("items"), list):
+            raise RuntimeError("收藏数据格式异常，无法安全迁移下载")
+        if not isinstance(history, list):
+            raise RuntimeError("历史记录格式异常，无法安全迁移下载")
+        original_favorites = json.loads(json.dumps(favorites, ensure_ascii=False))
+        original_history = json.loads(json.dumps(history, ensure_ascii=False))
+        setting_keys = (
+            "wallpaper.auto_change.interval.fixed_image",
+            "startup.wallpaper_change.fixed_image",
+        )
+        original_settings = {key: self.store.get(key) for key in setting_keys}
+        current_wallpaper = get_sys_wallpaper()
+
+        for item in favorites["items"]:
+            if not isinstance(item, dict):
+                continue
+            local_path = item.get("local_path")
+            replacement = mapping.get(os.path.normcase(os.path.abspath(str(local_path)))) if local_path else None
+            if replacement:
+                item["local_path"] = replacement
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            replacement = mapping.get(os.path.normcase(os.path.abspath(str(path)))) if path else None
+            if replacement:
+                item["path"] = replacement
+
+        try:
+            self._write_json_atomic(favorites_path, favorites)
+            self._write_json_atomic(history_path, history)
+            changed_settings: dict[str, str] = {}
+            for key, old_value in original_settings.items():
+                replacement = mapping.get(os.path.normcase(os.path.abspath(str(old_value)))) if old_value else None
+                if replacement:
+                    changed_settings[key] = replacement
+            if changed_settings:
+                self.store.set_many(changed_settings)
+        except Exception:
+            self._write_json_atomic(favorites_path, original_favorites)
+            self._write_json_atomic(history_path, original_history)
+            self.store.set_many(original_settings)
+            raise
+
+        preserve_sources: set[Path] = set()
+        if current_wallpaper:
+            replacement = mapping.get(os.path.normcase(os.path.abspath(current_wallpaper)))
+            if replacement:
+                try:
+                    set_sys_wallpaper(replacement)
+                except Exception:
+                    preserve_sources.add(Path(current_wallpaper))
+        state = {
+            "favorites": original_favorites,
+            "history": original_history,
+            "settings": original_settings,
+            "current_wallpaper": current_wallpaper,
+        }
+        return state, preserve_sources
+
+    def _restore_download_references(self, state: dict[str, Any]) -> None:
+        self._write_json_atomic(self._favorites_path(), state["favorites"])
+        self._write_json_atomic(self._history_path(), state["history"])
+        self.store.set_many(state["settings"])
+        current_wallpaper = state.get("current_wallpaper")
+        if current_wallpaper:
+            with contextlib.suppress(Exception):
+                set_sys_wallpaper(current_wallpaper)
+
     def _ensure_favorites(self) -> None:
         path = self._favorites_path()
         if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
             default = {
                 "folders": [{"id": "default", "name": "默认收藏夹", "description": "", "order": 0}],
                 "items": [],
                 "all_tags": [],
+                "system_tags": [],
             }
             path.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    SYSTEM_TAGS = ["Bing", "Windows聚焦"]
+    SOURCE_FAVORITE_TAGS = {
+        "bing": "Bing",
+        "builtin.bing_daily": "Bing",
+        "builtin.bing_recent": "Bing",
+        "spotlight": "Windows聚焦",
+        "builtin.windows_spotlight": "Windows聚焦",
+        "builtin.windows_spotlight_online": "Windows聚焦",
+        "search": "百度图片",
+        "builtin.cnu": "CNU",
+        "builtin.pexels": "Pexels",
+        "builtin.pixivel": "Pixiv",
+        "builtin.timeline": "拾光壁纸",
+    }
 
-    def _migrate_all_tags(self, data: dict[str, Any]) -> dict[str, Any]:
-        """确保 favorites 数据包含 all_tags 字段，并包含系统标签。"""
+    @classmethod
+    def _favorite_source_tag(cls, item: dict[str, Any]) -> str:
+        source_type = str(item.get("source_type") or "")
+        fixed = cls.SOURCE_FAVORITE_TAGS.get(source_type)
+        if fixed:
+            return fixed
+        return str(item.get("source_name") or "").strip()
+
+    @staticmethod
+    def _normalize_favorite_description(value: Any) -> str:
+        description = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        return re.sub(r"<br\s*/?>", "\n", description, flags=re.IGNORECASE)
+
+    def _migrate_favorite_tags(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Backfill source tags and rebuild the global tag collection."""
+        changed = "all_tags" not in data or "system_tags" not in data
         tags: set[str] = set(data.get("all_tags", []))
+        previous_system_tags = set(data.get("system_tags", []))
+        actual_system_tags: set[str] = set()
         for item in data.get("items", []):
-            for tag in item.get("tags", []):
+            description = str(item.get("description") or "")
+            normalized_description = self._normalize_favorite_description(description)
+            if normalized_description != description:
+                item["description"] = normalized_description
+                changed = True
+            item_tags = list(item.get("tags", []))
+            source_tag = self._favorite_source_tag(item)
+            if source_tag and source_tag not in item_tags:
+                item_tags.append(source_tag)
+                item["tags"] = item_tags
+                changed = True
+            if source_tag:
+                actual_system_tags.add(source_tag)
+            for tag in item_tags:
                 tags.add(tag)
-        for tag in self.SYSTEM_TAGS:
-            tags.add(tag)
-        data["all_tags"] = sorted(tags)
-        return data
+        unused_system_tags = (previous_system_tags | set(self.SOURCE_FAVORITE_TAGS.values())) - actual_system_tags
+        tags.difference_update(unused_system_tags)
+        tags.update(actual_system_tags)
+        sorted_tags = sorted(tags)
+        if data.get("all_tags") != sorted_tags:
+            data["all_tags"] = sorted_tags
+            changed = True
+        sorted_system_tags = sorted(actual_system_tags)
+        if data.get("system_tags") != sorted_system_tags:
+            data["system_tags"] = sorted_system_tags
+            changed = True
+        return data, changed
 
     def _ensure_history(self) -> None:
         path = self._history_path()
         if not path.exists():
             path.write_text("[]", encoding="utf-8")
 
-    def _load_favorites(self) -> dict[str, Any]:
+    @_favorites_transaction
+    def _load_favorites(self, strict: bool = True) -> dict[str, Any]:
         try:
-            data = json.loads(self._favorites_path().read_text(encoding="utf-8"))
+            with self._favorites_lock:
+                data = json.loads(self._favorites_path().read_text(encoding="utf-8"))
             # Migrate old default folder name from "全部" to "默认收藏夹"
             for folder in data.get("folders", []):
                 if folder.get("id") == "default" and folder.get("name") == "全部":
                     folder["name"] = "默认收藏夹"
                     self._save_favorites(data)
                     break
-            data = self._migrate_all_tags(data)
-            return data
-        except Exception:
-            return {"folders": [], "items": [], "all_tags": []}
+            data, tags_changed = self._migrate_favorite_tags(data)
+            normalized, urls_changed = self._normalize_favorite_urls(data)
+            if tags_changed or urls_changed:
+                self._save_favorites(normalized)
+            return self._hydrate_favorite_urls(normalized)
+        except Exception as exc:
+            if strict:
+                raise RuntimeError("收藏数据暂时无法读取，请检查收藏存储位置") from exc
+            return {"folders": [], "items": [], "all_tags": [], "system_tags": []}
 
     def _save_favorites(self, data: dict[str, Any]) -> None:
-        self._favorites_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._favorites_lock:
+            self._write_json_atomic(self._favorites_path(), data)
+
+    @staticmethod
+    def _write_json_atomic(path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as file:
+                json.dump(data, file, ensure_ascii=False, indent=2)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, path)
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+
+    @staticmethod
+    def _write_json_exclusive(path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                json.dump(data, file, ensure_ascii=False, indent=2)
+                file.flush()
+                os.fsync(file.fileno())
+        except Exception:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            raise
+
+    @staticmethod
+    def _unwrap_session_url(url: str) -> str:
+        """Return the stable resource represented by a session-bound API URL."""
+        if not url:
+            return url
+        parsed = urlparse(url)
+        if parsed.path in ("/api/cnu-image", "/api/pixiv-image", "/api/sniff-image"):
+            values = parse_qs(parsed.query).get("url")
+            return values[0] if values else url
+        if parsed.path == "/api/preview":
+            values = parse_qs(parsed.query).get("path")
+            return values[0] if values else url
+        return url
+
+    def _normalize_favorite_urls(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Strip old ports/tokens before favorites are persisted."""
+        changed = False
+        for item in data.get("items", []):
+            for field in ("preview_url", "source_url"):
+                value = str(item.get(field) or "")
+                normalized = self._unwrap_session_url(value)
+                if normalized != value:
+                    item[field] = normalized
+                    changed = True
+        return data, changed
+
+    def _hydrate_favorite_urls(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Build current-session URLs in a response copy, leaving disk data stable."""
+        hydrated = {**data, "items": []}
+        for item in data.get("items", []):
+            current = dict(item)
+            for field in ("preview_url", "source_url"):
+                value = str(current.get(field) or "")
+                if self._is_cnu_cdn_url(value):
+                    current[field] = self._build_cnu_proxy_url(value)
+                elif self._is_pixivel_cdn_url(value):
+                    current[field] = self._build_pixivel_proxy_url(value)
+                elif current.get("source_type") == "sniff" and value:
+                    page_url = str(current.get("source_page_url") or "")
+                    current[field] = self._build_sniff_proxy_url(value, page_url)
+                elif current.get("source_type") == "builtin.timeline" and value:
+                    current[field] = self._build_sniff_proxy_url(value)
+                elif value and Path(value).is_absolute():
+                    current[field] = self._build_preview_url(value) or value
+            hydrated["items"].append(current)
+        return hydrated
 
     def _load_history(self) -> list[dict[str, Any]]:
         try:
@@ -165,20 +471,40 @@ class BackendAPI:
             return []
 
     def _save_history(self, data: list[dict[str, Any]]) -> None:
-        self._history_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_json_atomic(self._history_path(), data)
 
     def _download_file_sync(
         self, url: str, save_dir: Path, filename: str | None = None, headers: dict[str, str] | None = None
     ) -> str | None:
         """Stream ``url`` into ``save_dir`` with full integrity checks.
 
+        Accepts HTTP URLs, local absolute file paths, and session-scoped
+        ``/api/preview`` URLs. Local files are copied directly when they reside
+        in a safe root.
+
         Returns the saved path, or ``None`` on failure. The write is staged in
-        a ``*.part`` sibling and atomically renamed into place; the size is
-        compared against the advertised ``Content-Length`` and the bytes are
-        verified to decode as an image.
+        a ``*.Part`` sibling and atomically renamed into place; remote downloads
+        compare size against the advertised ``Content-Length`` and verify the
+        bytes decode as an image.
         """
         import requests
 
+        unwrapped = self._unwrap_session_url(url)
+
+        # Direct local path (or path unwrapped from /api/preview): copy if safe.
+        try:
+            candidate = Path(unwrapped)
+            if candidate.is_absolute() and candidate.is_file() and self.is_path_safe(str(candidate)):
+                save_dir.mkdir(parents=True, exist_ok=True)
+                name = filename or candidate.name or "download.jpg"
+                dest = save_dir / _shared_sanitize_filename(name)
+                with self.storage_service.download_operation():
+                    shutil.copy2(candidate, dest)
+                    return str(self.storage_service.optimize_new_download(dest))
+        except Exception:
+            pass
+
+        # Fallback: extract the path from an /api/preview URL.
         try:
             preview_path = self._extract_preview_path(url)
             if preview_path is not None:
@@ -187,12 +513,39 @@ class BackendAPI:
                     save_dir.mkdir(parents=True, exist_ok=True)
                     name = filename or path.name or "download.jpg"
                     dest = save_dir / _shared_sanitize_filename(name)
-                    shutil.copy2(path, dest)
-                    return str(dest)
+                    with self.storage_service.download_operation():
+                        shutil.copy2(path, dest)
+                        return str(self.storage_service.optimize_new_download(dest))
+        except Exception:
+            pass
+
+        # Remote download path.
+        try:
+            url = unwrapped
 
             h = dict(headers or {})
             h.setdefault("User-Agent", self.store.get("sniff.user_agent", "Mozilla/5.0"))
-            resp = requests.get(url, headers=h, timeout=(10, 120), stream=True)
+            parsed_url = urlparse(url)
+            host = (parsed_url.hostname or "").lower()
+            pixiv_hosts = {"i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh"}
+            if host in {"i.pximg.net", "pximg.cocomi.eu.org"}:
+                url = parsed_url._replace(scheme="https", netloc="i.yuki.sh").geturl()
+                host = "i.yuki.sh"
+            if host in {"i.pximg.net", "i.pximg.org"}:
+                h.setdefault("Referer", "https://www.pixiv.net/")
+                h.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+            elif host in {"pximg.cocomi.eu.org", "i.yuki.sh"}:
+                h.setdefault("Referer", "https://pxelk.cocomi.eu.org/")
+                h.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+            resp = requests.get(
+                url,
+                headers=h,
+                timeout=(10, 120),
+                stream=True,
+                allow_redirects=host not in pixiv_hosts,
+            )
+            if resp.is_redirect or resp.is_permanent_redirect:
+                raise DownloadError("Pixiv 图片地址发生了不安全的重定向", code="unsafe_redirect")
             resp.raise_for_status()
 
             content_type = resp.headers.get("Content-Type", "")
@@ -210,18 +563,19 @@ class BackendAPI:
             try:
                 total_header = resp.headers.get("Content-Length")
                 expected_size = int(total_header) if (total_header and total_header.isdigit()) else None
-                with resp.raw as source:
+                with self.storage_service.download_operation(), resp.raw as source:
                     result: WriteResult = stream_to_file_atomic(
                         dest,
                         source,
                         expected_size=expected_size,
                         content_type=content_type,
                     )
+                    optimized_path = self.storage_service.optimize_new_download(result.path)
             finally:
                 resp.close()
 
             logger.info("Downloaded {} ({} bytes) -> {}", url, result.size, result.path)
-            return str(result.path)
+            return str(optimized_path)
         except DownloadError as e:
             logger.warning("Download rejected: {} ({})", e, e.code)
             return None
@@ -241,7 +595,7 @@ class BackendAPI:
         paths = params.get("path")
         if not paths:
             return None
-        return unquote(paths[0])
+        return paths[0]
 
     @staticmethod
     def _filename_from_response(resp: Any, url: str) -> str | None:
@@ -290,6 +644,12 @@ class BackendAPI:
         if isinstance(raw_dl, str) and raw_dl.strip():
             with contextlib.suppress(Exception):
                 roots.add(Path(raw_dl.strip()).resolve())
+        # Windows Spotlight assets live in a system directory; allowing them
+        # lets the local Spotlight proxy serve and copy those files.
+        if os.name == "nt":
+            spotlight_path = Path.home() / "AppData/Local/Packages/Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy/LocalState/Assets"
+            with contextlib.suppress(Exception):
+                roots.add(spotlight_path.resolve())
         return roots
 
     def is_path_safe(self, image_path: str) -> bool:
@@ -326,6 +686,114 @@ class BackendAPI:
         if token:
             query += f"&token={token}"
         return f"/api/preview?{query}"
+
+    def _build_cnu_proxy_url(self, url: str) -> str:
+        """Wrap a CNU CDN image URL with the local same-origin proxy endpoint."""
+        if not url:
+            return url
+        token = self._api_token or ""
+        query = f"url={quote(url, safe='')}"
+        if token:
+            query += f"&token={token}"
+        return f"/api/cnu-image?{query}"
+
+    def _build_sniff_proxy_url(self, url: str, referer: str = "") -> str:
+        """Wrap a sniffed remote image with the local Referer-aware proxy."""
+        if not url:
+            return url
+        token = self._api_token or ""
+        query = f"url={quote(url, safe='')}"
+        if referer:
+            query += f"&referer={quote(referer, safe='')}"
+        if token:
+            query += f"&token={token}"
+        return f"/api/sniff-image?{query}"
+
+    @staticmethod
+    def _is_cnu_cdn_url(url: str) -> bool:
+        return url.startswith((
+            "http://imgoss.cnu.cc",
+            "https://imgoss.cnu.cc",
+            "http://img.cnu.cc",
+            "https://img.cnu.cc",
+        ))
+
+    def _proxy_cnu_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Rewrite CNU CDN image URLs to same-origin proxy URLs.
+
+        Returns new dicts so cached originals remain untouched (prevents
+        double-wrapping on cache hits).
+        """
+        result: list[dict[str, Any]] = []
+        for item in items:
+            new_item = dict(item)
+            metadata = dict(new_item.get("metadata") or {})
+            for field in ("image_url", "preview_url"):
+                original = str(new_item.get(field) or "")
+                if original and self._is_cnu_cdn_url(original):
+                    metadata[f"original_{field}"] = original
+                    new_item[field] = self._build_cnu_proxy_url(original)
+            if metadata:
+                new_item["metadata"] = metadata
+            result.append(new_item)
+        return result
+
+    def _build_pixivel_proxy_url(self, url: str) -> str:
+        """Wrap a Pixiv CDN image URL with the local same-origin proxy endpoint."""
+        if not url:
+            return url
+        token = self._api_token or ""
+        query = f"url={quote(url, safe='')}"
+        if token:
+            query += f"&token={token}"
+        return f"/api/pixiv-image?{query}"
+
+    @staticmethod
+    def _is_pixivel_cdn_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.scheme.lower() in {"http", "https"} and (parsed.hostname or "").lower() in {
+            "i.pximg.net",
+            "i.pximg.org",
+            "pximg.cocomi.eu.org",
+            "i.yuki.sh",
+        }
+
+    def _proxy_pixivel_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Rewrite Pixiv CDN image URLs to same-origin proxy URLs."""
+        result: list[dict[str, Any]] = []
+        for item in items:
+            new_item = dict(item)
+            metadata = dict(new_item.get("metadata") or {})
+            for field in ("image_url", "preview_url"):
+                original = str(new_item.get(field) or "")
+                if original and self._is_pixivel_cdn_url(original):
+                    metadata[f"original_{field}"] = original
+                    new_item[field] = self._build_pixivel_proxy_url(original)
+            if metadata:
+                new_item["metadata"] = metadata
+            result.append(new_item)
+        return result
+
+    def _proxy_timeline_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Wrap Timeline image URLs with the authenticated remote image proxy."""
+        result: list[dict[str, Any]] = []
+        for item in items:
+            new_item = dict(item)
+            metadata = dict(new_item.get("metadata") or {})
+            for field in ("image_url", "preview_url"):
+                original = str(new_item.get(field) or "")
+                if original:
+                    metadata[f"original_{field}"] = original
+                    new_item[field] = self._build_sniff_proxy_url(original)
+            new_item["metadata"] = metadata
+            result.append(new_item)
+        return result
+
+    def _proxy_timeline_topics(self, topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # Topic covers are display-only. Timeline's own frontend loads them with
+        # referrerPolicy=no-referrer, so keep them direct instead of occupying
+        # the bounded image proxy pool with the full topic catalogue.
+        return [dict(topic) for topic in topics]
 
     def serve_image_bytes(self, image_path: str, max_size: int | None) -> tuple[bytes, str] | None:
         """Return ``(image_bytes, content_type)`` for streaming to the client.
@@ -376,11 +844,13 @@ class BackendAPI:
             logger.debug("serve_image_bytes read failed: {}", exc)
             return None
 
+    @_storage_references_transaction
     def set_wallpaper(self, path: str) -> dict[str, Any]:
         try:
-            set_sys_wallpaper(path)
-            self.add_to_history(path, Path(path).name, "set")
-            logger.info("Wallpaper set to {}", path)
+            real_path = self._unwrap_session_url(path)
+            set_sys_wallpaper(real_path)
+            self.add_to_history(real_path, Path(real_path).name, "set")
+            logger.info("Wallpaper set to {}", real_path)
             return {"success": True}
         except Exception as e:
             logger.error("Failed to set wallpaper {}: {}", path, e)
@@ -421,7 +891,7 @@ class BackendAPI:
                     "title": item.get("title", ""),
                     "copyright": item.get("description", ""),
                 }
-                for item in items
+                for item in (self._proxy_local_spotlight_item(i) for i in items)
             ]
         except Exception as e:
             logger.error(f"Spotlight error: {e}")
@@ -737,10 +1207,15 @@ class BackendAPI:
         root = tk.Tk()
         root.withdraw()
         try:
+            is_project = suggested_name.lower().endswith(".ltwp")
             path = filedialog.asksaveasfilename(
-                defaultextension=".jpg",
+                defaultextension=".ltwp" if is_project else ".jpg",
                 initialfile=suggested_name,
-                filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif"), ("All files", "*.*")],
+                filetypes=(
+                    [("小树壁纸项目", "*.ltwp"), ("所有文件", "*.*")]
+                    if is_project
+                    else [("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif"), ("All files", "*.*")]
+                ),
             )
             return path or None
         finally:
@@ -757,9 +1232,10 @@ class BackendAPI:
             save_dir = self._downloads_dir()
             save_dir.mkdir(parents=True, exist_ok=True)
             filepath = save_dir / self._sanitize_filename(filename)
-            result = write_blob_atomic(filepath, data)
-            logger.info("Saved download to {} ({} bytes)", result.path, result.size)
-            return str(result.path)
+            with self.storage_service.download_operation():
+                result = write_blob_atomic(filepath, data)
+                logger.info("Saved download to {} ({} bytes)", result.path, result.size)
+                return str(self.storage_service.optimize_new_download(result.path))
         except Exception as e:
             logger.error(f"Save blob to downloads error: {e}")
             return None
@@ -785,16 +1261,36 @@ class BackendAPI:
         try:
             ua = self.store.get("sniff.user_agent", "Mozilla/5.0")
             timeout = int(self.store.get("sniff.timeout_seconds", 15))
-            items = self.sniff_service.sniff_images(url, user_agent=ua, timeout_seconds=timeout)
-            return [
-                {
-                    "id": item.get("id", uuid.uuid4().hex),
-                    "url": item.get("image_url", ""),
-                    "filename": Path(item.get("image_url", "")).name or "image.jpg",
-                    "content_type": "",
-                }
-                for item in items
-            ]
+            configured_referer = str(self.store.get("sniff.referer", "") or "").strip()
+            use_source_as_referer = bool(self.store.get("sniff.use_source_as_referer", True))
+            items = self.sniff_service.sniff_images(
+                url,
+                user_agent=ua,
+                timeout_seconds=timeout,
+                referer=configured_referer,
+                use_source_as_referer=use_source_as_referer,
+            )
+
+            result: list[dict[str, Any]] = []
+            for item in items:
+                source_url = str(item.get("image_url") or "")
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                page_url = str(metadata.get("page_url") or url)
+                referer = str(metadata.get("referer") or "")
+                proxy_url = self._build_sniff_proxy_url(source_url, referer)
+                result.append(
+                    {
+                        "id": item.get("id", uuid.uuid4().hex),
+                        "url": proxy_url,
+                        "preview_url": proxy_url,
+                        "source_url": source_url,
+                        "source_page_url": page_url,
+                        "referer": referer,
+                        "filename": Path(urlparse(source_url).path).name or "image.jpg",
+                        "content_type": "",
+                    }
+                )
+            return result
         except Exception as e:
             logger.error(f"Sniff error: {e}")
             return []
@@ -832,13 +1328,177 @@ class BackendAPI:
             logger.error(f"Baidu image search error: {e}")
             return []
 
+    def search_pexels_images(self, text: str, page: int = 1, size: int = 24) -> list[dict[str, Any]]:
+        """Search Pexels' web catalogue and return original/preview URL pairs."""
+        user_agent = str(self.store.get("sniff.user_agent", "Mozilla/5.0"))
+        try:
+            items = self.pexels_service.search(text, page, size, user_agent)
+            # images.pexels.com permits anonymous CORS reads, so direct CDN URLs
+            # avoid saturating the bounded generic proxy while a gallery loads.
+            return [dict(item) for item in items]
+        except Exception as exc:
+            logger.error("Pexels image search error: {}", exc)
+            raise RuntimeError(str(exc)) from exc
+
+    def search_pixiv_images(
+        self,
+        text: str,
+        source: int = 1,
+        exclude_ai: bool = False,
+        r18: int = 0,
+        size: int = 15,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Search Pixiv through a configured public API adapter."""
+        import requests
+
+        if source not in (1, 2):
+            raise ValueError("未知的 Pixiv 搜索 API")
+        if not text.strip():
+            return []
+        configured_r18 = 2 if self.store.get("wallpaper.allow_NSFW", False) else 0
+        count = max(1, min(int(size), 15))
+        try:
+            if source == 2:
+                response = requests.get(
+                    "https://hibiapi.cocomi.eu.org/api/pixiv/search",
+                    params={"word": text.strip(), "page": max(1, int(page))},
+                    headers={
+                        "User-Agent": self.store.get("sniff.user_agent", "Mozilla/5.0"),
+                        "Accept": "application/json, text/plain, */*",
+                        "Referer": "https://pixiviz.cocomi.eu.org/",
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                results: list[dict[str, Any]] = []
+                for raw in payload.get("illusts", [])[:count]:
+                    if not isinstance(raw, dict):
+                        continue
+                    pixiv_id = str(raw.get("id") or "")
+                    if not pixiv_id:
+                        continue
+                    raw_meta_pages = raw.get("meta_pages") or []
+                    raw_original = str(
+                        (raw_meta_pages[0].get("image_urls") or {}).get("original")
+                        if isinstance(raw_meta_pages, list) and raw_meta_pages and isinstance(raw_meta_pages[0], dict)
+                        else (raw.get("meta_single_page") or {}).get("original_image_url") or ""
+                    )
+                    raw_tags = raw.get("tags") or []
+                    detail = raw
+                    if not raw_original or not raw_tags:
+                        try:
+                            detail = self.pixivel_service._fetch_illust(pixiv_id)
+                        except Exception as detail_exc:
+                            logger.warning("Pixiviz detail fallback for {}: {}", pixiv_id, detail_exc)
+                    if not configured_r18 and int(detail.get("x_restrict") or 0) > 0:
+                        continue
+                    if exclude_ai and int(detail.get("illust_ai_type") or 0) > 1:
+                        continue
+
+                    title = str(detail.get("title") or raw.get("title") or f"Pixiv {pixiv_id}").strip()
+                    user = detail.get("user") if isinstance(detail.get("user"), dict) else {}
+                    tags = PixivelService._format_tags(detail.get("tags") or [])
+                    meta_pages = detail.get("meta_pages") or []
+                    if isinstance(meta_pages, list) and meta_pages:
+                        image_url = str((meta_pages[0].get("image_urls") or {}).get("original") or "")
+                    else:
+                        image_url = str(
+                            (detail.get("meta_single_page") or {}).get("original_image_url")
+                            or (detail.get("image_urls") or {}).get("large")
+                            or (detail.get("image_urls") or {}).get("medium")
+                            or ""
+                        )
+                    if not image_url:
+                        continue
+                    extension = Path(urlparse(image_url).path).suffix.lstrip(".").lower() or "jpg"
+                    results.append(
+                        {
+                            "id": f"pixiviz-search:{pixiv_id}:0",
+                            "url": self._build_pixivel_proxy_url(image_url),
+                            "filename": f"{title}.{extension}",
+                            "content_type": f"image/{'jpeg' if extension in ('jpg', 'jpeg') else extension}",
+                            "title": title,
+                            "author": str(user.get("name") or ""),
+                            "author_id": str(user.get("id") or ""),
+                            "pixiv_id": pixiv_id,
+                            "width": detail.get("width"),
+                            "height": detail.get("height"),
+                            "tags": tags,
+                            "source_url": image_url,
+                        }
+                    )
+                return results
+
+            response = requests.get(
+                "https://api.lolicon.app/setu/v2",
+                params={
+                    "tag": text.strip(),
+                    "num": count,
+                    "excludeAI": str(bool(exclude_ai)).lower(),
+                    "r18": configured_r18,
+                    "proxy": "pximg.cocomi.eu.org",
+                },
+                headers={"User-Agent": self.store.get("sniff.user_agent", "Mozilla/5.0")},
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("error"):
+                raise RuntimeError(str(payload["error"]))
+
+            results: list[dict[str, Any]] = []
+            for raw in payload.get("data", []):
+                image_url = str((raw.get("urls") or {}).get("original") or "")
+                if not image_url:
+                    continue
+                proxied = self._build_pixivel_proxy_url(image_url)
+                extension = str(raw.get("ext") or "jpg").strip().lower()
+                title = str(raw.get("title") or f"Pixiv {raw.get('pid') or ''}").strip()
+                results.append(
+                    {
+                        "id": f"pixiv-search:{raw.get('pid')}:{raw.get('p', 0)}",
+                        "url": proxied,
+                        "filename": f"{title}.{extension}",
+                        "content_type": f"image/{'jpeg' if extension in ('jpg', 'jpeg') else extension}",
+                        "title": title,
+                        "author": str(raw.get("author") or ""),
+                        "author_id": str(raw.get("uid") or ""),
+                        "pixiv_id": str(raw.get("pid") or ""),
+                        "width": raw.get("width"),
+                        "height": raw.get("height"),
+                        "tags": [str(tag) for tag in raw.get("tags", [])],
+                        "source_url": image_url,
+                    }
+                )
+            return results
+        except Exception as exc:
+            logger.error("Pixiv image search error: {}", exc)
+            raise RuntimeError(f"Pixiv 搜索失败: {exc}") from exc
+
     def get_favorites(self) -> dict[str, Any]:
         return self._load_favorites()
 
+    @_favorites_transaction
     def add_favorite(self, item: dict[str, Any]) -> dict[str, Any]:
         data = self._load_favorites()
+        data, _ = self._normalize_favorite_urls(data)
+        stable_item = dict(item)
+        stable_item["description"] = self._normalize_favorite_description(stable_item.get("description"))
+        for field in ("preview_url", "source_url"):
+            stable_item[field] = self._unwrap_session_url(str(stable_item.get(field) or ""))
+        stable_tags = list(stable_item.get("tags", []))
+        source_tag = self._favorite_source_tag(stable_item)
+        if source_tag == "Pixiv" and not self.store.get(
+            "wallpaper.pixiv.include_artwork_tags_in_favorites", True
+        ):
+            stable_tags = ["Pixiv"]
+        elif source_tag and source_tag not in stable_tags:
+            stable_tags.append(source_tag)
+        stable_item["tags"] = stable_tags
         new_item = {
-            **item,
+            **stable_item,
             "id": uuid.uuid4().hex,
             "created_at": datetime.now().isoformat(),
         }
@@ -848,9 +1508,14 @@ class BackendAPI:
         for tag in new_item.get("tags", []):
             all_tags.add(tag)
         data["all_tags"] = sorted(all_tags)
+        system_tags = set(data.get("system_tags", []))
+        if source_tag:
+            system_tags.add(source_tag)
+        data["system_tags"] = sorted(system_tags)
         self._save_favorites(data)
-        return new_item
+        return self._hydrate_favorite_urls({"items": [new_item]} )["items"][0]
 
+    @_favorites_transaction
     def ensure_tag(self, name: str) -> None:
         data = self._load_favorites()
         all_tags = set(data.get("all_tags", []))
@@ -858,6 +1523,7 @@ class BackendAPI:
         data["all_tags"] = sorted(all_tags)
         self._save_favorites(data)
 
+    @_favorites_transaction
     def rename_tag(self, old_name: str, new_name: str) -> None:
         data = self._load_favorites()
         all_tags = data.get("all_tags", [])
@@ -870,6 +1536,7 @@ class BackendAPI:
                 item["tags"] = [t if t != old_name else new_name for t in tags]
         self._save_favorites(data)
 
+    @_favorites_transaction
     def delete_tag(self, name: str) -> None:
         data = self._load_favorites()
         all_tags = data.get("all_tags", [])
@@ -882,19 +1549,36 @@ class BackendAPI:
                 item["tags"] = [t for t in tags if t != name]
         self._save_favorites(data)
 
+    @_favorites_transaction
     def update_favorite(self, item: dict[str, Any]) -> None:
         data = self._load_favorites()
+        data, _ = self._normalize_favorite_urls(data)
+        stable_item = dict(item)
+        stable_item["description"] = self._normalize_favorite_description(stable_item.get("description"))
+        for field in ("preview_url", "source_url"):
+            stable_item[field] = self._unwrap_session_url(str(stable_item.get(field) or ""))
+        stable_tags = list(stable_item.get("tags", []))
+        source_tag = self._favorite_source_tag(stable_item)
+        if source_tag == "Pixiv" and not self.store.get(
+            "wallpaper.pixiv.include_artwork_tags_in_favorites", True
+        ):
+            stable_tags = ["Pixiv"]
+        elif source_tag and source_tag not in stable_tags:
+            stable_tags.append(source_tag)
+        stable_item["tags"] = stable_tags
         for i, it in enumerate(data["items"]):
             if it["id"] == item["id"]:
-                data["items"][i] = item
+                data["items"][i] = stable_item
                 break
         self._save_favorites(data)
 
+    @_favorites_transaction
     def remove_favorite(self, id: str) -> None:
         data = self._load_favorites()
         data["items"] = [it for it in data["items"] if it["id"] != id]
         self._save_favorites(data)
 
+    @_favorites_transaction
     def create_favorite_folder(self, name: str, description: str = "") -> dict[str, Any]:
         data = self._load_favorites()
         normalized_name = name.strip()
@@ -913,6 +1597,7 @@ class BackendAPI:
         self._save_favorites(data)
         return folder
 
+    @_favorites_transaction
     def update_favorite_folder(self, folder_id: str, name: str, description: str = "") -> dict[str, Any]:
         data = self._load_favorites()
         normalized_name = name.strip()
@@ -942,6 +1627,7 @@ class BackendAPI:
         self._save_favorites(data)
         return updated_folder
 
+    @_favorites_transaction
     def delete_favorite_folder(self, folder_id: str) -> None:
         if folder_id == "default":
             raise ValueError("默认收藏夹不能删除")
@@ -996,14 +1682,22 @@ class BackendAPI:
     def get_settings(self) -> dict[str, Any]:
         return self.store.as_dict()
 
+    @_storage_references_transaction
     def set_settings(self, settings: dict[str, Any]) -> None:
-        self.store._data = settings
-        self.store.save()
+        current_storage = self.store.get("storage", {})
+        incoming_storage = settings.get("storage", {})
+        for key in ("download_directory", "favorites_directory"):
+            if incoming_storage.get(key, "") != current_storage.get(key, ""):
+                raise ValueError("存储位置必须通过专用迁移接口修改")
+        self.store.replace(settings)
 
     def get_setting(self, key: str) -> Any:
         return self.store.get(key)
 
+    @_storage_references_transaction
     def set_setting(self, key: str, value: Any) -> None:
+        if key == "storage" or key in {"storage.download_directory", "storage.favorites_directory"}:
+            raise ValueError("存储位置必须通过专用迁移接口修改")
         self.store.set(key, value)
 
     def get_history(self, max_preview_items: int = 20) -> list[dict[str, Any]]:
@@ -1017,6 +1711,7 @@ class BackendAPI:
                 item.pop("preview_url", None)
         return history
 
+    @_storage_references_transaction
     def add_to_history(self, path: str, title: str, reason: str) -> None:
         history = self._load_history()
         history = [h for h in history if h.get("path") != path]
@@ -1198,31 +1893,263 @@ class BackendAPI:
         except Exception:
             return None
 
-    def export_favorites(self, folder_id: str | None = None) -> str:
+    @staticmethod
+    def _favorite_export_options(options: dict[str, Any] | str | None) -> dict[str, Any]:
+        """Normalize the favorite archive options while keeping old callers working."""
+        raw = {"scope": "folder", "folder_id": options} if isinstance(options, str) else options
+        raw = raw if isinstance(raw, dict) else {}
+        scope = str(raw.get("scope") or "all").strip().lower()
+        if scope not in {"selected", "folder", "all"}:
+            scope = "all"
+        item_ids = raw.get("item_ids")
+        if not isinstance(item_ids, list):
+            item_ids = []
+        try:
+            compression_level = max(1, min(9, int(raw.get("compression_level", 6))))
+        except (TypeError, ValueError):
+            compression_level = 6
+        return {
+            "scope": scope,
+            "folder_id": str(raw.get("folder_id") or ""),
+            "item_ids": {str(item_id) for item_id in item_ids if str(item_id)},
+            "include_local_data": bool(raw.get("include_local_data", False)),
+            "compression": bool(raw.get("compression", True)),
+            "compression_level": compression_level,
+        }
+
+    def _is_favorite_local_path_safe(self, image_path: str) -> bool:
+        if self.is_path_safe(image_path):
+            return True
+        try:
+            resolved = Path(image_path).resolve()
+            favorites_root = self._favorites_path().parent.resolve()
+            resolved.relative_to(favorites_root)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _export_favorite_url(self, value: Any) -> str:
+        normalized = self._unwrap_session_url(str(value or ""))
+        return "" if normalized and Path(normalized).is_absolute() else normalized
+
+    def export_favorites(self, options: dict[str, Any] | str | None = None) -> dict[str, Any]:
         import zipfile
 
-        data = self._load_favorites()
-        if folder_id:
-            data["items"] = [it for it in data["items"] if it["folder_id"] == folder_id]
-        export_path = get_data_dir() / f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ltfav"
-        with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        normalized = self._favorite_export_options(options)
+        source = self._load_favorites()
+        source_items = list(source.get("items", []))
+        if normalized["scope"] == "selected":
+            selected_ids = normalized["item_ids"]
+            items = [item for item in source_items if str(item.get("id")) in selected_ids]
+        elif normalized["scope"] == "folder" and normalized["folder_id"]:
+            items = [item for item in source_items if item.get("folder_id") == normalized["folder_id"]]
+        else:
+            items = source_items
+
+        item_folder_ids = {str(item.get("folder_id")) for item in items}
+        if normalized["scope"] == "all":
+            folders = list(source.get("folders", []))
+        else:
+            folders = [folder for folder in source.get("folders", []) if str(folder.get("id")) in item_folder_ids]
+        tags = sorted({str(tag) for item in items for tag in item.get("tags", []) if str(tag)})
+        tags = sorted({str(tag) for tag in source.get("all_tags", []) if str(tag)} | set(tags))
+        data = {
+            "archive_version": 2,
+            "folders": folders,
+            "items": [],
+            "all_tags": tags,
+            "system_tags": sorted({str(tag) for tag in source.get("system_tags", []) if str(tag) in tags}),
+        }
+        local_file_count = 0
+        missing_local_count = 0
+        archive_files: list[tuple[Path, str]] = []
+        for original_item in items:
+            item = dict(original_item)
+            for field in ("preview_url", "source_url"):
+                item[field] = self._export_favorite_url(item.get(field))
+            local_path = str(item.get("local_path") or "")
+            item.pop("local_path", None)
+            item["local_path"] = None
+            item.pop("local_archive_path", None)
+            if normalized["include_local_data"] and local_path:
+                candidate = Path(local_path)
+                if candidate.is_file() and self._is_favorite_local_path_safe(local_path):
+                    suffix = candidate.suffix.lower()[:16]
+                    archive_path = f"assets/{uuid.uuid4().hex}{suffix}"
+                    item["local_archive_path"] = archive_path
+                    archive_files.append((candidate, archive_path))
+                    local_file_count += 1
+                else:
+                    missing_local_count += 1
+            data["items"].append(item)
+
+        export_path = get_data_dir() / f"export_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}.ltfav"
+        compression = zipfile.ZIP_DEFLATED if normalized["compression"] else zipfile.ZIP_STORED
+        zip_kwargs: dict[str, Any] = {"compression": compression}
+        if compression == zipfile.ZIP_DEFLATED:
+            zip_kwargs["compresslevel"] = normalized["compression_level"]
+        with zipfile.ZipFile(export_path, "w", **zip_kwargs) as zf:
             zf.writestr("manifest.json", json.dumps(data, ensure_ascii=False, indent=2))
-        return str(export_path)
+            for local_path, archive_path in archive_files:
+                zf.write(local_path, archive_path)
+        return {
+            "path": str(export_path),
+            "item_count": len(data["items"]),
+            "folder_count": len(data["folders"]),
+            "local_file_count": local_file_count,
+            "missing_local_count": missing_local_count,
+            "compressed": normalized["compression"],
+            "compression_level": normalized["compression_level"] if normalized["compression"] else None,
+        }
 
-    def import_favorites(self, path: str) -> None:
+    @staticmethod
+    def _safe_favorite_archive_member(name: str) -> str | None:
+        normalized = name.replace("\\", "/")
+        path = Path(normalized)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            return None
+        if not normalized.startswith("assets/") or len(normalized) > 240:
+            return None
+        return normalized
+
+    @_favorites_transaction
+    def import_favorites(self, path: str) -> dict[str, int]:
         import zipfile
 
+        max_member_count = 4096
+        max_manifest_size = 16 * 1024 * 1024
+        max_member_size = 512 * 1024 * 1024
+        max_total_size = 1024 * 1024 * 1024
         with zipfile.ZipFile(path, "r") as zf:
-            data = json.loads(zf.read("manifest.json"))
-        current = self._load_favorites()
-        existing_ids = {it["id"] for it in current["items"]}
-        for item in data.get("items", []):
-            if item["id"] not in existing_ids:
-                current["items"].append(item)
-        for folder in data.get("folders", []):
-            if not any(f["id"] == folder["id"] for f in current["folders"]):
-                current["folders"].append(folder)
-        self._save_favorites(current)
+            infos = zf.infolist()
+            if len(infos) > max_member_count:
+                raise RuntimeError("收藏包包含过多文件")
+            try:
+                manifest_info = zf.getinfo("manifest.json")
+                if manifest_info.file_size > max_manifest_size:
+                    raise RuntimeError("收藏包清单过大")
+                data = json.loads(zf.read(manifest_info))
+            except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError("收藏包缺少有效的 manifest.json") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list) or not isinstance(data.get("folders"), list):
+                raise RuntimeError("收藏包格式无效")
+            archive_version = data.get("archive_version", 1)
+            if isinstance(archive_version, bool) or not isinstance(archive_version, int) or archive_version not in {1, 2}:
+                raise RuntimeError("不支持的收藏包版本")
+            members = {
+                safe_name: info
+                for info in infos
+                if (safe_name := self._safe_favorite_archive_member(info.filename)) is not None
+            }
+            total_size = sum(info.file_size for info in members.values() if not info.is_dir())
+            if any(info.file_size > max_member_size for info in members.values()):
+                raise RuntimeError("收藏包中的本地文件过大")
+            if total_size > max_total_size:
+                raise RuntimeError("收藏包展开后过大")
+            valid_folders = [
+                dict(folder)
+                for folder in data["folders"]
+                if isinstance(folder, dict) and isinstance(folder.get("id"), str) and folder["id"].strip()
+            ]
+            current = self._load_favorites()
+            existing_ids = {str(item.get("id")) for item in current["items"]}
+            existing_folder_ids = {str(folder.get("id")) for folder in current["folders"]}
+            restored_local_files = 0
+            missing_local_files = 0
+            imported_items = 0
+            skipped_items = 0
+            added_folders = 0
+            assets_dir = self._favorites_path().parent / "favorite_assets"
+            created_assets: list[Path] = []
+            try:
+                for raw_item in data["items"]:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    item_id = raw_item.get("id")
+                    if not isinstance(item_id, str) or not item_id.strip():
+                        continue
+                    folder_id = raw_item.get("folder_id", "default")
+                    if not isinstance(folder_id, str) or not folder_id.strip():
+                        continue
+                    raw_tags = raw_item.get("tags", [])
+                    if not isinstance(raw_tags, list) or any(not isinstance(tag, str) for tag in raw_tags):
+                        continue
+                    archive_reference = raw_item.get("local_archive_path")
+                    legacy_reference = raw_item.get("local_path")
+                    if archive_reference is not None and not isinstance(archive_reference, str):
+                        continue
+                    if legacy_reference is not None and not isinstance(legacy_reference, str):
+                        continue
+                    if item_id in existing_ids:
+                        skipped_items += 1
+                        continue
+                    item = dict(raw_item)
+                    item["id"] = item_id
+                    item["folder_id"] = folder_id
+                    item["tags"] = list(raw_tags)
+                    archive_member = self._safe_favorite_archive_member(archive_reference or "")
+                    item.pop("local_archive_path", None)
+                    item["local_path"] = None
+                    if archive_reference:
+                        info = members.get(archive_member) if archive_member else None
+                        unix_file_type = ((info.external_attr >> 16) & 0o170000) if info else 0
+                        if info and not info.is_dir() and unix_file_type != 0o120000:
+                            suffix = Path(archive_member).suffix.lower()[:16]
+                            destination = assets_dir / f"{uuid.uuid4().hex}{suffix}"
+                            temporary = destination.with_name(destination.name + ".part")
+                            assets_dir.mkdir(parents=True, exist_ok=True)
+                            try:
+                                with zf.open(info, "r") as source, temporary.open("wb") as output:
+                                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                                os.replace(temporary, destination)
+                            finally:
+                                with contextlib.suppress(OSError):
+                                    temporary.unlink()
+                            created_assets.append(destination)
+                            item["local_path"] = str(destination)
+                            restored_local_files += 1
+                        else:
+                            missing_local_files += 1
+                    elif legacy_reference:
+                        if Path(legacy_reference).is_file() and self._is_favorite_local_path_safe(legacy_reference):
+                            item["local_path"] = legacy_reference
+                        else:
+                            missing_local_files += 1
+                    current["items"].append(item)
+                    existing_ids.add(item_id)
+                    imported_items += 1
+                for folder in valid_folders:
+                    folder_id = str(folder["id"])
+                    if folder_id not in existing_folder_ids:
+                        current["folders"].append(folder)
+                        existing_folder_ids.add(folder_id)
+                        added_folders += 1
+                archive_tags = data.get("all_tags", [])
+                if isinstance(archive_tags, list) and all(isinstance(tag, str) for tag in archive_tags):
+                    current["all_tags"] = sorted(set(current.get("all_tags", [])) | set(archive_tags))
+                archive_system_tags = data.get("system_tags", [])
+                if isinstance(archive_system_tags, list) and all(isinstance(tag, str) for tag in archive_system_tags):
+                    current["system_tags"] = sorted(set(current.get("system_tags", [])) | set(archive_system_tags))
+                self._save_favorites(current)
+            except Exception:
+                for asset in created_assets:
+                    with contextlib.suppress(OSError):
+                        asset.unlink()
+                raise
+        return {
+            "imported_items": imported_items,
+            "skipped_items": skipped_items,
+            "added_folders": added_folders,
+            "restored_local_files": restored_local_files,
+            "missing_local_files": missing_local_files,
+        }
+
+    def pick_and_import_favorites(self) -> dict[str, int] | None:
+        path = self._show_file_dialog(
+            "open",
+            filetypes=[("Favorite Package", "*.ltfav"), ("All files", "*.*")],
+        )
+        return self.import_favorites(path) if path else None
 
     def get_local_image_url(self, image_path: str, max_size: int = 960) -> str | None:
         """Return a token-authenticated preview URL for a local image.
@@ -1237,6 +2164,10 @@ class BackendAPI:
 
     def get_platform(self) -> str:
         return sys.platform
+
+    @staticmethod
+    def get_display_resolutions() -> list[dict[str, object]]:
+        return get_display_resolutions()
 
     @staticmethod
     def get_build_info() -> dict[str, Any]:
@@ -1264,7 +2195,7 @@ class BackendAPI:
 
     def query_spotlight(
         self,
-        source: str = "local",
+        source: str = "online",
         limit: int = 20,
         market: str = "zh-CN",
         force_refresh: bool = False,
@@ -1273,10 +2204,108 @@ class BackendAPI:
             return self.spotlight_service.list_online_candidates(
                 limit=limit, market=market, force_refresh=force_refresh
             )
-        return self.spotlight_service.list_local_candidates(limit=limit, force_refresh=force_refresh)
+        items = self.spotlight_service.list_local_candidates(limit=limit, force_refresh=force_refresh)
+        return [self._proxy_local_spotlight_item(item) for item in items]
+
+    def _proxy_local_spotlight_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Wrap raw local file paths into same-origin preview URLs.
+
+        The webview blocks ``file://`` resources, so local Spotlight assets
+        must be served through ``/api/preview``.  The original path is kept
+        in ``metadata.original_image_url`` for operations that need the real
+        filesystem location (set wallpaper, download, copy path).
+        """
+        original_path = str(item.get("image_url") or "")
+        if not original_path or not Path(original_path).is_absolute():
+            return item
+        proxied = dict(item)
+        metadata = dict(proxied.get("metadata") or {})
+        metadata["original_image_url"] = original_path
+        proxied["metadata"] = metadata
+        preview_url = self._build_preview_url(original_path) or original_path
+        proxied["preview_url"] = preview_url
+        proxied["image_url"] = preview_url
+        return proxied
+
+    def query_cnu_selected(
+        self,
+        page: int = 1,
+        limit: int = 20,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        works = self.cnu_service.query_selected_works(page=page, limit=limit, force_refresh=force_refresh)
+        return self._proxy_cnu_items(works)
+
+    def get_cnu_work(self, work_id: str) -> list[dict[str, Any]]:
+        items = self.cnu_service.fetch_work(work_id)
+        return self._proxy_cnu_items(items)
+
+    def query_pixivel_ranking(
+        self,
+        mode: str = "day",
+        page: int = 1,
+        limit: int = 30,
+        force_refresh: bool = False,
+        ranking_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        works = self.pixivel_service.query_ranking(
+            mode=mode,
+            page=page,
+            limit=limit,
+            force_refresh=force_refresh,
+            ranking_date=ranking_date,
+        )
+        # Ranking cards only display thumbnails. Loading them directly from the
+        # Pxelk mirror avoids saturating the webview's limited connections to
+        # the local API and blocking unrelated RPC calls during navigation.
+        return works
+
+    def get_pixivel_work(self, work_id: str) -> list[dict[str, Any]]:
+        items = self.pixivel_service.fetch_work(work_id)
+        return self._proxy_pixivel_items(items)
+
+    def list_timeline_topics(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        topics = self.timeline_service.list_topics(force_refresh=force_refresh)
+        return self._proxy_timeline_topics(topics)
+
+    def query_timeline_wallpapers(
+        self,
+        mode: str = "latest",
+        cursor: int | None = None,
+        topic: str = "",
+        seed: int | None = None,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        page = self.timeline_service.query_wallpapers(
+            mode=mode,
+            cursor=cursor,
+            topic=topic,
+            seed=seed,
+            force_refresh=force_refresh,
+        )
+        return {**page, "items": self._proxy_timeline_items(page["items"])}
+
+    def query_cnu_works(
+        self,
+        section: str,
+        order: str,
+        category_id: str = "0",
+        page: int = 1,
+        limit: int = 50,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        works = self.cnu_service.query_works(
+            section=section,
+            order=order,
+            category_id=category_id,
+            page=page,
+            limit=limit,
+            force_refresh=force_refresh,
+        )
+        return self._proxy_cnu_items(works)
 
     def clear_source_cache(self, source: str | None = None) -> dict[str, Any]:
-        """Drop cached Bing/Spotlight responses so the next call refetches."""
+        """Drop cached source responses so the next call refetches."""
         cleared: list[str] = []
         if source in (None, "bing"):
             from backend.services.bing import BingService
@@ -1288,6 +2317,15 @@ class BackendAPI:
 
             SpotlightService._cache.clear()
             cleared.append("spotlight")
+        if source in (None, "cnu"):
+            CNUService._cache.clear()
+            cleared.append("cnu")
+        if source in (None, "pixivel"):
+            PixivelService._cache.clear()
+            cleared.append("pixivel")
+        if source in (None, "timeline"):
+            TimelineService._cache.clear()
+            cleared.append("timeline")
         return {"cleared": cleared}
 
     def bootstrap(self) -> dict[str, Any]:
@@ -1302,7 +2340,7 @@ class BackendAPI:
         logger.info("Bootstrap complete: bing={} sources={}", len(home_bing), len(sources))
         return {
             "settings": self.store.as_dict(),
-            "favorites": self._load_favorites(),
+            "favorites": self._load_favorites(strict=False),
             "history": self._load_history(),
             "sources": sources,
             "plugins": [],
@@ -1317,7 +2355,10 @@ class BackendAPI:
             },
             "home": {
                 "bing": home_bing[:1],
-                "spotlight": self.spotlight_service.list_local_candidates(limit=4),
+                "spotlight": [
+                self._proxy_local_spotlight_item(item)
+                for item in self.spotlight_service.list_local_candidates(limit=4)
+            ],
                 "quote": {
                     "text": quote.get("hitokoto", ""),
                     "author": quote.get("from_who", ""),
@@ -1330,6 +2371,7 @@ class BackendAPI:
     def list_history(self) -> list[dict[str, Any]]:
         return self._load_history()
 
+    @_storage_references_transaction
     def record_current_wallpaper(self) -> dict[str, Any] | None:
         info = self.get_current_wallpaper()
         if info and info.get("path"):
@@ -1347,40 +2389,112 @@ class BackendAPI:
         }
 
     def get_storage_overview(self) -> dict[str, Any]:
-        downloads_dir = self._downloads_dir()
-        total_size = 0
-        file_count = 0
-        if downloads_dir.exists():
-            for f in downloads_dir.rglob("*"):
-                if f.is_file():
-                    try:
-                        total_size += f.stat().st_size
-                        file_count += 1
-                    except OSError:
-                        pass
-        return {
-            "download_directory": str(downloads_dir),
-            "default_download_directory": str(get_data_dir() / "downloads"),
-            "items": [
-                {
-                    "id": "downloads",
-                    "title": "下载",
-                    "scope": "data",
-                    "size_bytes": total_size,
-                    "file_count": file_count,
-                    "optimize_supported": False,
-                },
-            ],
-        }
+        return self.storage_service.get_overview()
+
+    def get_storage_operation_status(self) -> dict[str, Any]:
+        with self._storage_task_lock:
+            return dict(self._storage_task_state)
+
+    def _update_storage_operation(self, current: int, total: int, message: str) -> None:
+        with self._storage_task_lock:
+            if not self._storage_task_state["running"]:
+                return
+            self._storage_task_state.update(
+                current=max(0, int(current)),
+                total=max(1, int(total)),
+                message=message,
+            )
+
+    def start_storage_directory_change(
+        self,
+        kind: str,
+        directory: str | None,
+        migrate: bool,
+        allow_non_empty: bool,
+    ) -> dict[str, Any]:
+        if kind not in {"downloads", "favorites"}:
+            raise ValueError("不支持的存储位置类型")
+        with self._storage_task_lock:
+            if self._storage_task_state["running"]:
+                raise RuntimeError("已有存储任务正在进行")
+            operation_id = uuid.uuid4().hex
+            self._storage_task_state = {
+                "id": operation_id,
+                "running": True,
+                "kind": kind,
+                "title": (
+                    ("迁移下载数据" if kind == "downloads" else "迁移收藏数据")
+                    if migrate
+                    else ("更改下载位置" if kind == "downloads" else "更改收藏位置")
+                ),
+                "message": "正在检查目标位置",
+                "current": 0,
+                "total": 1,
+                "success": None,
+                "error": "",
+                "moved": 0,
+                "undeleted": 0,
+                "started_at": datetime.now().isoformat(),
+                "finished_at": "",
+            }
+
+        def run() -> None:
+            try:
+                if kind == "downloads":
+                    result = self.set_download_directory(directory, migrate, allow_non_empty)
+                else:
+                    result = self.set_favorites_directory(directory, migrate, allow_non_empty)
+                with self._storage_task_lock:
+                    self._storage_task_state.update(
+                        running=False,
+                        success=True,
+                        message="迁移完成" if migrate else "存储位置已更改",
+                        current=self._storage_task_state["total"],
+                        moved=int(result.get("moved", 0)),
+                        undeleted=int(result.get("undeleted", 0)),
+                        finished_at=datetime.now().isoformat(),
+                    )
+            except Exception as exc:
+                logger.exception("Storage directory operation failed")
+                with self._storage_task_lock:
+                    self._storage_task_state.update(
+                        running=False,
+                        success=False,
+                        error=str(exc),
+                        message="操作失败",
+                        finished_at=datetime.now().isoformat(),
+                    )
+
+        threading.Thread(target=run, name=f"storage-{kind}-{operation_id[:8]}", daemon=True).start()
+        return self.get_storage_operation_status()
+
+    def clear_storage_category(self, category_id: str) -> dict[str, Any]:
+        with self._storage_task_lock:
+            if self._storage_task_state["running"]:
+                raise RuntimeError("存储任务进行中，请稍后再试")
+        return self.storage_service.clear_category(category_id)
+
+    def compress_downloads(self, format_id: str, quality: int = 80) -> dict[str, Any]:
+        with self._storage_task_lock:
+            if self._storage_task_state["running"]:
+                raise RuntimeError("存储任务进行中，请稍后再试")
+        return self.storage_service.compress_downloads(format_id, quality)
 
     def pick_download_directory(self) -> dict[str, str] | None:
+        return self._pick_directory("选择下载目录")
+
+    def pick_favorites_directory(self) -> dict[str, str] | None:
+        return self._pick_directory("选择收藏数据目录")
+
+    @staticmethod
+    def _pick_directory(title: str) -> dict[str, str] | None:
         try:
             import tkinter as tk
             from tkinter import filedialog
 
             root = tk.Tk()
             root.withdraw()
-            path = filedialog.askdirectory()
+            path = filedialog.askdirectory(title=title)
             root.destroy()
             if path:
                 return {"path": path}
@@ -1388,19 +2502,215 @@ class BackendAPI:
             logger.error(f"Pick directory error: {e}")
         return None
 
-    def set_download_directory(self, directory: str | None = None) -> dict[str, Any]:
-        if directory:
-            self.store.set("storage.download_directory", directory)
+    def inspect_storage_directory(self, directory: str, kind: str) -> dict[str, Any]:
+        target = Path(directory).expanduser()
+        if kind == "downloads":
+            self.storage_service.validate_download_directory(target)
+            current = self._downloads_dir().resolve(strict=False)
+        elif kind == "favorites":
+            target = self.storage_service.validate_favorites_directory(target)
+            current = self._favorites_path().parent.resolve(strict=False)
         else:
-            self.store.set("storage.download_directory", str(get_data_dir() / "downloads"))
+            raise ValueError("不支持的存储位置类型")
+        entries: list[Path] = []
+        if target.exists():
+            if not target.is_dir():
+                raise ValueError("选择的位置不是文件夹")
+            entries = list(target.iterdir())
+        return {
+            "path": str(target.resolve(strict=False)),
+            "is_empty": len(entries) == 0,
+            "entry_count": len(entries),
+            "same_as_current": target.resolve(strict=False) == current,
+        }
+
+    @_favorites_transaction
+    @_storage_references_transaction
+    def set_download_directory(
+        self,
+        directory: str | None = None,
+        migrate: bool = False,
+        allow_non_empty: bool = False,
+    ) -> dict[str, Any]:
+        target = Path(directory).expanduser() if directory else get_data_dir() / "downloads"
+        self.storage_service.validate_download_directory(target)
+        info = self.inspect_storage_directory(str(target), "downloads")
+        if info["same_as_current"]:
+            return {"settings": self.store.as_dict(), "storage": self.get_storage_overview(), "moved": 0}
+        if not info["is_empty"] and not allow_non_empty:
+            raise RuntimeError("目标下载目录不为空，需要确认后才能继续")
+        target.mkdir(parents=True, exist_ok=True)
+        self.storage_service.validate_download_directory(target)
+        with self.storage_service.download_operation():
+            source_root = self._downloads_dir().resolve(strict=False)
+            previous_setting = self.store.get("storage.download_directory", "")
+            copied: list[tuple[Path, Path]] = []
+            if migrate:
+                copied = self.storage_service.prepare_download_migration(
+                    target, self._update_storage_operation
+                )
+            else:
+                self._update_storage_operation(0, 2, "正在切换下载位置")
+            file_steps = max(1, len(copied))
+            total_steps = file_steps + 3 if migrate else 2
+            next_setting = "" if not directory else str(target.resolve())
+            try:
+                self.store.set("storage.download_directory", next_setting)
+                self._update_storage_operation(
+                    file_steps + 1 if migrate else 1,
+                    total_steps,
+                    "正在提交下载位置配置",
+                )
+            except Exception as exc:
+                self.storage_service.discard_prepared_downloads(copied)
+                raise RuntimeError("下载位置配置保存失败，未更改下载目录") from exc
+
+            undeleted = 0
+            reference_state: dict[str, Any] | None = None
+            try:
+                if migrate and copied:
+                    self._update_storage_operation(file_steps + 2, total_steps, "正在更新壁纸引用")
+                    reference_state, preserve_sources = self._rebase_download_references(copied)
+                    self._update_storage_operation(file_steps + 3, total_steps, "正在删除原位置文件")
+                    undeleted = self.storage_service.commit_download_migration(
+                        copied, target, source_root, preserve_sources
+                    )
+                else:
+                    self.storage_service.remember_current_download_root()
+                    self._update_storage_operation(total_steps, total_steps, "下载位置已更新")
+            except Exception as exc:
+                rollback_persisted = True
+                try:
+                    self.store.set("storage.download_directory", previous_setting)
+                except Exception:
+                    rollback_persisted = False
+                if rollback_persisted:
+                    restored_references = False
+                    if reference_state is not None:
+                        try:
+                            self._restore_download_references(reference_state)
+                            restored_references = True
+                        except Exception:
+                            logger.exception("Failed to restore download references after migration error")
+                    if restored_references:
+                        self.storage_service.discard_prepared_downloads(copied)
+                    self.storage_service.remember_current_download_root()
+                raise RuntimeError("下载迁移提交失败，原文件仍保留") from exc
         return {
             "settings": self.store.as_dict(),
             "storage": self.get_storage_overview(),
+            "moved": len(copied),
+            "undeleted": undeleted,
         }
 
+    @_favorites_transaction
+    def set_favorites_directory(
+        self,
+        directory: str | None = None,
+        migrate: bool = False,
+        allow_non_empty: bool = False,
+    ) -> dict[str, Any]:
+        self._update_storage_operation(0, 4, "正在检查收藏数据")
+        source = self._favorites_path()
+        target_dir = self.storage_service.validate_favorites_directory(
+            Path(directory) if directory else get_data_dir()
+        )
+        info = self.inspect_storage_directory(str(target_dir), "favorites")
+        if not info["is_empty"] and not info["same_as_current"] and not allow_non_empty:
+            raise RuntimeError("目标收藏目录不为空，需要确认后才能继续")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = self.storage_service.validate_favorites_directory(target_dir)
+        target = target_dir / "favorites.json"
+        self._update_storage_operation(1, 4, "正在准备目标收藏文件")
+        if source.resolve(strict=False) == target.resolve(strict=False):
+            return {"settings": self.store.as_dict(), "storage": self.get_storage_overview(), "moved": 0}
+
+        backup: Path | None = None
+        target_created = False
+        if migrate:
+            try:
+                data = json.loads(source.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError("当前收藏数据无法读取，未更改存储位置") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                raise RuntimeError("当前收藏数据格式异常，未更改存储位置")
+            if target.exists():
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup = self.storage_service.available_destination(
+                    target.with_name(f"favorites.backup_{timestamp}.json")
+                )
+                os.replace(target, backup)
+            try:
+                self._write_json_exclusive(target, data)
+            except Exception:
+                if backup is not None and backup.exists():
+                    with contextlib.suppress(OSError):
+                        os.replace(backup, target)
+                raise
+            target_created = True
+        elif target.exists():
+            try:
+                target_data = json.loads(target.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError("目标目录中的 favorites.json 无法读取") from exc
+            if not isinstance(target_data, dict) or not isinstance(target_data.get("items"), list):
+                raise RuntimeError("目标目录中的 favorites.json 格式异常")
+        else:
+            self._write_json_exclusive(
+                target,
+                {
+                    "folders": [{"id": "default", "name": "默认收藏夹", "description": "", "order": 0}],
+                    "items": [],
+                    "all_tags": [],
+                    "system_tags": [],
+                },
+            )
+            target_created = True
+
+        self._update_storage_operation(2, 4, "正在提交收藏位置配置")
+
+        previous_setting = self.store.get("storage.favorites_directory", "")
+        next_setting = "" if not directory else str(target_dir)
+        try:
+            self.store.set("storage.favorites_directory", next_setting)
+        except Exception as exc:
+            rollback_persisted = True
+            try:
+                self.store.set("storage.favorites_directory", previous_setting)
+            except Exception:
+                rollback_persisted = False
+            if rollback_persisted:
+                if target_created:
+                    with contextlib.suppress(OSError):
+                        target.unlink()
+                if backup is not None and backup.exists():
+                    with contextlib.suppress(OSError):
+                        os.replace(backup, target)
+            raise RuntimeError("收藏位置配置保存失败，未更改收藏目录") from exc
+
+        undeleted = 0
+        if migrate:
+            self._update_storage_operation(3, 4, "正在删除原收藏文件")
+            try:
+                source.unlink()
+            except OSError as exc:
+                undeleted = 1
+                logger.warning("Favorites moved but old file could not be deleted: {}", exc)
+        self._update_storage_operation(4, 4, "收藏位置已更新")
+        return {
+            "settings": self.store.as_dict(),
+            "storage": self.get_storage_overview(),
+            "moved": 1 if migrate else 0,
+            "undeleted": undeleted,
+            "backup": str(backup) if backup else "",
+        }
+
+    @_storage_references_transaction
     def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
-        for key, value in updates.items():
-            self.store.set(key, value)
+        for key in updates:
+            if key == "storage" or key in {"storage.download_directory", "storage.favorites_directory"}:
+                raise ValueError("存储位置必须通过专用迁移接口修改")
+        self.store.set_many(updates)
         return self.store.as_dict()
 
     def trigger_auto_change_now(self, plan_id: str | None = None) -> dict[str, Any]:

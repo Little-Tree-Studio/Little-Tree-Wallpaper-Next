@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import {
-  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe, LifeBuoy,
+  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe, LifeBuoy, Frame,
 } from 'lucide-react';
 import { Button } from '@heroui/react';
+import { requestNavigation } from '@/lib/navigationGuard';
 
 interface NavItem {
   id: string;
@@ -14,8 +15,9 @@ const items: NavItem[] = [
   { id: 'home', label: '首页', icon: Home },
   { id: 'resource', label: '资源', icon: Image },
   { id: 'generate', label: '生成', icon: Wand2 },
-  { id: 'search', label: '搜索', icon: Globe },
-  { id: 'sniff', label: '嗅探', icon: Search },
+  { id: 'create', label: '制作', icon: Frame },
+  { id: 'search', label: '搜索', icon: Search },
+  { id: 'sniff', label: '嗅探', icon: Globe },
   { id: 'favorite', label: '收藏', icon: Star },
   { id: 'store', label: '商店', icon: Store },
   { id: 'tools', label: '工具', icon: Wrench },
@@ -29,6 +31,10 @@ interface NavigationProps {
 
 export default function Navigation({ activeId, onChange, className = '' }: NavigationProps) {
   const [hovered, setHovered] = useState<string | null>(null);
+  const navigateTo = (id: string) => {
+    if (id === activeId) return;
+    requestNavigation(id, () => onChange(id));
+  };
 
   return (
     <nav className={`flex w-16 flex-col items-center gap-2 border-r border-border bg-surface-secondary py-3 ${className}`}>
@@ -43,7 +49,7 @@ export default function Navigation({ activeId, onChange, className = '' }: Navig
           <Button
             key={item.id}
             variant="ghost"
-            onPress={() => onChange(item.id)}
+            onPress={() => navigateTo(item.id)}
             onMouseEnter={() => setHovered(item.id)}
             onMouseLeave={() => setHovered(null)}
             className={`
@@ -68,7 +74,7 @@ export default function Navigation({ activeId, onChange, className = '' }: Navig
           isIconOnly
           variant="ghost"
           className="h-11 w-11 rounded-lg text-muted-foreground hover:bg-surface-tertiary hover:text-foreground"
-          onPress={() => onChange('help')}
+          onPress={() => navigateTo('help')}
           aria-label="帮助与反馈"
         >
           <LifeBuoy size={20} />
@@ -77,7 +83,7 @@ export default function Navigation({ activeId, onChange, className = '' }: Navig
           isIconOnly
           variant="ghost"
           className="h-11 w-11 rounded-lg text-muted-foreground hover:bg-surface-tertiary hover:text-foreground"
-          onPress={() => onChange('settings')}
+          onPress={() => navigateTo('settings')}
           aria-label="设置"
         >
           <Settings size={20} />

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
-  Card, Button, Input, Spinner, Chip, Select, Label, ListBox, Tooltip, Checkbox,
+  Card, Button, Input, Spinner, Chip, Select, Label, ListBox, Tooltip, Checkbox, toast,
   Toolbar, ButtonGroup, Separator,
 } from '@heroui/react';
 import {
@@ -8,7 +9,7 @@ import {
   ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import {
-  searchBaiduImages, copyToClipboard, addFavorite,
+  searchBaiduImages, searchPexelsImages, searchPixivImages, copyToClipboard, addFavorite, getSettings,
   downloadWithProgress, setWallpaperWithProgress, downloadManyWithProgress,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
@@ -18,13 +19,19 @@ import type { SniffedImage } from '@/types';
 interface SearchEngine {
   id: string;
   name: string;
-  search: (query: string, index: number) => Promise<SniffedImage[]>;
+  sourceType: string;
+  search: (query: string, index: number, signal?: AbortSignal) => Promise<SniffedImage[]>;
 }
+
+const PIXIV_SEARCH_APIS = [
+  { id: '1', name: '搜索源1' },
+  { id: '2', name: '搜索源2' },
+];
 
 const SIZE = 30;
 
-async function fetchBaiduImages(query: string, index: number): Promise<SniffedImage[]> {
-  const items = await searchBaiduImages(query, index, SIZE);
+async function fetchBaiduImages(query: string, index: number, signal?: AbortSignal): Promise<SniffedImage[]> {
+  const items = await searchBaiduImages(query, index, SIZE, signal);
   return items
     .map((item: any, idx: number) => ({
       id: `baidu-${index}-${idx}`,
@@ -35,41 +42,108 @@ async function fetchBaiduImages(query: string, index: number): Promise<SniffedIm
     .filter((img) => img.url);
 }
 
+async function fetchPexelsImages(query: string, index: number, signal?: AbortSignal): Promise<SniffedImage[]> {
+  return searchPexelsImages(query, Math.floor(index / SIZE) + 1, 24, signal);
+}
+
 const engines: SearchEngine[] = [
   {
     id: 'baidu-images',
     name: '百度图片',
+    sourceType: 'search',
     search: fetchBaiduImages,
+  },
+  {
+    id: 'pexels',
+    name: 'Pexels',
+    sourceType: 'builtin.pexels',
+    search: fetchPexelsImages,
   },
 ];
 
 export default function SearchPage() {
+  const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
-  const [engineId, setEngineId] = useState(engines[0].id);
+  const requestedSource = searchParams.get('source');
+  const [engineId, setEngineId] = useState(
+    requestedSource === 'pixiv' || engines.some((item) => item.id === requestedSource)
+      ? requestedSource!
+      : engines[0].id,
+  );
+  const [pixivApiId, setPixivApiId] = useState(searchParams.get('api') || '1');
   const [images, setImages] = useState<SniffedImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [hasSearched, setHasSearched] = useState(false);
   const [index, setIndex] = useState(0);
+  const [allowNSFW, setAllowNSFW] = useState(false);
+  const searchController = useRef<AbortController | null>(null);
+  const searchRequestId = useRef(0);
   const { openViewer } = useImageViewer();
 
-  const engine = engines.find((e) => e.id === engineId) || engines[0];
+  useEffect(() => {
+    getSettings()
+      .then((settings) => setAllowNSFW(settings.wallpaper.allow_NSFW))
+      .catch((error) => logError('Load search settings failed', error));
+    return () => {
+      searchRequestId.current += 1;
+      searchController.current?.abort();
+      searchController.current = null;
+    };
+  }, []);
 
-  const handleSearch = async (nextIndex = 0) => {
-    if (!query.trim()) return;
+  const engine = engines.find((e) => e.id === engineId) || engines[0];
+  const isPixiv = engineId === 'pixiv';
+  const isPagedPixiv = isPixiv && pixivApiId === '2';
+  const sourceType = isPixiv ? 'builtin.pixivel' : engine.sourceType;
+  const sourceName = isPixiv ? 'Pixiv' : engine.name;
+
+  const handleSearch = async (nextIndex = 0, queryOverride = query) => {
+    const searchTerm = queryOverride.trim();
+    if (!searchTerm) return;
+    searchController.current?.abort();
+    const controller = new AbortController();
+    const requestId = ++searchRequestId.current;
+    searchController.current = controller;
     setLoading(true);
     setImages([]);
     setSelected(new Set());
     setHasSearched(true);
     try {
-      const result = await engine.search(query.trim(), nextIndex);
+      const result = isPixiv
+        ? await searchPixivImages(
+            searchTerm, Number(pixivApiId), false, allowNSFW ? 2 : 0, 15, Math.floor(nextIndex / SIZE) + 1,
+            controller.signal,
+          )
+        : await engine.search(searchTerm, nextIndex, controller.signal);
+      if (controller.signal.aborted || requestId !== searchRequestId.current) return;
       setImages(result);
-      setIndex(nextIndex);
+      setIndex(isPixiv && !isPagedPixiv ? 0 : nextIndex);
     } catch (e) {
+      if (controller.signal.aborted || requestId !== searchRequestId.current) return;
       logError('Search failed', e);
+      toast.danger('搜索失败', {
+        description: e instanceof Error ? e.message : '请稍后重试',
+        timeout: 0,
+      });
     } finally {
-      setLoading(false);
+      if (requestId === searchRequestId.current) {
+        searchController.current = null;
+        setLoading(false);
+      }
     }
+  };
+
+  const clearSearch = () => {
+    searchRequestId.current += 1;
+    searchController.current?.abort();
+    searchController.current = null;
+    setLoading(false);
+    setQuery('');
+    setImages([]);
+    setSelected(new Set());
+    setHasSearched(false);
+    setIndex(0);
   };
 
   const removeImage = (id: string) => {
@@ -83,11 +157,11 @@ export default function SearchPage() {
 
   const prev = () => {
     if (index <= 0) return;
-    handleSearch(index - SIZE);
+    void handleSearch(index - SIZE);
   };
 
   const nextPage = () => {
-    handleSearch(index + SIZE);
+    void handleSearch(index + SIZE);
   };
 
   const toggleSelect = (id: string) => {
@@ -114,27 +188,66 @@ export default function SearchPage() {
   const handleView = (startIndex: number) => {
     const items = images.map((i) => ({
       src: i.url,
-      title: i.filename,
-      source_url: i.url,
-      source_type: 'search',
+      title: i.title || i.filename,
+      description: i.author ? `作者：${i.author}` : '',
+      source_url: i.source_url || i.url,
+      source_page_url: i.source_page_url,
+      source_type: sourceType,
+      source_name: sourceName,
+      preview_url: i.preview_url,
+      copyright: sourceName === 'Pexels' ? (i.author ? `摄影：${i.author} / Pexels` : 'Pexels') : undefined,
+      tags: isPixiv ? (i.tags || []) : [],
     }));
     openViewer(items, startIndex);
   };
 
   const handleFavoriteSelected = async () => {
-    for (const img of selectedImages) {
-      await addFavorite({
-        folder_id: 'default', title: img.filename, description: '', tags: [engine.name, query],
-        preview_url: img.url, local_path: null,
-        source_type: 'search', source_url: img.url,
-      });
+    try {
+      for (const img of selectedImages) {
+        await addFavorite({
+          folder_id: 'default', title: img.title || img.filename, description: img.author ? `作者：${img.author}` : '',
+          tags: isPixiv ? ['Pixiv', ...new Set(img.tags || [])] : [],
+          preview_url: img.preview_url || img.url, local_path: null,
+          source_type: sourceType, source_name: sourceName,
+          source_url: img.source_url || img.url,
+          source_page_url: img.source_page_url,
+        });
+      }
+      toast.success(`已收藏 ${selectedImages.length} 张图片`, { timeout: 3000 });
+      setSelected(new Set());
+    } catch (error) {
+      logError('Batch favorite failed', error);
+      toast.danger('收藏失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
     }
-    setSelected(new Set());
   };
 
-  const handleCopySelectedUrls = () => {
-    const urls = selectedImages.map((i) => i.url).join('\n');
-    copyToClipboard(urls);
+  const handleCopySelectedUrls = async () => {
+    const urls = selectedImages.map((i) => i.source_url || i.url).join('\n');
+    try {
+      await copyToClipboard(urls);
+      toast.success(`已复制 ${selectedImages.length} 个链接`, { timeout: 2500 });
+    } catch (error) {
+      logError('Copy selected URLs failed', error);
+      toast.danger('复制链接失败', { timeout: 0 });
+    }
+  };
+
+  const handleFavoriteOne = async (img: SniffedImage) => {
+    try {
+      await addFavorite({
+        folder_id: 'default', title: img.title || img.filename,
+        description: img.author ? `作者：${img.author}` : '',
+        tags: isPixiv ? ['Pixiv', ...new Set(img.tags || [])] : [],
+        preview_url: img.preview_url || img.url, local_path: null,
+        source_type: sourceType, source_name: sourceName,
+        source_url: img.source_url || img.url,
+        source_page_url: img.source_page_url,
+      });
+      toast.success('已添加到收藏', { timeout: 2500 });
+    } catch (error) {
+      logError('Favorite image failed', error);
+      toast.danger('收藏失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
+    }
   };
 
   const handleDownloadSelected = () =>
@@ -155,7 +268,7 @@ export default function SearchPage() {
             <Chip
               key={tag}
               className="cursor-pointer"
-              onClick={() => { setQuery(tag); handleSearch(0); }}
+              onClick={() => { setQuery(tag); void handleSearch(0, tag); }}
             >
               {tag}
             </Chip>
@@ -165,11 +278,20 @@ export default function SearchPage() {
         <div className="flex flex-col gap-1 sm:flex-row sm:items-end">
           <div className="flex flex-col gap-1 sm:w-40">
             <Label className="text-xs text-muted-foreground">搜索引擎</Label>
-            <Select
+              <Select
               selectedKey={engineId}
               onSelectionChange={(key) => {
                 const id = String(key || '');
-                if (id) setEngineId(id);
+                if (!id || id === engineId) return;
+                searchRequestId.current += 1;
+                searchController.current?.abort();
+                searchController.current = null;
+                setLoading(false);
+                setEngineId(id);
+                setImages([]);
+                setSelected(new Set());
+                setHasSearched(false);
+                setIndex(0);
               }}
               aria-label="搜索引擎"
             >
@@ -185,10 +307,46 @@ export default function SearchPage() {
                       <ListBox.ItemIndicator />
                     </ListBox.Item>
                   ))}
+                  <ListBox.Item id="pixiv" textValue="Pixiv">
+                    Pixiv
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
                 </ListBox>
               </Select.Popover>
             </Select>
           </div>
+          {isPixiv && (
+            <div className="flex flex-col gap-1 sm:w-40">
+              <Label className="text-xs text-muted-foreground">搜索 API</Label>
+              <Select
+                selectedKey={pixivApiId}
+                onSelectionChange={(key) => {
+                  if (!key) return;
+                  setPixivApiId(String(key));
+                  setImages([]);
+                  setSelected(new Set());
+                  setHasSearched(false);
+                  setIndex(0);
+                }}
+                aria-label="Pixiv 搜索 API"
+              >
+                <Select.Trigger>
+                  <Select.Value />
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover>
+                  <ListBox>
+                    {PIXIV_SEARCH_APIS.map((api) => (
+                      <ListBox.Item key={api.id} id={api.id} textValue={api.name}>
+                        {api.name}
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
+              </Select>
+            </div>
+          )}
           <div className="flex flex-1 flex-col gap-1">
             <Label className="text-xs text-muted-foreground">搜索内容</Label>
             <Input
@@ -199,8 +357,8 @@ export default function SearchPage() {
               fullWidth
             />
           </div>
-          <Button onPress={() => handleSearch()} isPending={loading}><Search size={16} /> 搜索</Button>
-          <Button variant="ghost" onPress={() => { setQuery(''); setImages([]); setSelected(new Set()); setHasSearched(false); setIndex(0); }}>清空</Button>
+          <Button onPress={() => void handleSearch()} isPending={loading}><Search size={16} /> 搜索</Button>
+          <Button variant="ghost" onPress={clearSearch}>清空</Button>
         </div>
       </div>
 
@@ -225,7 +383,7 @@ export default function SearchPage() {
                 </Checkbox>
               </div>
               <img
-                src={img.url}
+                src={img.preview_url || img.url}
                 alt={img.filename}
                 className="aspect-square w-full object-cover"
                 loading="lazy"
@@ -246,7 +404,7 @@ export default function SearchPage() {
                 </span>
                 <span onClick={(e) => { e.stopPropagation(); }}>
                   <Tooltip delay={0}>
-                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => addFavorite({ folder_id: 'default', title: img.filename, description: '', tags: [engine.name, query], preview_url: img.url, local_path: null, source_type: 'search', source_url: img.url })} aria-label="收藏"><Heart size={14} /></Button>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => handleFavoriteOne(img)} aria-label="收藏"><Heart size={14} /></Button>
                     <Tooltip.Content><p>收藏</p></Tooltip.Content>
                   </Tooltip>
                 </span>
@@ -262,7 +420,7 @@ export default function SearchPage() {
         })}
       </div>
 
-      {!loading && images.length > 0 && (
+      {(!isPixiv || isPagedPixiv) && !loading && images.length > 0 && (
         <div className="flex items-center justify-center gap-3 py-2">
           <Button variant="ghost" isDisabled={index <= 0} onPress={prev}><ChevronLeft size={16} /> 上一页</Button>
           <span className="text-sm text-muted">第 {Math.floor(index / SIZE) + 1} 页</span>

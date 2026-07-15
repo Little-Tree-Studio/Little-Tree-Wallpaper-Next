@@ -19,6 +19,12 @@ import type {
   CustomSentence,
   IntelligentMarketSource,
   IntelligentMarketHealthUpdate,
+  CnuWorkSummary,
+  PixivelWorkSummary,
+  TimelineTopicSummary,
+  TimelineWallpaperPage,
+  WallpaperItem,
+  StorageOverview,
 } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +33,13 @@ import type {
 // every request via the X-Api-Token header. Same-origin fetch avoids CORS.
 // ---------------------------------------------------------------------------
 const TOKEN_STORAGE_KEY = '__ltw_api_token__';
+export const FAVORITES_CHANGED_EVENT = 'ltw:favorites-changed';
+
+export function notifyFavoritesChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(FAVORITES_CHANGED_EVENT));
+  }
+}
 
 let _token: string | null = null;
 let _readyPromise: Promise<void> | null = null;
@@ -96,7 +109,7 @@ export function waitForApi(): Promise<void> {
   return _readyPromise;
 }
 
-async function call<T>(method: string, ...args: any[]): Promise<T> {
+async function callRequest<T>(method: string, args: any[], signal?: AbortSignal): Promise<T> {
   await waitForApi();
   let res: Response;
   try {
@@ -104,8 +117,10 @@ async function call<T>(method: string, ...args: any[]): Promise<T> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ args }),
+      signal,
     });
   } catch (e) {
+    if (signal?.aborted) throw e;
     logError(`RPC ${method} fetch failed`, e);
     throw new Error(`后端连接失败: ${method}`);
   }
@@ -124,6 +139,10 @@ async function call<T>(method: string, ...args: any[]): Promise<T> {
     throw new Error(message);
   }
   return payload.result as T;
+}
+
+async function call<T>(method: string, ...args: any[]): Promise<T> {
+  return callRequest<T>(method, args);
 }
 
 // --- Global bootstrap cache ---
@@ -153,7 +172,24 @@ export async function getCurrentWallpaper(): Promise<WallpaperInfo | null> {
   return call('get_current_wallpaper');
 }
 
-export async function setWallpaper(path: string): Promise<void> {
+export interface DisplayResolution {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  is_primary: boolean;
+}
+
+export async function getDisplayResolutions(): Promise<DisplayResolution[]> {
+  return call('get_display_resolutions');
+}
+
+export interface SetWallpaperResult {
+  success: boolean;
+  error?: string;
+}
+
+export async function setWallpaper(path: string): Promise<SetWallpaperResult> {
   return call('set_wallpaper', path);
 }
 
@@ -256,6 +292,22 @@ export async function saveBlobToDownloads(blob: Blob, filename: string): Promise
   }
 }
 
+function filenameForBlob(filename: string, blob: Blob): string {
+  const extensions: Record<string, string> = {
+    'image/avif': '.avif',
+    'image/bmp': '.bmp',
+    'image/gif': '.gif',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+  };
+  const extension = extensions[blob.type.toLowerCase().split(';', 1)[0]];
+  if (!extension) return filename;
+  return /\.[a-z0-9]+$/i.test(filename)
+    ? filename.replace(/\.[a-z0-9]+$/i, extension)
+    : `${filename}${extension}`;
+}
+
 /** Prompt for a save location and persist a raw binary blob there. */
 export async function saveBlobAs(blob: Blob, filename: string): Promise<string | null> {
   await waitForApi();
@@ -316,7 +368,22 @@ export async function copyImageToClipboardWithProgress(url: string): Promise<boo
   return copied === true;
 }
 
-export async function downloadWithProgress(url: string, filename: string): Promise<string | null> {
+export async function downloadWithProgress(
+  url: string,
+  filename: string,
+  localPath?: string | null,
+): Promise<string | null> {
+  if (localPath) {
+    return runWithProgressToast<string | null>(
+      {
+        loadingLabel: '正在复制到下载目录…',
+        successLabel: '下载完成',
+        failureLabel: '下载失败',
+      },
+      async () => downloadFile(localPath, filename),
+    );
+  }
+
   return runWithProgressToast<string | null>(
     {
       loadingLabel: '正在下载…',
@@ -326,7 +393,7 @@ export async function downloadWithProgress(url: string, filename: string): Promi
     },
     async (onProgress) => {
       const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders() });
-      const path = await saveBlobToDownloads(blob, filename);
+      const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         toast.danger('保存失败', { timeout: 0 });
       }
@@ -335,7 +402,12 @@ export async function downloadWithProgress(url: string, filename: string): Promi
   );
 }
 
-export async function saveAsWithProgress(url: string, filename: string): Promise<string | null> {
+export async function saveAsWithProgress(
+  url: string,
+  filename: string,
+  localPath?: string | null,
+): Promise<string | null> {
+  const sourceUrl = localPath ? localPreviewUrl(localPath) : url;
   const result = await runWithProgressToast<{ path: string | null; cancelled: boolean }>(
     {
       loadingLabel: '正在拉取数据…',
@@ -344,8 +416,8 @@ export async function saveAsWithProgress(url: string, filename: string): Promise
       failureLabel: '拉取数据失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders() });
-      const path = await saveBlobAs(blob, filename);
+      const blob = await fetchBlobWithProgress(sourceUrl, onProgress, { headers: authHeaders() });
+      const path = await saveBlobAs(blob, filenameForBlob(filename, blob));
       return { path, cancelled: path === null };
     }
   );
@@ -392,7 +464,7 @@ export async function setWallpaperWithProgress(
 
   const result = await toast.promise(
     (async () => {
-      const path = await saveBlobToDownloads(blob, filename);
+      const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         throw new Error('保存临时文件失败');
       }
@@ -439,7 +511,7 @@ export async function openWithSystemWithProgress(
 
   const result = await toast.promise(
     (async () => {
-      const path = await saveBlobToDownloads(blob, filename);
+      const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         throw new Error('保存临时文件失败');
       }
@@ -490,8 +562,34 @@ export async function sniffImages(url: string): Promise<SniffedImage[]> {
   return call('sniff_images', url);
 }
 
-export async function searchBaiduImages(text: string, index: number = 0, size: number = 30): Promise<SniffedImage[]> {
-  return call('search_baidu_images', text, index, size);
+export async function searchBaiduImages(
+  text: string,
+  index: number = 0,
+  size: number = 30,
+  signal?: AbortSignal,
+): Promise<SniffedImage[]> {
+  return callRequest('search_baidu_images', [text, index, size], signal);
+}
+
+export async function searchPexelsImages(
+  text: string,
+  page: number = 1,
+  size: number = 24,
+  signal?: AbortSignal,
+): Promise<SniffedImage[]> {
+  return callRequest('search_pexels_images', [text, page, size], signal);
+}
+
+export async function searchPixivImages(
+  text: string,
+  source: number = 1,
+  excludeAI: boolean = false,
+  r18: 0 | 1 | 2 = 0,
+  size: number = 15,
+  page: number = 1,
+  signal?: AbortSignal,
+): Promise<SniffedImage[]> {
+  return callRequest('search_pixiv_images', [text, source, excludeAI, r18, size, page], signal);
 }
 
 export async function getFavorites(): Promise<FavoritesData> {
@@ -499,14 +597,7 @@ export async function getFavorites(): Promise<FavoritesData> {
 }
 
 export async function addFavorite(item: Omit<FavoriteItem, 'id' | 'created_at'>): Promise<FavoriteItem> {
-  const tags = [...item.tags];
-  if (item.source_type === 'bing' && !tags.includes('Bing')) {
-    tags.push('Bing');
-  }
-  if (item.source_type === 'spotlight' && !tags.includes('Windows聚焦')) {
-    tags.push('Windows聚焦');
-  }
-  return call('add_favorite', { ...item, tags });
+  return call('add_favorite', item);
 }
 
 export async function updateFavorite(item: FavoriteItem): Promise<void> {
@@ -549,8 +640,8 @@ export async function installStoreResource(resource: StoreResource): Promise<voi
   return call('install_store_resource', resource);
 }
 
-export async function getSettings(): Promise<AppSettings> {
-  return call('get_settings');
+export async function getSettings(signal?: AbortSignal): Promise<AppSettings> {
+  return callRequest('get_settings', [], signal);
 }
 
 export async function setSettings(settings: AppSettings): Promise<void> {
@@ -561,8 +652,12 @@ export async function getSetting(key: string): Promise<any> {
   return call('get_setting', key);
 }
 
-export async function setSetting(key: string, value: any): Promise<void> {
-  return call('set_setting', key, value);
+let settingWriteQueue: Promise<void> = Promise.resolve();
+
+export function setSetting(key: string, value: any): Promise<void> {
+  const request = settingWriteQueue.then(() => call<void>('set_setting', key, value));
+  settingWriteQueue = request.catch(() => undefined);
+  return request;
 }
 
 export async function getHistory(): Promise<{ path: string; title: string; reason: string; time: string }[]> {
@@ -593,12 +688,45 @@ export async function selectLocalImage(): Promise<string | null> {
   return call('select_local_image');
 }
 
-export async function exportFavorites(folderId?: string): Promise<string> {
-  return call('export_favorites', folderId);
+export type FavoriteExportScope = 'selected' | 'folder' | 'all';
+
+export interface FavoriteExportOptions {
+  scope: FavoriteExportScope;
+  folder_id?: string;
+  item_ids?: string[];
+  include_local_data: boolean;
+  compression: boolean;
+  compression_level: number;
 }
 
-export async function importFavorites(path: string): Promise<void> {
+export interface FavoriteExportResult {
+  path: string;
+  item_count: number;
+  folder_count: number;
+  local_file_count: number;
+  missing_local_count: number;
+  compressed: boolean;
+  compression_level: number | null;
+}
+
+export interface FavoriteImportResult {
+  imported_items: number;
+  skipped_items: number;
+  added_folders: number;
+  restored_local_files: number;
+  missing_local_files: number;
+}
+
+export async function exportFavorites(options: FavoriteExportOptions): Promise<FavoriteExportResult> {
+  return call('export_favorites', options);
+}
+
+export async function importFavorites(path: string): Promise<FavoriteImportResult> {
   return call('import_favorites', path);
+}
+
+export async function pickAndImportFavorites(): Promise<FavoriteImportResult | null> {
+  return call('pick_and_import_favorites');
 }
 
 export async function getLocalImageUrl(path: string, maxSize = 960): Promise<string | null> {
@@ -641,7 +769,67 @@ export async function querySpotlight(
   return call('query_spotlight', source, limit, market, forceRefresh);
 }
 
-export async function clearSourceCache(source?: 'bing' | 'spotlight'): Promise<{ cleared: string[] }> {
+export async function queryCnuSelected(
+  page: number = 1,
+  limit: number = 20,
+  forceRefresh: boolean = false,
+): Promise<CnuWorkSummary[]> {
+  return call('query_cnu_selected', page, limit, forceRefresh);
+}
+
+export async function queryCnuWorks(
+  section: 'inspiration' | 'discovery',
+  order: 'hot' | 'recommend' | 'recent',
+  categoryId: string = '0',
+  page: number = 1,
+  limit: number = 40,
+  forceRefresh: boolean = false,
+): Promise<CnuWorkSummary[]> {
+  return call('query_cnu_works', section, order, categoryId, page, limit, forceRefresh);
+}
+
+export async function getCnuWork(workId: string): Promise<WallpaperItem[]> {
+  return call('get_cnu_work', workId);
+}
+
+export async function queryPixivelRanking(
+  mode: string = 'day',
+  page: number = 1,
+  limit: number = 30,
+  forceRefresh: boolean = false,
+  rankingDate?: string,
+  signal?: AbortSignal,
+): Promise<PixivelWorkSummary[]> {
+  return callRequest('query_pixivel_ranking', [mode, page, limit, forceRefresh, rankingDate], signal);
+}
+
+export async function getPixivelWork(workId: string): Promise<WallpaperItem[]> {
+  return call('get_pixivel_work', workId);
+}
+
+export async function listTimelineTopics(
+  forceRefresh: boolean = false,
+  signal?: AbortSignal,
+): Promise<TimelineTopicSummary[]> {
+  return callRequest('list_timeline_topics', [forceRefresh], signal);
+}
+
+export async function queryTimelineWallpapers(
+  mode: 'latest' | 'trending' | 'random' | 'topic',
+  cursor: number | null = null,
+  topic: string = '',
+  seed?: number,
+  forceRefresh: boolean = false,
+  signal?: AbortSignal,
+): Promise<TimelineWallpaperPage> {
+  return callRequest(
+    'query_timeline_wallpapers',
+    [mode, cursor, topic, seed, forceRefresh],
+    signal,
+  );
+}
+
+export async function clearSourceCache(source?: 'bing' | 'spotlight' | 'cnu' | 'pixivel' | 'timeline'): Promise<{ cleared: string[] }> {
   return call('clear_source_cache', source);
 }
 
@@ -657,16 +845,81 @@ export async function runtimeSnapshot(): Promise<any> {
   return call('runtime_snapshot');
 }
 
-export async function getStorageOverview(): Promise<any> {
+export async function getStorageOverview(): Promise<StorageOverview> {
   return call('get_storage_overview');
+}
+
+export interface StorageOperationResult {
+  overview: StorageOverview;
+  removed?: number;
+  skipped?: number;
+  failed: number;
+  compressed?: number;
+  saved_bytes?: number;
+}
+
+export interface StorageDirectoryInspection {
+  path: string;
+  is_empty: boolean;
+  entry_count: number;
+  same_as_current: boolean;
+}
+
+export interface StorageOperationStatus {
+  id: string;
+  running: boolean;
+  kind: '' | 'downloads' | 'favorites';
+  title: string;
+  message: string;
+  current: number;
+  total: number;
+  success: boolean | null;
+  error: string;
+  moved: number;
+  undeleted: number;
+  started_at: string;
+  finished_at: string;
+}
+
+export async function inspectStorageDirectory(directory: string, kind: 'downloads' | 'favorites'): Promise<StorageDirectoryInspection> {
+  return call('inspect_storage_directory', directory, kind);
+}
+
+export async function getStorageOperationStatus(): Promise<StorageOperationStatus> {
+  return call('get_storage_operation_status');
+}
+
+export async function startStorageDirectoryChange(
+  kind: 'downloads' | 'favorites',
+  directory: string | undefined,
+  migrate: boolean,
+  allowNonEmpty: boolean,
+): Promise<StorageOperationStatus> {
+  return call('start_storage_directory_change', kind, directory, migrate, allowNonEmpty);
+}
+
+export async function clearStorageCategory(categoryId: string): Promise<StorageOperationResult> {
+  return call('clear_storage_category', categoryId);
+}
+
+export async function compressDownloads(formatId: string, quality: number): Promise<StorageOperationResult> {
+  return call('compress_downloads', formatId, quality);
 }
 
 export async function pickDownloadDirectory(): Promise<{ path: string } | null> {
   return call('pick_download_directory');
 }
 
-export async function setDownloadDirectory(directory?: string): Promise<any> {
-  return call('set_download_directory', directory);
+export async function setDownloadDirectory(directory?: string, migrate: boolean = false, allowNonEmpty: boolean = false): Promise<{ settings: AppSettings; storage: StorageOverview; moved: number; undeleted: number }> {
+  return call('set_download_directory', directory, migrate, allowNonEmpty);
+}
+
+export async function pickFavoritesDirectory(): Promise<{ path: string } | null> {
+  return call('pick_favorites_directory');
+}
+
+export async function setFavoritesDirectory(directory?: string, migrate: boolean = false, allowNonEmpty: boolean = false): Promise<{ settings: AppSettings; storage: StorageOverview; moved: number; undeleted: number; backup: string }> {
+  return call('set_favorites_directory', directory, migrate, allowNonEmpty);
 }
 
 export async function updateSettings(updates: Record<string, any>): Promise<any> {

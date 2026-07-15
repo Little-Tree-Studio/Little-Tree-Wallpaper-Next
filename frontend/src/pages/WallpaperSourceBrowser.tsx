@@ -1,12 +1,15 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Card, Button, ComboBox, Input, Label, ListBox, Switch, TextField, Spinner, TagGroup, Tag, Description,
+  SearchField, Autocomplete, EmptyState, useFilter,
 } from '@heroui/react';
 import {
-  Image as ImageIcon, Heart, Copy, Play,
+  Image as ImageIcon, Heart, Copy, Play, SlidersHorizontal, ChevronRight,
 } from 'lucide-react';
+import type { Key } from '@heroui/react';
 import {
-  getWallpaperSources, executeWallpaperSource,
+  getWallpaperSources, executeWallpaperSource, getSettings,
   addFavorite, copyToClipboard, localPreviewUrl,
   setWallpaperWithProgress,
 } from '@/api/backend';
@@ -78,7 +81,7 @@ function aggregateCategories(sources: WallpaperSource[]): CategoryNode[] {
     }
     for (const c of cats) {
       const category = c.category || '未分类';
-      const subcategory = c.subcategory || '';
+      const subcategory = (c.subcategory && c.subcategory !== source.name) ? c.subcategory : '';
       const subsubcategory = c.subsubcategory || '';
       const icon = c.icon?.trim() || undefined;
 
@@ -127,7 +130,7 @@ function buildSourceCategoryMap(source: WallpaperSource): Map<string, { category
   for (const c of source.categories ?? []) {
     map.set(c.id, {
       category: c.category || '未分类',
-      subcategory: c.subcategory || '',
+      subcategory: (c.subcategory && c.subcategory !== source.name) ? c.subcategory : '',
       subsubcategory: c.subsubcategory || '',
     });
   }
@@ -174,6 +177,12 @@ function apiMatchesCategory(
   });
 }
 
+function formatCategoryPath(path: { category: string; subcategory: string; subsubcategory: string }): string {
+  const parts = [path.category, path.subcategory, path.subsubcategory]
+    .filter((p) => p && p !== '未分类');
+  return parts.join(' › ');
+}
+
 function normalizeLocalImage(url: string | undefined): string {
   if (!url) return '';
   if (url.startsWith('/api/preview?') || url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
@@ -186,8 +195,12 @@ function normalizeLocalImage(url: string | undefined): string {
 const MIN_PANEL_HEIGHT = 180;
 
 export default function WallpaperSourceBrowser() {
+  const navigate = useNavigate();
   const [sources, setSources] = useState<WallpaperSource[]>([]);
   const [loading, setLoading] = useState(false);
+  const [mergeDisplay, setMergeDisplay] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedSourceIds, setSelectedSourceIds] = useState<Key[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedSubcategory, setSelectedSubcategory] = useState('');
   const [selectedSubsubcategory, setSelectedSubsubcategory] = useState('');
@@ -199,8 +212,15 @@ export default function WallpaperSourceBrowser() {
   const [panelHeight, setPanelHeight] = useState(260);
   const containerRef = useRef<HTMLDivElement>(null);
   const { openViewer } = useImageViewer();
+  const { contains: containsFilter } = useFilter({ sensitivity: 'base' });
 
-  const categories = useMemo(() => aggregateCategories(sources), [sources]);
+  const effectiveSources = useMemo(() => {
+    if (mergeDisplay || selectedSourceIds.length === 0) return sources;
+    const idSet = new Set(selectedSourceIds.map(String));
+    return sources.filter((s) => idSet.has(s.identifier));
+  }, [sources, mergeDisplay, selectedSourceIds]);
+
+  const categories = useMemo(() => aggregateCategories(effectiveSources), [effectiveSources]);
 
   const currentCategory = useMemo(
     () => categories.find((c) => c.name === selectedCategory),
@@ -212,12 +232,25 @@ export default function WallpaperSourceBrowser() {
     [currentCategory, selectedSubcategory],
   );
 
-  const allApis = useMemo(() => flattenApis(sources), [sources]);
+  const allApis = useMemo(() => flattenApis(effectiveSources), [effectiveSources]);
 
   const filteredApis = useMemo(
     () => allApis.filter((item) => apiMatchesCategory(item, selectedCategory || undefined, selectedSubcategory || undefined, selectedSubsubcategory || undefined)),
     [allApis, selectedCategory, selectedSubcategory, selectedSubsubcategory],
   );
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return allApis.filter((item) =>
+      item.api.name.toLowerCase().includes(q) ||
+      item.source.name.toLowerCase().includes(q) ||
+      item.source.identifier.toLowerCase().includes(q) ||
+      item.categoryPaths.some((p) =>
+        [p.category, p.subcategory, p.subsubcategory].some((v) => v && v.toLowerCase().includes(q)),
+      ),
+    );
+  }, [allApis, searchQuery]);
 
   const selectedItem = useMemo(
     () => allApis.find((item) => item.source.identifier === selectedSourceId && item.api.name === selectedApiName),
@@ -230,8 +263,9 @@ export default function WallpaperSourceBrowser() {
   const loadSources = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await getWallpaperSources();
+      const [list, settings] = await Promise.all([getWallpaperSources(), getSettings()]);
       setSources(list);
+      setMergeDisplay(settings.wallpaper?.sources?.merge_display ?? true);
     } catch (e) {
       logError('Failed to load wallpaper sources', e);
     } finally {
@@ -244,21 +278,7 @@ export default function WallpaperSourceBrowser() {
   }, [loadSources]);
 
   useEffect(() => {
-    if (categories.length === 0) {
-      setSelectedCategory('');
-      return;
-    }
-    if (!selectedCategory || !categories.some((c) => c.name === selectedCategory)) {
-      setSelectedCategory(categories[0].name);
-      setSelectedSubcategory('');
-      setSelectedSubsubcategory('');
-    }
-  }, [categories, selectedCategory]);
-
-  useEffect(() => {
     if (filteredApis.length === 0) {
-      setSelectedSourceId('');
-      setSelectedApiName('');
       return;
     }
     if (!selectedSourceId || !selectedApiName || !filteredApis.some((item) => item.source.identifier === selectedSourceId && item.api.name === selectedApiName)) {
@@ -267,6 +287,15 @@ export default function WallpaperSourceBrowser() {
       setSelectedApiName(first.api.name);
     }
   }, [filteredApis, selectedSourceId, selectedApiName]);
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchQuery(value);
+    if (value.trim()) {
+      setSelectedCategory('');
+      setSelectedSubcategory('');
+      setSelectedSubsubcategory('');
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedApi) {
@@ -319,9 +348,10 @@ export default function WallpaperSourceBrowser() {
       preview_url: item.preview_url || item.image_url,
       local_path: null,
       source_type: item.source_id || 'unknown',
+      source_name: selectedApi?.name || item.source_name || '',
       source_url: item.image_url,
     });
-  }, []);
+  }, [selectedApi]);
 
   const openResultViewer = useCallback((startIndex = 0) => {
     openViewer(results.map((item) => {
@@ -334,10 +364,11 @@ export default function WallpaperSourceBrowser() {
         source_url: imageUrl,
         preview_url: previewUrl,
         source_type: item.source_id || 'source',
+        source_name: selectedApi?.name || item.source_name || '',
         copyright: item.copyright || '',
       };
     }), startIndex);
-  }, [results, openViewer]);
+  }, [results, openViewer, selectedApi]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const handle = e.currentTarget;
@@ -376,8 +407,62 @@ export default function WallpaperSourceBrowser() {
       className="relative flex h-[calc(100vh-12rem)] min-h-[480px] flex-col overflow-hidden"
     >
       <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-1 pb-4">
-          {categories.length > 0 && (
+        {/* ── 搜索栏 + 管理 ── */}
+        <div className="flex items-center gap-2 px-2 pt-2">
+          <SearchField value={searchQuery} onChange={handleSearchChange} fullWidth>
+            <SearchField.Group>
+              <SearchField.SearchIcon />
+              <SearchField.Input placeholder="搜索接口、壁纸源或分类..." />
+              <SearchField.ClearButton />
+            </SearchField.Group>
+          </SearchField>
+          <Button size="sm" variant="secondary" className="shrink-0" onPress={() => navigate('/resource/source-management')}>
+            <SlidersHorizontal size={14} /> 管理壁纸源
+          </Button>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-4 pt-2">
+          {/* ── 拆分模式：壁纸源选择 ── */}
+          {!mergeDisplay && (
+            <Autocomplete
+              fullWidth
+              selectionMode="multiple"
+              value={selectedSourceIds}
+              onChange={(keys) => setSelectedSourceIds(keys as Key[])}
+              placeholder="选择壁纸源（留空显示全部）"
+            >
+              <Autocomplete.Trigger>
+                <Autocomplete.Value />
+                <Autocomplete.ClearButton />
+                <Autocomplete.Indicator />
+              </Autocomplete.Trigger>
+              <Autocomplete.Popover>
+                <Autocomplete.Filter filter={containsFilter}>
+                  <SearchField autoFocus name="src-search" variant="secondary">
+                    <SearchField.Group>
+                      <SearchField.SearchIcon />
+                      <SearchField.Input placeholder="搜索壁纸源..." />
+                      <SearchField.ClearButton />
+                    </SearchField.Group>
+                  </SearchField>
+                  <ListBox renderEmptyState={() => <EmptyState>无匹配壁纸源</EmptyState>}>
+                    {sources.map((s) => (
+                      <ListBox.Item key={s.identifier} id={s.identifier} textValue={s.name}>
+                        <span className="flex items-center gap-2">
+                          <SourceIcon src={s.logo} name={s.name} size="xs" />
+                          {s.name}
+                        </span>
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Autocomplete.Filter>
+              </Autocomplete.Popover>
+            </Autocomplete>
+          )}
+
+          {/* ── 分类筛选（可选） ── */}
+          {!searchQuery.trim() && categories.length > 0 && (
             <div className="space-y-2 pl-1">
               <TagGroup
                 selectionMode="single"
@@ -448,10 +533,60 @@ export default function WallpaperSourceBrowser() {
             </div>
           )}
 
-          {filteredApis.length === 0 ? (
-            <div className="py-6 text-center text-muted">该分类下暂无 API</div>
+          {/* ── 搜索结果 ── */}
+          {searchQuery.trim() ? (
+            searchResults.length === 0 ? (
+              <div className="py-6 text-center text-muted">未找到匹配的接口</div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 px-2 sm:grid-cols-3 md:grid-cols-4">
+                {searchResults.map((item) => {
+                  const catLabel = formatCategoryPath(item.categoryPaths[0] || { category: '', subcategory: '', subsubcategory: '' });
+                  return (
+                    <Card
+                      key={`search-${item.source.identifier}:${item.api.name}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        setSelectedSourceId(item.source.identifier);
+                        setSelectedApiName(item.api.name);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedSourceId(item.source.identifier);
+                          setSelectedApiName(item.api.name);
+                        }
+                      }}
+                      className={`space-y-1 p-3 transition-colors ${
+                        selectedSourceId === item.source.identifier && selectedApiName === item.api.name
+                          ? 'ring-2 ring-primary bg-surface'
+                          : 'hover:bg-surface'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <SourceIcon src={item.api.logo || item.source.logo} name={item.api.name} size="md" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-sm">{item.api.name}</div>
+                          <div className="truncate text-xs text-muted">{item.source.name}</div>
+                        </div>
+                      </div>
+                      {catLabel && (
+                        <div className="flex items-center gap-0.5 text-[10px] text-muted">
+                          <ChevronRight size={10} />
+                          <span className="truncate">{catLabel}</span>
+                        </div>
+                      )}
+                    </Card>
+                  );
+                })}
+              </div>
+            )
+          ) : filteredApis.length === 0 ? (
+            <div className="py-6 text-center text-muted">
+              {selectedCategory ? '该分类下暂无接口' : '暂无可用接口'}
+            </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 px-1 sm:grid-cols-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 px-2 sm:grid-cols-3 md:grid-cols-4">
               {filteredApis.map((item) => (
                 <Card
                   key={`${item.source.identifier}:${item.api.name}`}
@@ -478,6 +613,7 @@ export default function WallpaperSourceBrowser() {
                     <SourceIcon src={item.api.logo || item.source.logo} name={item.api.name} size="md" />
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium">{item.api.name}</div>
+                      <div className="truncate text-xs text-muted">{item.source.name}</div>
                     </div>
                   </div>
                   {item.api.description && (
@@ -507,7 +643,12 @@ export default function WallpaperSourceBrowser() {
               <div className="flex shrink-0 items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <SourceIcon src={selectedApi.logo || selectedSource?.logo} name={selectedApi.name} size="sm" />
-                  <div className="font-medium truncate">{selectedApi.name}</div>
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{selectedApi.name}</div>
+                    {selectedSource && (
+                      <div className="text-xs text-muted truncate">{selectedSource.name}</div>
+                    )}
+                  </div>
                   {selectedApi.description && (
                     <span className="text-xs text-muted truncate">{selectedApi.description}</span>
                   )}

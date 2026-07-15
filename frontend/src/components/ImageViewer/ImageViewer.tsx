@@ -4,12 +4,12 @@ import {
   Copy, ChevronLeft, ChevronRight, Save, PanelsTopLeft, ExternalLink,
   ClipboardCopy,
 } from 'lucide-react';
-import { Button, Tooltip, toast } from '@heroui/react';
+import { Button, Spinner, Tooltip, toast } from '@heroui/react';
 import { useImageViewer } from './context';
 import {
-  copyToClipboard, addFavorite, saveAsWithProgress,
+  copyToClipboard, addFavorite, getFavorites, removeFavorite, saveAsWithProgress,
   setWallpaperWithProgress, openWithSystemWithProgress,
-  copyImageToClipboardWithProgress,
+  copyImageToClipboardWithProgress, notifyFavoritesChanged,
 } from '@/api/backend';
 import { safeNameForFile } from '@/lib/download';
 
@@ -19,6 +19,22 @@ interface TooltipIconButtonProps {
   tooltip: string;
   className?: string;
   children: React.ReactNode;
+}
+
+function stableResourceUrl(value?: string | null): string {
+  if (!value) return '';
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (parsed.pathname === '/api/cnu-image' || parsed.pathname === '/api/pixiv-image' || parsed.pathname === '/api/sniff-image') {
+      return parsed.searchParams.get('url') || value;
+    }
+    if (parsed.pathname === '/api/preview') {
+      return parsed.searchParams.get('path') || value;
+    }
+  } catch {
+    return value;
+  }
+  return value;
 }
 
 function TooltipIconButton({
@@ -55,6 +71,9 @@ export default function ImageViewer() {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [showThumbnails, setShowThumbnails] = useState(true);
+  const [isImageLoading, setIsImageLoading] = useState(true);
+  const [imageLoadError, setImageLoadError] = useState(false);
+  const [favoriteId, setFavoriteId] = useState<string | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
 
   const currentItem = items[currentIndex];
@@ -68,8 +87,35 @@ export default function ImageViewer() {
   useEffect(() => {
     if (isOpen) {
       resetTransform();
+      setIsImageLoading(true);
+      setImageLoadError(false);
     }
-  }, [isOpen, currentIndex, resetTransform]);
+  }, [isOpen, currentIndex, currentItem?.src, resetTransform]);
+
+  useEffect(() => {
+    if (!isOpen || !currentItem) return;
+    let cancelled = false;
+    const sourceUrl = stableResourceUrl(currentItem.source_url || currentItem.src);
+    const previewUrl = stableResourceUrl(currentItem.preview_url || currentItem.src);
+    const localPath = currentItem.local_path || '';
+
+    setFavoriteId(null);
+    getFavorites()
+      .then((favorites) => {
+        if (cancelled) return;
+        const match = favorites.items.find((favorite) => (
+          (sourceUrl && stableResourceUrl(favorite.source_url) === sourceUrl)
+          || (previewUrl && stableResourceUrl(favorite.preview_url) === previewUrl)
+          || (localPath && favorite.local_path === localPath)
+        ));
+        setFavoriteId(match?.id || null);
+      })
+      .catch(() => {
+        if (!cancelled) setFavoriteId(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [isOpen, currentItem]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -170,7 +216,7 @@ export default function ImageViewer() {
 
   const handleSetWallpaper = async () => {
     if (!currentItem) return;
-    const url = currentItem.source_url || currentItem.src;
+    const url = currentItem.src || currentItem.preview_url || currentItem.source_url;
     if (!url && !currentItem.local_path) {
       toast.danger('没有可用的图片来源', { timeout: 0 });
       return;
@@ -192,16 +238,35 @@ export default function ImageViewer() {
 
   const handleFavorite = async () => {
     if (!currentItem) return;
-    await addFavorite({
-      folder_id: 'default',
-      title: currentItem.title || '未命名',
-      description: currentItem.description || '',
-      tags: [],
-      preview_url: currentItem.preview_url || currentItem.src,
-      local_path: currentItem.local_path || null,
-      source_type: currentItem.source_type || 'unknown',
-      source_url: currentItem.source_url || currentItem.src,
-    });
+    try {
+      if (favoriteId) {
+        await removeFavorite(favoriteId);
+        setFavoriteId(null);
+        notifyFavoritesChanged();
+        toast.success('已取消收藏', { timeout: 2500 });
+        return;
+      }
+      const favorite = await addFavorite({
+        folder_id: 'default',
+        title: currentItem.title || '未命名',
+        description: currentItem.description || '',
+        tags: currentItem.tags || [],
+        preview_url: currentItem.preview_url || currentItem.src,
+        local_path: currentItem.local_path || null,
+        source_type: currentItem.source_type || 'unknown',
+        source_name: currentItem.source_name,
+        source_url: currentItem.source_url || currentItem.src,
+        source_page_url: currentItem.source_page_url,
+      });
+      setFavoriteId(favorite.id);
+      notifyFavoritesChanged();
+      toast.success('已添加到收藏', { timeout: 2500 });
+    } catch (error) {
+      toast.danger(favoriteId ? '取消收藏失败' : '收藏失败', {
+        description: error instanceof Error ? error.message : '请稍后重试',
+        timeout: 0,
+      });
+    }
   };
 
   const handleSaveAs = async () => {
@@ -314,11 +379,37 @@ export default function ImageViewer() {
           </>
         )}
 
+        {isImageLoading && !imageLoadError && (
+          <div
+            className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-white/70"
+            role="status"
+            aria-live="polite"
+          >
+            <Spinner size="lg" color="current" />
+            <span className="text-sm">正在加载完整图片</span>
+          </div>
+        )}
+
+        {imageLoadError && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-white/70">
+            完整图片加载失败
+          </div>
+        )}
+
         <img
+          key={currentItem.src}
           src={currentItem.src}
           alt={currentItem.title || '图片'}
-          className="select-none"
+          className={`select-none transition-opacity duration-200 ${isImageLoading || imageLoadError ? 'opacity-0' : 'opacity-100'}`}
           style={transformStyle}
+          onLoad={() => {
+            setIsImageLoading(false);
+            setImageLoadError(false);
+          }}
+          onError={() => {
+            setIsImageLoading(false);
+            setImageLoadError(true);
+          }}
           onMouseDown={handleMouseDown}
           onClick={(e) => e.stopPropagation()}
           draggable={false}
@@ -377,13 +468,16 @@ export default function ImageViewer() {
         >
           <ExternalLink size={18} />
         </TooltipIconButton>
-        <TooltipIconButton
-          onPress={handleFavorite}
-          ariaLabel="收藏"
-          tooltip="收藏"
-        >
-          <Heart size={18} />
-        </TooltipIconButton>
+          <TooltipIconButton
+            onPress={handleFavorite}
+            ariaLabel={favoriteId ? '取消收藏' : '收藏'}
+            tooltip={favoriteId ? '取消收藏' : '收藏'}
+            className={favoriteId
+              ? 'rounded p-2 text-danger hover:bg-white/10 hover:text-danger'
+              : undefined}
+          >
+            <Heart size={18} fill={favoriteId ? 'currentColor' : 'none'} />
+          </TooltipIconButton>
         <TooltipIconButton
           onPress={handleSaveAs}
           ariaLabel="另存为"
@@ -441,7 +535,7 @@ export default function ImageViewer() {
                 }`}
               >
                 <img
-                  src={item.src || item.preview_url}
+                  src={item.preview_url || item.src}
                   alt={item.title || ''}
                   className="h-14 w-24 object-cover"
                   loading="lazy"

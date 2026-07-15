@@ -5,7 +5,7 @@ import {
   Card, Button, Input, Drawer, Spinner, Label, Chip,
   ListBox, Modal, Autocomplete, useFilter, EmptyState,
   SearchField, Tag as HeroTag, TagGroup, TextArea, Select,
-  TextField, Checkbox, Toolbar, ButtonGroup, Separator, FieldError, Description,
+  TextField, Checkbox, Toolbar, ButtonGroup, Separator, FieldError, Description, toast,
 } from '@heroui/react';
 import TagList from '@/components/TagList';
 import TagManager from '@/components/TagManager';
@@ -17,11 +17,13 @@ import {
 import {
   getFavorites, removeFavorite, updateFavorite,
   createFavoriteFolder, updateFavoriteFolder, deleteFavoriteFolder, setWallpaper, downloadWithProgress,
-  exportFavorites, selectLocalImage, localPreviewUrl,
+  exportFavorites, pickAndImportFavorites, selectLocalImage, localPreviewUrl,
+  FAVORITES_CHANGED_EVENT,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer/context';
 import type { FavoriteFolder, FavoriteItem, FavoritesData } from '@/types';
 import { safeNameForFile } from '@/lib/download';
+import FavoriteTransferModal from '@/components/FavoriteTransferModal';
 
 export default function Favorite() {
   const navigate = useNavigate();
@@ -51,6 +53,8 @@ export default function Favorite() {
   const [editFolderError, setEditFolderError] = useState('');
   const [savingFolder, setSavingFolder] = useState(false);
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [importing, setImporting] = useState(false);
   const {contains} = useFilter({sensitivity: 'base'});
   const { openViewer } = useImageViewer();
 
@@ -70,16 +74,21 @@ export default function Favorite() {
     return data.folders.find((folder) => folder.id === activeFolder) || null;
   }, [activeFolder, data.folders]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
-    const d = await getFavorites();
-    setData(d);
-    setLoading(false);
-  };
+    try {
+      const d = await getFavorites();
+      setData(d);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     refresh();
-  }, []);
+    window.addEventListener(FAVORITES_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(FAVORITES_CHANGED_EVENT, refresh);
+  }, [refresh]);
 
   const filteredItems = activeFolder === 'all'
     ? data.items
@@ -159,12 +168,33 @@ export default function Favorite() {
 
   const handleBatchExport = async () => {
     if (selectedItems.length === 0) return;
-    if (activeFolder === 'all') {
-      alert('批量导出仅支持在当前文件夹内使用，请先筛选文件夹');
-      return;
+    setShowExportModal(true);
+  };
+
+  const handleImport = async () => {
+    setImporting(true);
+    try {
+      const result = await pickAndImportFavorites();
+      if (!result) return;
+      let refreshFailed = false;
+      try {
+        await refresh();
+      } catch {
+        refreshFailed = true;
+      }
+      setSelectedIds(new Set());
+      const localMessage = result.restored_local_files
+        ? `，恢复 ${result.restored_local_files} 个本地文件`
+        : '';
+      const duplicateMessage = result.skipped_items ? `，跳过 ${result.skipped_items} 条重复收藏` : '';
+      const missingMessage = result.missing_local_files ? `，${result.missing_local_files} 个本地文件未找到` : '';
+      const refreshMessage = refreshFailed ? '，列表刷新失败，请手动刷新' : '';
+      toast.success(`已导入 ${result.imported_items} 条收藏${localMessage}${duplicateMessage}${missingMessage}${refreshMessage}`, { timeout: 5000 });
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : '导入收藏失败', { timeout: 0 });
+    } finally {
+      setImporting(false);
     }
-    const path = await exportFavorites(activeFolder);
-    alert(`导出到: ${path}`);
   };
 
   const handleSaveEdit = async () => {
@@ -300,9 +330,10 @@ export default function Favorite() {
   };
 
   const handleLocalize = async (item: FavoriteItem) => {
-    if (!item.preview_url) return;
+    const imageUrl = item.source_url || item.preview_url;
+    if (!imageUrl) return;
     const filename = `${safeNameForFile(item.title, 'favorite')}.jpg`;
-    const path = await downloadWithProgress(item.preview_url, filename);
+    const path = await downloadWithProgress(imageUrl, filename);
     if (path) {
       await updateFavorite({ ...item, local_path: path });
       refresh();
@@ -319,12 +350,14 @@ export default function Favorite() {
 
   const handleOpenViewer = (item: FavoriteItem) => {
     const items = filteredItems.map((it) => ({
-      src: getItemSrc(it),
+      src: (it.local_path && localPreviewUrl(it.local_path)) || it.source_url || it.preview_url || '',
       title: it.title,
       source_url: it.source_url,
       source_type: it.source_type,
+      source_name: it.source_name,
       local_path: it.local_path,
       preview_url: it.preview_url,
+      tags: it.tags,
     }));
     const index = filteredItems.findIndex((it) => it.id === item.id);
     openViewer(items, Math.max(0, index));
@@ -348,8 +381,10 @@ export default function Favorite() {
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="secondary" onPress={refresh}><RefreshCw size={14} /> 刷新</Button>
         <Button size="sm" variant="secondary" onPress={async () => { const path = await selectLocalImage(); if (path) { /* add local */ } }}><FolderPlus size={14} /> 添加本地</Button>
-        <Button size="sm" variant="secondary" onPress={async () => { const path = await exportFavorites(activeFolder === 'all' ? undefined : activeFolder); alert(`导出到: ${path}`); }}><FolderOutput size={14} /> 导出</Button>
-        <Button size="sm" variant="ghost" onPress={async () => { /* import dialog */ }}><Import size={14} /> 导入</Button>
+        <Button size="sm" variant="secondary" onPress={() => setShowExportModal(true)}><FolderOutput size={14} /> 导出</Button>
+        <Button size="sm" variant="ghost" onPress={handleImport} isPending={importing}>
+          {({ isPending }) => <>{isPending && <Spinner color="current" size="sm" />} <Import size={14} /> {isPending ? '导入中...' : '导入'}</>}
+        </Button>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -509,6 +544,16 @@ export default function Favorite() {
           </ButtonGroup>
         </Toolbar>
       )}
+
+      <FavoriteTransferModal
+        isOpen={showExportModal}
+        onOpenChange={setShowExportModal}
+        activeFolder={activeFolder}
+        folders={data.folders}
+        items={data.items}
+        selectedIds={selectedIds}
+        onExport={exportFavorites}
+      />
 
       <Drawer.Backdrop isOpen={!!editingItem} onOpenChange={(open) => { if (!open) closeEditDrawer(); }}>
         <Drawer.Content placement="right">

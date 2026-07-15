@@ -1,4 +1,12 @@
+import contextlib
+import copy
 import json
+import os
+import threading
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +45,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "download_directory": "",
         "favorites_directory": "",
         "clear_cache_after_360_source": True,
+        "auto_clear_cache": {"enabled": False, "max_mb": 512},
+        "auto_clear_logs": {"enabled": True, "max_files": 20},
+        "auto_compress": {"enabled": False, "format": "avif", "quality": 80},
     },
     "wallpaper": {
         "auto_change": {
@@ -48,7 +59,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
         "allow_NSFW": False,
         "history_save_copy": False,
-        "sources": {"merge_display": False},
+        "sources": {"merge_display": True},
+        "pixiv": {"include_artwork_tags_in_favorites": True},
     },
     "download": {
         "segment_size_kb": 200,
@@ -100,6 +112,8 @@ class SettingsStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or get_config_dir() / "config.json"
         self._data: dict[str, Any] = {}
+        self._lock = threading.RLock()
+        self._process_lock_state = threading.local()
         self.load()
 
     def load(self) -> None:
@@ -116,53 +130,162 @@ class SettingsStore:
         self._migrate()
 
     def _migrate(self) -> None:
+        self._apply_defaults(self._data)
+
+    @staticmethod
+    def _apply_defaults(data: dict[str, Any]) -> None:
         def set_defaults(src: dict[str, Any], defaults: dict[str, Any]) -> None:
             for key, value in defaults.items():
                 if key not in src:
-                    src[key] = value
+                    src[key] = copy.deepcopy(value)
                 elif isinstance(value, dict):
                     if not isinstance(src.get(key), dict):
                         src[key] = value
                     else:
                         set_defaults(src[key], value)
-        set_defaults(self._data, DEFAULT_SETTINGS)
+        set_defaults(data, DEFAULT_SETTINGS)
+
+    @contextmanager
+    def _interprocess_lock(self) -> Iterator[None]:
+        depth = getattr(self._process_lock_state, "depth", 0)
+        if depth > 0:
+            self._process_lock_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._process_lock_state.depth -= 1
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_name(self.path.name + ".lock")
+        with lock_path.open("a+b") as lock_file:
+            if os.name == "nt":
+                import msvcrt
+
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                self._process_lock_state.depth = 1
+                try:
+                    yield
+                finally:
+                    self._process_lock_state.depth = 0
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                self._process_lock_state.depth = 1
+                try:
+                    yield
+                finally:
+                    self._process_lock_state.depth = 0
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _write_unlocked(self) -> None:
+        temporary = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            with temporary.open("w", encoding="utf-8") as file:
+                json.dump(self._data, file, ensure_ascii=False, indent=2)
+                file.flush()
+                os.fsync(file.fileno())
+            for attempt in range(8):
+                try:
+                    os.replace(temporary, self.path)
+                    break
+                except PermissionError:
+                    if attempt == 7:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+
+    def _reload_from_disk_unlocked(self) -> None:
+        if not self.path.exists():
+            return
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Settings root must be an object")
+        self._apply_defaults(data)
+        self._data = data
 
     def save(self) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            with self._lock, self._interprocess_lock():
+                self._write_unlocked()
             logger.debug("Settings saved to {}", self.path)
         except Exception as exc:
             logger.error("Failed to save settings to {}: {}", self.path, exc)
+            raise
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        with self._lock, self._interprocess_lock():
+            if getattr(self._process_lock_state, "depth", 0) == 1:
+                self._reload_from_disk_unlocked()
+            yield
 
     def get(self, key: str, default: Any = None) -> Any:
-        parts = key.split(".")
-        current: Any = self._data
-        for part in parts:
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            else:
-                return default
-        return current
+        with self._lock:
+            parts = key.split(".")
+            current: Any = self._data
+            for part in parts:
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                else:
+                    return default
+            return copy.deepcopy(current)
 
     def set(self, key: str, value: Any) -> None:
-        parts = key.split(".")
-        current = self._data
-        for part in parts[:-1]:
-            if part not in current:
-                current[part] = {}
-            current = current[part]
-        current[parts[-1]] = value
-        self.save()
+        self.set_many({key: value})
         logger.info("Setting changed: {}={}", key, value if not isinstance(value, (dict, list)) else "(...)")
 
+    def set_many(self, updates: dict[str, Any]) -> None:
+        with self._lock:
+            previous = copy.deepcopy(self._data)
+            try:
+                with self._interprocess_lock():
+                    self._reload_from_disk_unlocked()
+                    for key, value in updates.items():
+                        parts = key.split(".")
+                        current = self._data
+                        for part in parts[:-1]:
+                            if part not in current or not isinstance(current[part], dict):
+                                current[part] = {}
+                            current = current[part]
+                        current[parts[-1]] = value
+                    self._write_unlocked()
+            except Exception:
+                self._data = previous
+                raise
+
+    def replace(self, data: dict[str, Any]) -> None:
+        with self._lock:
+            previous = copy.deepcopy(self._data)
+            try:
+                with self._interprocess_lock():
+                    replacement = copy.deepcopy(data)
+                    self._apply_defaults(replacement)
+                    self._data = replacement
+                    self._write_unlocked()
+            except Exception:
+                self._data = previous
+                raise
+
     def as_dict(self) -> dict[str, Any]:
-        return dict(self._data)
+        with self._lock:
+            return copy.deepcopy(self._data)
 
     def reset(self) -> None:
-        self._data = json.loads(json.dumps(DEFAULT_SETTINGS))
-        self.save()
+        with self._lock:
+            self._data = copy.deepcopy(DEFAULT_SETTINGS)
+            with self._interprocess_lock():
+                self._write_unlocked()
         logger.info("Settings reset to defaults")
 
 _settings: SettingsStore | None = None

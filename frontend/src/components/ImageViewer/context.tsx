@@ -5,10 +5,13 @@ export interface ImageViewerItem {
   title?: string;
   description?: string;
   source_url?: string;
+  source_page_url?: string;
   source_type?: string;
+  source_name?: string;
   local_path?: string | null;
   preview_url?: string;
   copyright?: string;
+  tags?: string[];
 }
 
 export interface ImageViewerOptions {

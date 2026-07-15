@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Card, Button, Input, Spinner, Tooltip, Checkbox,
+  Card, Button, Input, Spinner, Tooltip, Checkbox, toast,
   Toolbar, ButtonGroup, Separator,
 } from '@heroui/react';
 import {
@@ -11,6 +11,7 @@ import {
   downloadWithProgress, setWallpaperWithProgress, downloadManyWithProgress,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
+import { logError } from '@/lib/log';
 import type { SniffedImage } from '@/types';
 
 export default function Sniff() {
@@ -33,6 +34,15 @@ export default function Sniff() {
     try {
       const result = await sniffImages(target);
       setImages(result);
+      if (result.length > 0) {
+        toast.success(`已提取 ${result.length} 张图片`, { timeout: 2500 });
+      }
+    } catch (error) {
+      logError('Sniff failed', error);
+      toast.danger('嗅探失败', {
+        description: error instanceof Error ? error.message : '请检查网址后重试',
+        timeout: 0,
+      });
     } finally {
       setLoading(false);
     }
@@ -49,6 +59,9 @@ export default function Sniff() {
   const allSelected = images.length > 0 && selected.size === images.length;
   const someSelected = selected.size > 0 && selected.size < images.length;
 
+  const sourceUrl = (image: SniffedImage) => image.source_url || image.url;
+  const sourcePageUrl = (image: SniffedImage) => image.source_page_url || image.referer || '';
+
   const toggleSelectAll = () => {
     if (allSelected) setSelected(new Set());
     else setSelected(new Set(images.map((i) => i.id)));
@@ -63,26 +76,54 @@ export default function Sniff() {
     const items = images.map((i) => ({
       src: i.url,
       title: i.filename,
-      source_url: i.url,
+      preview_url: i.url,
+      source_url: sourceUrl(i),
       source_type: 'sniff',
+      source_name: '网页嗅探',
     }));
     openViewer(items, startIndex);
   };
 
   const handleFavoriteSelected = async () => {
-    for (const img of selectedImages) {
-      await addFavorite({
-        folder_id: 'default', title: img.filename, description: '', tags: [],
-        preview_url: img.url, local_path: null,
-        source_type: 'sniff', source_url: img.url,
-      });
+    try {
+      for (const img of selectedImages) {
+        await addFavorite({
+          folder_id: 'default', title: img.filename, description: '', tags: [],
+          preview_url: img.url, local_path: null,
+          source_type: 'sniff', source_url: sourceUrl(img), source_page_url: sourcePageUrl(img),
+        });
+      }
+      toast.success(`已收藏 ${selectedImages.length} 张图片`, { timeout: 3000 });
+      setSelected(new Set());
+    } catch (error) {
+      logError('Batch sniff favorite failed', error);
+      toast.danger('收藏失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
     }
-    setSelected(new Set());
   };
 
-  const handleCopySelectedUrls = () => {
-    const urls = selectedImages.map((i) => i.url).join('\n');
-    copyToClipboard(urls);
+  const handleCopySelectedUrls = async () => {
+    const urls = selectedImages.map((i) => sourceUrl(i)).join('\n');
+    try {
+      await copyToClipboard(urls);
+      toast.success(`已复制 ${selectedImages.length} 个链接`, { timeout: 2500 });
+    } catch (error) {
+      logError('Copy sniff URLs failed', error);
+      toast.danger('复制链接失败', { timeout: 0 });
+    }
+  };
+
+  const handleFavoriteOne = async (img: SniffedImage) => {
+    try {
+        await addFavorite({
+          folder_id: 'default', title: img.filename, description: '', tags: [],
+          preview_url: img.url, local_path: null,
+          source_type: 'sniff', source_url: sourceUrl(img), source_page_url: sourcePageUrl(img),
+        });
+      toast.success('已添加到收藏', { timeout: 2500 });
+    } catch (error) {
+      logError('Favorite sniffed image failed', error);
+      toast.danger('收藏失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
+    }
   };
 
   const handleDownloadSelected = () =>
@@ -150,7 +191,7 @@ export default function Sniff() {
                 </span>
                 <span onClick={(e) => { e.stopPropagation(); }}>
                   <Tooltip delay={0}>
-                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => addFavorite({ folder_id: 'default', title: img.filename, description: '', tags: [], preview_url: img.url, local_path: null, source_type: 'sniff', source_url: img.url })} aria-label="收藏"><Heart size={14} /></Button>
+                    <Button isIconOnly size="sm" variant="tertiary" className="h-7 w-7 min-w-0 px-0" onPress={() => handleFavoriteOne(img)} aria-label="收藏"><Heart size={14} /></Button>
                     <Tooltip.Content><p>收藏</p></Tooltip.Content>
                   </Tooltip>
                 </span>

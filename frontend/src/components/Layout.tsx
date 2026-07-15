@@ -12,6 +12,7 @@ export default function Layout() {
     if (p === '/') return 'home';
     if (p.startsWith('/resource')) return 'resource';
     if (p.startsWith('/generate')) return 'generate';
+    if (p.startsWith('/create')) return 'create';
     if (p.startsWith('/search')) return 'search';
     if (p.startsWith('/sniff')) return 'sniff';
     if (p.startsWith('/favorite')) return 'favorite';

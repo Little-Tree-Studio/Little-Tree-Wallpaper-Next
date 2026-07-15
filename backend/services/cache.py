@@ -72,9 +72,9 @@ class ResponseCache:
             self._memory[mem_key] = (cached_at, data)
         return data
 
-    def get_stale(self, key: str) -> Any | None:
-        """Return cached data ignoring TTL (best-effort fallback)."""
-        return self.get(key, ttl=-1)
+    def get_stale(self, key: str, max_age: float | None = None) -> Any | None:
+        """Return stale data, optionally bounded by a maximum age in seconds."""
+        return self.get(key, ttl=-1 if max_age is None else max(0.0, max_age))
 
     def get_same_day(self, key: str, ttl: float | None = None) -> Any | None:
         """Like :meth:`get`, but also requires the cache to have been written

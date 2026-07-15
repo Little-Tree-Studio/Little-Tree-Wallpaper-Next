@@ -1,14 +1,12 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
-  Button, Input, Modal, Label, Chip, Badge, Card, EmptyState,
+  Button, Input, Modal, Label, Chip, Badge, Card, EmptyState, Checkbox, toast,
 } from '@heroui/react';
 import {
-  Plus, Pencil, Trash2, AlertTriangle, Tag,
+  Plus, Pencil, Trash2, AlertTriangle, Tag, CheckSquare, X,
 } from 'lucide-react';
 import { getFavorites, ensureTag, renameTag, deleteTag } from '@/api/backend';
 import type { FavoriteItem } from '@/types';
-
-export const SYSTEM_TAGS = ['Bing', 'Windows聚焦'];
 
 interface TagInfo {
   name: string;
@@ -23,18 +21,23 @@ interface TagManagerProps {
 export default function TagManager({ onRefresh }: TagManagerProps) {
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
+  const [systemTags, setSystemTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [newTagName, setNewTagName] = useState('');
   const [editingTag, setEditingTag] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [deleteConfirmTag, setDeleteConfirmTag] = useState<string | null>(null);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     const d = await getFavorites();
     setItems(d.items);
     setAllTags(d.all_tags || []);
+    setSystemTags(d.system_tags || []);
     setLoading(false);
   }, []);
 
@@ -52,19 +55,14 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
         map.set(tag, (map.get(tag) || 0) + 1);
       }
     }
-    for (const sys of SYSTEM_TAGS) {
-      if (!map.has(sys)) {
-        map.set(sys, 0);
-      }
-    }
     return Array.from(map.entries())
-      .map(([name, count]) => ({ name, count, isSystem: SYSTEM_TAGS.includes(name) }))
+      .map(([name, count]) => ({ name, count, isSystem: systemTags.includes(name) }))
       .sort((a, b) => {
         if (a.isSystem && !b.isSystem) return -1;
         if (!a.isSystem && b.isSystem) return 1;
         return a.name.localeCompare(b.name);
       });
-  }, [items, allTags]);
+  }, [items, allTags, systemTags]);
 
   const filteredTags = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -79,7 +77,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
       alert('标签已存在');
       return;
     }
-    if (SYSTEM_TAGS.includes(name)) {
+    if (systemTags.includes(name)) {
       alert('不能使用系统标签名称');
       return;
     }
@@ -127,6 +125,50 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
     setLoading(false);
   };
 
+  const selectableTags = filteredTags.filter((tag) => !tag.isSystem);
+  const allSelectableSelected = selectableTags.length > 0
+    && selectableTags.every((tag) => selectedTags.has(tag.name));
+
+  const toggleTagSelection = (name: string) => {
+    setSelectedTags((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allSelectableSelected) setSelectedTags(new Set());
+    else setSelectedTags(new Set(selectableTags.map((tag) => tag.name)));
+  };
+
+  const exitBatchMode = () => {
+    setIsBatchMode(false);
+    setSelectedTags(new Set());
+  };
+
+  const handleBatchDelete = async () => {
+    const names = Array.from(selectedTags);
+    if (names.length === 0) return;
+    setLoading(true);
+    try {
+      await Promise.all(names.map((name) => deleteTag(name)));
+      toast.success(`已删除 ${names.length} 个标签`, { timeout: 3000 });
+      setShowBatchDeleteConfirm(false);
+      exitBatchMode();
+      await refresh();
+      onRefresh?.();
+    } catch (error) {
+      toast.danger('批量删除标签失败', {
+        description: error instanceof Error ? error.message : '请稍后重试',
+        timeout: 0,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -141,8 +183,42 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <Button size="sm" variant={isBatchMode ? 'primary' : 'secondary'} onPress={() => {
+            if (isBatchMode) exitBatchMode();
+            else setIsBatchMode(true);
+          }}>
+            {isBatchMode ? <X size={14} /> : <CheckSquare size={14} />}
+            {isBatchMode ? '退出管理' : '批量管理'}
+          </Button>
         </div>
       </div>
+
+      {isBatchMode && (
+        <Card className="flex flex-row flex-wrap items-center justify-between gap-3 p-3">
+          <Checkbox
+            className="inline-flex items-center"
+            isSelected={allSelectableSelected}
+            isIndeterminate={selectedTags.size > 0 && !allSelectableSelected}
+            onChange={toggleSelectAll}
+          >
+            <Checkbox.Content className="flex flex-row items-center gap-2">
+              <Checkbox.Control className="size-5 shrink-0"><Checkbox.Indicator /></Checkbox.Control>
+              <span className="whitespace-nowrap text-sm leading-5">全选当前结果</span>
+            </Checkbox.Content>
+          </Checkbox>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted">已选 {selectedTags.size} 个</span>
+            <Button
+              size="sm"
+              variant="danger"
+              isDisabled={selectedTags.size === 0}
+              onPress={() => setShowBatchDeleteConfirm(true)}
+            >
+              <Trash2 size={14} /> 批量删除
+            </Button>
+          </div>
+        </Card>
+      )}
 
       <Card className="p-4">
         <div className="flex flex-col gap-3 sm:flex-row">
@@ -173,15 +249,52 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filteredTags.map((tag) => (
-            <Card key={tag.name} className="flex flex-row items-center justify-between p-3">
+            <Card
+              key={tag.name}
+              className={`flex flex-row items-center justify-between p-3 ${
+                isBatchMode && !tag.isSystem
+                  ? 'cursor-pointer select-none hover:bg-surface-secondary'
+                  : ''
+              } ${selectedTags.has(tag.name) ? 'ring-2 ring-primary' : ''}`}
+              role={isBatchMode && !tag.isSystem ? 'checkbox' : undefined}
+              aria-checked={isBatchMode && !tag.isSystem ? selectedTags.has(tag.name) : undefined}
+              tabIndex={isBatchMode && !tag.isSystem ? 0 : undefined}
+              onClick={() => {
+                if (isBatchMode && !tag.isSystem) toggleTagSelection(tag.name);
+              }}
+              onKeyDown={(event) => {
+                if (!isBatchMode || tag.isSystem || (event.key !== 'Enter' && event.key !== ' ')) return;
+                event.preventDefault();
+                toggleTagSelection(tag.name);
+              }}
+            >
               <div className="flex items-center gap-3 min-w-0">
+                {isBatchMode && !tag.isSystem && (
+                  <Checkbox
+                    className="inline-flex shrink-0 items-center"
+                    isSelected={selectedTags.has(tag.name)}
+                    onChange={() => toggleTagSelection(tag.name)}
+                    aria-label={`选择标签 ${tag.name}`}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <Checkbox.Content className="flex flex-row items-center">
+                      <Checkbox.Control className="size-5 shrink-0"><Checkbox.Indicator /></Checkbox.Control>
+                    </Checkbox.Content>
+                  </Checkbox>
+                )}
                 <Chip size="sm" color={tag.isSystem ? 'warning' : 'default'} variant={tag.isSystem ? 'soft' : 'secondary'}>
                   <Chip.Label className="truncate max-w-[140px]" title={tag.name}>{tag.name}</Chip.Label>
                 </Chip>
                 <Badge size="sm" variant="soft">{tag.count}</Badge>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                {!tag.isSystem ? (
+                {isBatchMode ? (
+                  tag.isSystem ? (
+                    <Chip size="sm" color="warning" variant="soft">
+                      <Chip.Label>系统</Chip.Label>
+                    </Chip>
+                  ) : null
+                ) : !tag.isSystem ? (
                   <>
                     <Button
                       size="sm"
@@ -256,6 +369,25 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
             <Modal.Footer>
               <Button variant="ghost" onPress={() => setDeleteConfirmTag(null)}>取消</Button>
               <Button variant="danger" onPress={() => deleteConfirmTag && handleDeleteTag(deleteConfirmTag)}>删除</Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+
+      <Modal.Backdrop isOpen={showBatchDeleteConfirm} onOpenChange={setShowBatchDeleteConfirm}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.Header>
+              <Modal.Icon className="bg-danger-soft text-danger"><AlertTriangle size={20} /></Modal.Icon>
+              <Modal.Heading>确认批量删除</Modal.Heading>
+            </Modal.Header>
+            <Modal.Body>
+              <p>确定要删除选中的 {selectedTags.size} 个标签吗？</p>
+              <p className="text-sm text-muted">这些标签会从所有相关收藏中同步移除，操作不可恢复。</p>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="ghost" onPress={() => setShowBatchDeleteConfirm(false)}>取消</Button>
+              <Button variant="danger" onPress={handleBatchDelete}>批量删除</Button>
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>

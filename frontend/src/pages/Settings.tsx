@@ -1,28 +1,34 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
   Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
-  TagGroup, useFilter, Checkbox, CheckboxGroup,
+  TagGroup, useFilter, Checkbox, CheckboxGroup, Spinner,
 } from '@heroui/react';
 import type { Key } from '@heroui/react';
 import {
-  FolderOpen, Plus, Trash2, Wand2, ChevronDown, Heart, Package,
-  Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download,
+  Plus, Trash2, Wand2, ChevronDown, Heart, Package,
+  Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download, RefreshCw,
 } from 'lucide-react';
-import { getSettings, setSetting, pickDownloadDirectory, setDownloadDirectory, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
+import { getSettings, setSetting, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
 import { useThemeContext } from '@/components/ThemeProvider';
-import type { AppSettings, ImageProviderConfig, CustomSentence } from '@/types';
+import StorageSettingsPanel from '@/components/StorageSettingsPanel';
+import type { AppSettings, ImageProviderConfig, CustomSentence, StorageOverview } from '@/types';
 import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
 
 export default function Settings() {
   const { tab } = useParams<{ tab?: string }>();
   const [settings, setLocalSettings] = useState<AppSettings | null>(null);
   const [activeTab, setActiveTab] = useState(tab || 'general');
-  const [storageOverview, setStorageOverview] = useState<any>(null);
+  const [storageOverview, setStorageOverview] = useState<StorageOverview | null | undefined>(undefined);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const settingsRequestId = useRef(0);
+  const settingsController = useRef<AbortController | null>(null);
   const [nsfwDialogOpen, setNsfwDialogOpen] = useState(false);
   const [nsfwConfirmAdult, setNsfwConfirmAdult] = useState(false);
   const [nsfwConfirmLegal, setNsfwConfirmLegal] = useState(false);
+  const [quickEditorEnabled, setQuickEditorEnabled] = useState(() => localStorage.getItem('ltw:create:quick-editor-enabled') !== 'false');
   const nsfwConfirmValue = useMemo(
     () => [
       ...(nsfwConfirmAdult ? ['adult'] : []),
@@ -35,30 +41,79 @@ export default function Settings() {
     setNsfwConfirmLegal(values.includes('legal'));
   };
 
+  const loadSettings = () => {
+    const requestId = ++settingsRequestId.current;
+    settingsController.current?.abort();
+    const controller = new AbortController();
+    settingsController.current = controller;
+    setSettingsLoading(true);
+    setSettingsError(null);
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+    getSettings(controller.signal)
+      .then((s) => {
+        if (requestId === settingsRequestId.current) setLocalSettings(s as AppSettings);
+      })
+      .catch((error: unknown) => {
+        if (requestId !== settingsRequestId.current) return;
+        setSettingsError(
+          error instanceof DOMException && error.name === 'AbortError'
+            ? '连接后端超时，请重试。'
+            : error instanceof Error ? error.message : '后端未响应',
+        );
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+        if (requestId === settingsRequestId.current) setSettingsLoading(false);
+        if (settingsController.current === controller) settingsController.current = null;
+      });
+  };
+
   useEffect(() => {
-    getSettings().then((s) => setLocalSettings(s as AppSettings));
-    getStorageOverview().then((s) => setStorageOverview(s));
+    loadSettings();
+    getStorageOverview().then((s) => setStorageOverview(s)).catch(() => setStorageOverview(null));
+    return () => {
+      settingsRequestId.current += 1;
+      settingsController.current?.abort();
+      settingsController.current = null;
+    };
   }, []);
 
   const update = (key: string, value: any) => {
     if (!settings) return;
-    const parts = key.split('.');
-    const next = { ...settings };
-    let cur: any = next;
-    for (let i = 0; i < parts.length - 1; i++) {
-      cur[parts[i]] = { ...cur[parts[i]] };
-      cur = cur[parts[i]];
-    }
-    cur[parts[parts.length - 1]] = value;
-    setLocalSettings(next);
-    setSetting(key, value);
+    setLocalSettings((currentSettings) => {
+      if (!currentSettings) return currentSettings;
+      const parts = key.split('.');
+      const next = { ...currentSettings };
+      let cur: any = next;
+      for (let i = 0; i < parts.length - 1; i++) {
+        cur[parts[i]] = { ...cur[parts[i]] };
+        cur = cur[parts[i]];
+      }
+      cur[parts[parts.length - 1]] = value;
+      return next;
+    });
+    void setSetting(key, value);
   };
+
+  if (settingsLoading && !settings) return (
+    <div className="mx-auto max-w-3xl space-y-4">
+      <h1 className="text-2xl font-bold">设置</h1>
+      <Card className="flex flex-col items-center justify-center gap-3 py-20">
+        <Spinner size="sm" />
+        <p className="text-muted">正在加载设置...</p>
+      </Card>
+    </div>
+  );
 
   if (!settings) return (
     <div className="mx-auto max-w-3xl space-y-4">
       <h1 className="text-2xl font-bold">设置</h1>
-      <Card className="flex flex-col items-center justify-center py-20">
-        <p className="text-muted">无法加载设置（未连接后端）</p>
+      <Card className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+        <p className="text-danger">设置加载失败</p>
+        <p className="max-w-md text-sm text-muted">{settingsError || '后端未响应，请稍后重试。'}</p>
+        <Button size="sm" variant="secondary" onPress={loadSettings}>
+          <RefreshCw size={14} /> 重试
+        </Button>
       </Card>
     </div>
   );
@@ -73,7 +128,7 @@ export default function Settings() {
             <Tabs.Tab id="general">通用<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="wallpaper">壁纸<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="content">内容<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="download">下载<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="storage">存储<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="generate">生成<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="sniff">嗅探<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="appearance">外观<Tabs.Indicator /></Tabs.Tab>
@@ -87,6 +142,10 @@ export default function Settings() {
               const s = await getSettings();
               setLocalSettings(s as AppSettings);
             }} />
+            <Separator />
+            <Section title="壁纸制作">
+              <Row label="点击组件时显示快捷编辑面板"><Switch aria-label="点击组件时显示快捷编辑面板" isSelected={quickEditorEnabled} onChange={(enabled) => { setQuickEditorEnabled(enabled); localStorage.setItem('ltw:create:quick-editor-enabled', String(enabled)); window.dispatchEvent(new CustomEvent('ltw:quick-editor-setting', { detail: enabled })); }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            </Section>
             <Separator />
             <Section title="开机与后台">
               <Row label="开机后自动隐藏到后台"><Switch aria-label="开机后自动隐藏到后台" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
@@ -151,6 +210,10 @@ export default function Settings() {
             <Section title="历史记录">
               <Row label="自动保存历史壁纸副本"><Switch aria-label="自动保存历史壁纸副本" isSelected={settings.wallpaper.history_save_copy} onChange={(v) => update('wallpaper.history_save_copy', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             </Section>
+            <Separator />
+            <Section title="壁纸源">
+              <Row label="合并显示"><Switch aria-label="合并显示" isSelected={settings.wallpaper.sources?.merge_display ?? true} onChange={(v) => update('wallpaper.sources.merge_display', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            </Section>
           </Card>
         </Tabs.Panel>
 
@@ -165,6 +228,10 @@ export default function Settings() {
                 update('wallpaper.allow_NSFW', false);
               }
             }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            <Separator />
+            <Section title="Pixiv">
+              <Row label="收藏时添加作品标签"><Switch aria-label="Pixiv 收藏时添加作品标签" isSelected={settings.wallpaper.pixiv?.include_artwork_tags_in_favorites ?? true} onChange={(v) => update('wallpaper.pixiv.include_artwork_tags_in_favorites', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            </Section>
             <Separator />
             <Section title="商店源">
               <Row label="使用自定义源"><Switch aria-label="使用自定义源" isSelected={settings.store.use_custom_source} onChange={(v) => update('store.use_custom_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
@@ -181,49 +248,14 @@ export default function Settings() {
           </Card>
         </Tabs.Panel>
 
-        <Tabs.Panel id="download">
-          <Card className="space-y-4 p-4">
-            <Section title="下载目录">
-              <Row label="当前目录">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted truncate max-w-[200px]">
-                    {storageOverview?.download_directory || settings.storage.download_directory || '默认'}
-                  </span>
-                  <Button size="sm" variant="secondary" onPress={async () => {
-                    const result = await pickDownloadDirectory();
-                    if (result?.path) {
-                      await setDownloadDirectory(result.path);
-                      const s = await getStorageOverview();
-                      setStorageOverview(s);
-                      const newSettings = await getSettings();
-                      setLocalSettings(newSettings as AppSettings);
-                    }
-                  }}>
-                    <FolderOpen size={14} /> 选择
-                  </Button>
-                </div>
-              </Row>
-              {settings.storage.download_directory && (
-                <Row label="">
-                  <Button size="sm" variant="ghost" onPress={async () => {
-                    await setDownloadDirectory('');
-                    const s = await getStorageOverview();
-                    setStorageOverview(s);
-                    const newSettings = await getSettings();
-                    setLocalSettings(newSettings as AppSettings);
-                  }}>恢复默认</Button>
-                </Row>
-              )}
-            </Section>
-            <Separator />
-            <Section title="存储概览">
-              {storageOverview?.items?.map((item: any) => (
-                <Row key={item.id} label={item.title}>
-                  <span className="text-xs text-muted">{item.file_count || 0} 文件 / {(item.size_bytes / 1024 / 1024).toFixed(1)} MB</span>
-                </Row>
-              ))}
-            </Section>
-          </Card>
+        <Tabs.Panel id="storage">
+          <StorageSettingsPanel
+            settings={settings}
+            initialOverview={storageOverview}
+            onOverviewChange={setStorageOverview}
+            onSettingsChange={setLocalSettings}
+            onUpdate={update}
+          />
         </Tabs.Panel>
 
         <Tabs.Panel id="generate">

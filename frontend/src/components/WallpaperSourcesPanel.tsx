@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Card, Button, Tabs, ComboBox, Input, Label, ListBox,
-  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, AlertDialog, toast,
+  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, AlertDialog, SearchField, toast,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Heart, Copy, RefreshCw,
@@ -657,6 +657,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
   const [deleteTarget, setDeleteTarget] = useState<WallpaperSource | null>(null);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const startCreate = () => {
     setEditingSourceId(null);
@@ -1053,6 +1054,13 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
   const selectedApi = useMemo(() => selectedSource?.apis?.find((a) => a.name === selectedApiName), [selectedSource, selectedApiName]);
   const validSources = sources.filter((s) => !s.invalid);
   const invalidSources = sources.filter((s) => s.invalid);
+  const filteredSources = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return validSources;
+    return validSources.filter((s) =>
+      s.name.toLowerCase().includes(q) || s.identifier.toLowerCase().includes(q),
+    );
+  }, [validSources, searchQuery]);
 
   const handleSetWallpaper = (url: string, title: string) => {
     const safeName = safeNameForFile(title, 'wallpaper');
@@ -1068,6 +1076,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
       preview_url: item.preview_url || item.image_url,
       local_path: null,
       source_type: item.source_id || 'unknown',
+      source_name: selectedApi?.name || item.source_name || '',
       source_url: item.image_url,
     });
   };
@@ -1087,6 +1096,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
       return {
         src: imageUrl, title: item.title || '壁纸', description: item.description || '',
         source_url: imageUrl, preview_url: previewUrl, source_type: item.source_id || 'source',
+        source_name: selectedApi?.name || item.source_name || '',
         copyright: item.copyright || '',
       };
     }), startIndex);
@@ -1180,106 +1190,151 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
 
       {validSources.length > 0 && (
         <div className="space-y-3">
-          <div className="flex gap-2 flex-wrap">
-            {validSources.map((s) => (
-              <Button key={s.identifier} size="sm"
-                variant={selectedSourceId === s.identifier ? 'primary' : 'ghost'}
-                onPress={() => setSelectedSourceId(s.identifier)} className="flex items-center gap-1"
-              >
-                <SourceIcon src={s.logo} name={s.name} size="xs" />
-                {s.name}{!s.enabled && <span className="text-xs opacity-60">(已禁用)</span>}
-              </Button>
-            ))}
-          </div>
-          {selectedSource && (
-            <Card className="p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <SourceIcon src={selectedSource.logo} name={selectedSource.name} size="lg" />
-                  <div>
-                    <div className="font-medium">{selectedSource.name}</div>
-                    <div className="text-xs text-muted">{selectedSource.identifier} &middot; v{selectedSource.version}</div>
+          {mode === 'management' ? (
+            <>
+              <SearchField value={searchQuery} onChange={setSearchQuery}>
+                <SearchField.Group>
+                  <SearchField.SearchIcon />
+                  <SearchField.Input placeholder="搜索壁纸源名称或标识符..." />
+                  <SearchField.ClearButton />
+                </SearchField.Group>
+              </SearchField>
+              {filteredSources.length > 0 ? (
+                filteredSources.map((s) => {
+              const catCount = s.categories?.length || 0;
+              const apiCount = s.apis?.length || 0;
+              return (
+                <Card key={s.identifier} className="p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <SourceIcon src={s.logo} name={s.name} size="lg" />
+                      <div className="min-w-0">
+                        <div className="font-medium flex items-center gap-2">
+                          <span className="truncate">{s.name}</span>
+                          {!s.enabled && <span className="text-xs opacity-60 shrink-0">(已禁用)</span>}
+                        </div>
+                        <div className="text-xs text-muted">{s.identifier} &middot; v{s.version}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Switch isSelected={s.enabled !== false} onChange={() => handleToggleSource(s)}>
+                        <Switch.Control><Switch.Thumb /></Switch.Control>
+                      </Switch>
+                      {s.can_delete && (
+                        <>
+                          <Button isIconOnly variant="ghost" size="sm" onPress={() => startEdit(s)} aria-label="编辑">
+                            <Pencil size={14} />
+                          </Button>
+                          <Button isIconOnly variant="ghost" size="sm" isDisabled={exporting}
+                            onPress={() => handleExportSource(s)} aria-label="导出"
+                          >
+                            <Download size={14} />
+                          </Button>
+                          <Button isIconOnly variant="ghost" size="sm" onPress={() => setDeleteTarget(s)}>
+                            <Trash2 size={14} className="text-danger" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Switch isSelected={selectedSource.enabled !== false} onChange={() => handleToggleSource(selectedSource)}>
-                    <Switch.Control><Switch.Thumb /></Switch.Control>
-                  </Switch>
-                  {mode === 'management' && selectedSource.can_delete && (
-                    <Button isIconOnly variant="ghost" size="sm" onPress={() => startEdit(selectedSource)} aria-label="编辑">
-                      <Pencil size={14} />
-                    </Button>
-                  )}
-                  {mode === 'management' && selectedSource.can_delete && (
-                    <Button isIconOnly variant="ghost" size="sm" isDisabled={exporting}
-                      onPress={() => handleExportSource(selectedSource)} aria-label="导出"
-                    >
-                      <Download size={14} />
-                    </Button>
-                  )}
-                  {selectedSource.can_delete && (
-                    <Button isIconOnly variant="ghost" size="sm" onPress={() => setDeleteTarget(selectedSource)}>
-                      <Trash2 size={14} className="text-danger" />
-                    </Button>
-                  )}
-                </div>
+                  <div className="text-xs text-muted">共 {catCount} 个分类，{apiCount} 个接口</div>
+                </Card>
+              );
+            })
+              ) : (
+                <div className="py-6 text-center text-muted">未找到匹配的壁纸源</div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex gap-2 flex-wrap">
+                {validSources.map((s) => (
+                  <Button key={s.identifier} size="sm"
+                    variant={selectedSourceId === s.identifier ? 'primary' : 'ghost'}
+                    onPress={() => setSelectedSourceId(s.identifier)} className="flex items-center gap-1"
+                  >
+                    <SourceIcon src={s.logo} name={s.name} size="xs" />
+                    {s.name}{!s.enabled && <span className="text-xs opacity-60">(已禁用)</span>}
+                  </Button>
+                ))}
               </div>
-              {selectedSource.apis && selectedSource.apis.length > 0 && (
-                <div className="space-y-3">
-                  <div className="flex gap-2 flex-wrap">
-                    {selectedSource.apis.map((api) => (
-                      <Button key={api.name} size="sm"
-                        variant={selectedApiName === api.name ? 'primary' : 'ghost'}
-                        onPress={() => setSelectedApiName(api.name)}
-                        className="flex items-center gap-1"
-                      >
-                        <SourceIcon src={api.logo} name={api.name} size="xs" />
-                        {api.name}
-                      </Button>
-                    ))}
+              {selectedSource && (
+                <Card className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <SourceIcon src={selectedSource.logo} name={selectedSource.name} size="lg" />
+                      <div>
+                        <div className="font-medium">{selectedSource.name}</div>
+                        <div className="text-xs text-muted">{selectedSource.identifier} &middot; v{selectedSource.version}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Switch isSelected={selectedSource.enabled !== false} onChange={() => handleToggleSource(selectedSource)}>
+                        <Switch.Control><Switch.Thumb /></Switch.Control>
+                      </Switch>
+                      {selectedSource.can_delete && (
+                        <Button isIconOnly variant="ghost" size="sm" onPress={() => setDeleteTarget(selectedSource)}>
+                          <Trash2 size={14} className="text-danger" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  {selectedApi && selectedApi.parameters && selectedApi.parameters.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {selectedApi.parameters.map((param, i) => {
-                        const key = param.key || `__param_${i}`;
-                        if (param.hidden) return null;
-                        const label = param.label || param.key;
-                        const type = param.type || 'text';
-                        return (
-                          <div key={key} className="space-y-1">
-                            <Label className="text-xs text-muted">{label}</Label>
-                            {type === 'choice' && param.choices ? (
-                              <ComboBox selectedKey={String(parameterValues[key] || '')}
-                                onSelectionChange={(k) => setParameterValues((p) => ({ ...p, [key]: String(k || '') }))}
-                              >
-                                <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
-                                <ComboBox.Popover><ListBox>
-                                  {param.choices.map((c) => <ListBox.Item key={c} id={c} textValue={c}>{c}</ListBox.Item>)}
-                                </ListBox></ComboBox.Popover>
-                              </ComboBox>
-                            ) : type === 'boolean' ? (
-                              <Switch isSelected={Boolean(parameterValues[key])} onChange={(v) => setParameterValues((p) => ({ ...p, [key]: v }))}>
-                                <Switch.Control><Switch.Thumb /></Switch.Control>
-                              </Switch>
-                            ) : (
-                              <Input className="h-8 text-sm" value={String(parameterValues[key] || '')}
-                                onChange={(e) => setParameterValues((p) => ({ ...p, [key]: e.target.value }))} placeholder={param.placeholder || ''}
-                              />
-                            )}
-                            {param.description && <div className="text-xs text-muted">{param.description}</div>}
-                          </div>
-                        );
-                      })}
+                  {selectedSource.apis && selectedSource.apis.length > 0 && (
+                    <div className="space-y-3">
+                      <div className="flex gap-2 flex-wrap">
+                        {selectedSource.apis.map((api) => (
+                          <Button key={api.name} size="sm"
+                            variant={selectedApiName === api.name ? 'primary' : 'ghost'}
+                            onPress={() => setSelectedApiName(api.name)}
+                            className="flex items-center gap-1"
+                          >
+                            <SourceIcon src={api.logo} name={api.name} size="xs" />
+                            {api.name}
+                          </Button>
+                        ))}
+                      </div>
+                      {selectedApi && selectedApi.parameters && selectedApi.parameters.length > 0 && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {selectedApi.parameters.map((param, i) => {
+                            const key = param.key || `__param_${i}`;
+                            if (param.hidden) return null;
+                            const label = param.label || param.key;
+                            const type = param.type || 'text';
+                            return (
+                              <div key={key} className="space-y-1">
+                                <Label className="text-xs text-muted">{label}</Label>
+                                {type === 'choice' && param.choices ? (
+                                  <ComboBox selectedKey={String(parameterValues[key] || '')}
+                                    onSelectionChange={(k) => setParameterValues((p) => ({ ...p, [key]: String(k || '') }))}
+                                  >
+                                    <ComboBox.InputGroup><Input className="h-8 text-sm" /><ComboBox.Trigger /></ComboBox.InputGroup>
+                                    <ComboBox.Popover><ListBox>
+                                      {param.choices.map((c) => <ListBox.Item key={c} id={c} textValue={c}>{c}</ListBox.Item>)}
+                                    </ListBox></ComboBox.Popover>
+                                  </ComboBox>
+                                ) : type === 'boolean' ? (
+                                  <Switch isSelected={Boolean(parameterValues[key])} onChange={(v) => setParameterValues((p) => ({ ...p, [key]: v }))}>
+                                    <Switch.Control><Switch.Thumb /></Switch.Control>
+                                  </Switch>
+                                ) : (
+                                  <Input className="h-8 text-sm" value={String(parameterValues[key] || '')}
+                                    onChange={(e) => setParameterValues((p) => ({ ...p, [key]: e.target.value }))} placeholder={param.placeholder || ''}
+                                  />
+                                )}
+                                {param.description && <div className="text-xs text-muted">{param.description}</div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <Button size="sm" onPress={handleExecute} isDisabled={resultsLoading}>
+                        <Play size={14} /> {resultsLoading ? '执行中...' : '执行查询'}
+                      </Button>
                     </div>
                   )}
-                  {mode !== 'management' && (
-                    <Button size="sm" onPress={handleExecute} isDisabled={resultsLoading}>
-                      <Play size={14} /> {resultsLoading ? '执行中...' : '执行查询'}
-                    </Button>
-                  )}
-                </div>
+                </Card>
               )}
-            </Card>
+            </>
           )}
         </div>
       )}

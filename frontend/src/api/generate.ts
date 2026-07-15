@@ -79,10 +79,22 @@ export function getFormatForNpm(npm: string, providerId: string): ImageProviderC
   return 'openai-compatible';
 }
 
+export interface GenerateImageOptions {
+  size?: string;
+  n?: number;
+  responseFormat?: 'url' | 'b64_json';
+  /** Optional negative prompt appended to the request body when supported. */
+  negativePrompt?: string;
+  /** Optional random seed forwarded to the provider when supported. */
+  seed?: number;
+  /** Abort the in-flight request. */
+  signal?: AbortSignal;
+}
+
 export async function generateImage(
   provider: ImageProviderConfig,
   prompt: string,
-  options?: { size?: string; n?: number; responseFormat?: 'url' | 'b64_json' }
+  options?: GenerateImageOptions
 ): Promise<ImageGenerationResponse> {
   const endpoint = provider.endpoint.replace(/\/$/, '');
   const url = `${endpoint}/images/generations`;
@@ -93,6 +105,14 @@ export async function generateImage(
   };
   if (options?.size) body.size = options.size;
   if (options?.responseFormat) body.response_format = options.responseFormat;
+  // These optional fields are not accepted by the native OpenAI image API.
+  // Keep them for Volcano and compatible providers where they are commonly supported.
+  if (provider.format !== 'openai' && options?.negativePrompt?.trim()) {
+    body.negative_prompt = options.negativePrompt.trim();
+  }
+  if (provider.format !== 'openai' && typeof options?.seed === 'number' && Number.isFinite(options.seed)) {
+    body.seed = options.seed;
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -106,6 +126,7 @@ export async function generateImage(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: options?.signal,
   });
 
   if (!resp.ok) {
