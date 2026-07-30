@@ -252,8 +252,7 @@ export default function SearchPage() {
 
   const handleDownloadSelected = () =>
     downloadManyWithProgress(
-      selectedImages.map((img) => ({ url: img.url, filename: img.filename })),
-      { concurrency: 3 }
+      selectedImages.map((img) => ({ url: img.url, filename: img.filename }))
     );
 
   return (

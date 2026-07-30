@@ -421,6 +421,47 @@ wheels = [
 ]
 
 [[package]]
+name = "fonttools"
+version = "4.63.0"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/84/69/c97f2c18e0db87d2c7b15da1974dace76ae938f1cfa22e2727a648b7ed43/fonttools-4.63.0.tar.gz", hash = "sha256:caeb583deeb5168e694b65cda8b4ee62abedfa66cf88488734466f2366b9c4e0" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/08/ef/b3c6b9b5be2f82416d73fe2ed2e96e2793cd80e7510bd6a17ca79cdd88ec/fonttools-4.63.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:37dd23e621e3b0aef1baa70a303b80aaf38449632cfc8fd2a55fb285bbccfc02" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/44/a0/c815bea63117fa63e4e1c01f8a1110d2112fa003f838e6467094ec2432ce/fonttools-4.63.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:a9faff9e0c1f76f9fd55899d2ce785832efebab37eb8ae13995853aef178bef0" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/44/04/0b91d8e916e92ad1fac9e4624760baf0fd5ff2ead614c2f68fb21373f03f/fonttools-4.63.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ef3048ef05dbb552b89817713d9cac912e00d0fde4a3105c00d29e52e10c89af" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/77/c7/2342da9830e3e9d4870305ca5d2091d2a83284f2953079b7bdd3b5e029d8/fonttools-4.63.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:58dc6bb86a78d782f00f9190ca02c119cf5bbe2807536e361e18d42019f877d8" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e6/6d/67fe16c48d7ce050979b33f47e0d28a318f02da030602e944c34f7a16ef3/fonttools-4.63.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:ee08ebfa58f6e1aeff5697ab9582105bb620008c1caafb681e4c557e7483027b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/f2/00/3bbab338c07c71fa56269953845e92c951a61457bbbb0f1022551ea266d9/fonttools-4.63.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:27fdc65af8da6f88b9c6121c47a464cbe359fcfff7ff6fc2d37a1f395d755b78" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/62/f2/aa27c7f98db5b064883dadcc5283947e81e034de42e22a33675878d98b54/fonttools-4.63.0-cp312-cp312-win32.whl", hash = "sha256:af2fd1664d00a397d75f806985ddb36282091c2131a73a6485c23b4a34722263" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/87/36/cccb9bc2a6ab63d1b2980374f0dca72ce95ae267c9b4cfe77455bb70d0d4/fonttools-4.63.0-cp312-cp312-win_amd64.whl", hash = "sha256:59ac449f8cca9b4ffa08d2e7bbadad87ce710d69d1eda5c3c1ce579baa987272" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/0f/8d/d8fec3dcde2963f8c908fb315e5ff2cd0ac34f82394bbbf73a2aa5145ce3/fonttools-4.63.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:cd7e9857e5e63738b9d9fd707bc1f59c8b09e5177726d23664db393c59bb08bd" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ef/71/d935dc54e4ff121bfdd11e08702db63a7e6f25af21d8a3d7b7212df53641/fonttools-4.63.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:c2a2a42198b696a6f48fad91709afb55176e66a5e566131219dba372fb7f8c59" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/8e/40/e76320afa1df918e146155ef239b1719ee266092e96f5423bfd075affba1/fonttools-4.63.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1e874792a8212b44583ea02189d9e693906b2f78b261f372f95d6c563210ac1d" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ce/36/0b805d8c485f872f65a509cbe3b58a5d0d17bee855333b54a150c79d3061/fonttools-4.63.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:22135da48a348785c5e2d5d2d9d6bec5ed44adacbaeb9db12d9493bf6c6bfa68" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/c8/26/2cee03d0aa083ab022da5c07aff9ed3f689da1defb81ad6917c9627896da/fonttools-4.63.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:ccf41f2efdf56994d22d73bef4ced1052161958169428d06ba9724ea9e9a64be" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/7e/48/cc4b66d9058c0d0982c833fad10127c4b0e9324606aafa41382295ca4102/fonttools-4.63.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9ced0bd02ac751dd6319b0da88aaef24414e3b0dbc32bb4f24944821a3741a27" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d8/1f/a98a30a814b9ddef3a2e706025f90b9e0bc94890e6cb15254bc86547d11a/fonttools-4.63.0-cp313-cp313-win32.whl", hash = "sha256:85be818f5506e8a7753153def2c9550178f0ecae6a47b5e0e8dbb23f7cc90380" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/92/46/5177b01f3b4abfdd4409f31cca4ab279c9343a26efbe9ec78c97fc612e02/fonttools-4.63.0-cp313-cp313-win_amd64.whl", hash = "sha256:ba04cb5891d4c0c21b6da95eda8d7b090021508a294fff33464fc7d241e0856b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/27/d2/23d25e3f247b328be58d04a4c9f894178a0d1eda7d42867cfb388adaf416/fonttools-4.63.0-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:fd1e3094f42d806d3d7c79162fc59e5910fcbe3a7360c385b8da969bc4493745" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/cd/58/7dfa0c761cb3b2964e2a84c4dc986c926a87de0cb9fb60d5b28ded3f2914/fonttools-4.63.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:6e528da43bc3791085f8cb6141b1d13e459226790240340fcbb4625649238b03" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/dd/87/64cfa18a7a1621d17b7f4502b2b0ed8a135a90c3db51ea590ee99043e76b/fonttools-4.63.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6b2248c5decb223562f7902ff6325077a073f608ee8e33e88ad88db734eb9f49" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/36/e1/a8933a72c45a87177fbde2696e0d0755c8c9062f8c077a961c6215fa27b1/fonttools-4.63.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:308f957cdeaf8abe4e5f2f124902ef405448af92c90f80e302a3b771c2e6116b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/27/60/872e6e233b8c5e8b41413796ff18b7fe479661bd40147e071b450dfad7a1/fonttools-4.63.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:bf00f21eb5fb721dbaf73d1e9da6d02a1af7768f2ebcf9798be98beab8ba90f6" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/30/c4/83c24f2ec38b90cfda84bf4b1a1f49df80e84a1db4e7ac6e0d41bf23bc39/fonttools-4.63.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:c1aaa4b9c75798400ac043ce04d74e7830376c85095a5a6ed7cba2f17a266bf4" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/de/40/3ae22b60ff1d41ce0bd044b31238cdc72cef99f28b976f1e128ebd618c9b/fonttools-4.63.0-cp314-cp314-win32.whl", hash = "sha256:22693918177bd9ceabec4736d338045f357769416fc6b0b2508eefef75b08616" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/c3/d4/98078064ccc76b45cb0f6c002452011e93c4bd26f6850344f0951cc1fe89/fonttools-4.63.0-cp314-cp314-win_amd64.whl", hash = "sha256:7d782fac32985914c351556f68ac0855391572bcd87de50e05970d3cd4c96fc5" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/49/4e/652d1580c5f4e39f7d103b0c793e4773129ad633dce4addd0cf4dfebde02/fonttools-4.63.0-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:6db5140a60a5d731d21ec076745b40a310607731b0a565b50776393188649001" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/0e/55/ad864c9a9b219f552eb46b32cd7906c466e5a578ba0c3abfcc0fe7413eb6/fonttools-4.63.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:7d76edbff9014094dbf03bd2d074709dfa6ec7aba13d838c937a2b33d2d6a86e" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ea/2b/0aa8db70f18cf52e49b4ed5ecec68547f981160bf5ded3b5aed6faa0a6f9/fonttools-4.63.0-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0eac00b9118c3c2f87d272e45341871c5b3066baa3c86897fa634a7c3fb59096" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/7f/63/18e4369c25043096f1048e0c9915951adc4f842bd81c6b18155824d6fa99/fonttools-4.63.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:51394295f1a51de8b5f30bdb1e1b9a4231536c7064ef5c6e211eec19fa36036f" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a1/3f/67f3eac2ffd8a98446c5022f8ed3864eac878a5ff7af8df4c8286dba16cc/fonttools-4.63.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:9e12f105d2b6342c559c298afb674006bb2893afc7102dcf8a1b55b0486b4e40" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/1a/ba/4e6214cb38a7b04779e97bb7636de9a5c7f20af7018d03dee0b64c08510a/fonttools-4.63.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:796f27556dbe094c4824f75ca85267e4df776c79036c8441469a4df37038c196" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/34/3b/214dcc19ee31d3d38fb5ad2755c11ef0514e5dc300bbaf41c0b69f393799/fonttools-4.63.0-cp314-cp314t-win32.whl", hash = "sha256:948428a275741f0b64b113c955425a953314f4b9ab9997f73a72c83e68e569c8" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/dd/1e/3ff1a9b523058c2eeb6a9d50f5574e2a738200d0d94107d5bc4105e8da3f/fonttools-4.63.0-cp314-cp314t-win_amd64.whl", hash = "sha256:6d4741eb179121cab9eea4cb2393d24492373a260d7945006358c08cfbf45419" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/2c/47/c99d5268f354002ce80f8d029cd9d7d872969da1de8b93d32de4dc56d6f4/fonttools-4.63.0-py3-none-any.whl", hash = "sha256:445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
@@ -536,6 +577,7 @@ dependencies = [
     { name = "certifi" },
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "fonttools" },
     { name = "loguru" },
     { name = "pillow" },
     { name = "platformdirs" },
@@ -548,6 +590,7 @@ dependencies = [
     { name = "requests" },
     { name = "rtoml" },
     { name = "uvicorn" },
+    { name = "windows-toasts", marker = "sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -561,6 +604,7 @@ requires-dist = [
     { name = "certifi", specifier = ">=2026.6.17" },
     { name = "cryptography", specifier = ">=45.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fonttools", specifier = ">=4.60.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "platformdirs", specifier = ">=4.10.0" },
@@ -573,6 +617,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.34.2" },
     { name = "rtoml", specifier = ">=0.12.0" },
     { name = "uvicorn", specifier = ">=0.32.0" },
+    { name = "windows-toasts", marker = "sys_platform == 'win32'", specifier = ">=1.3.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -1467,6 +1512,122 @@ source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
 sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0" }
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390" },
+]
+
+[[package]]
+name = "windows-toasts"
+version = "1.3.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "winrt-runtime" },
+    { name = "winrt-windows-data-xml-dom" },
+    { name = "winrt-windows-foundation" },
+    { name = "winrt-windows-foundation-collections" },
+    { name = "winrt-windows-ui-notifications" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/4f/95/c045bdb9deceb30708be6209b3afb869c562c9ad78705e59dbb501077a04/windows_toasts-1.3.1.tar.gz", hash = "sha256:11fcab5dd2309525271f7f423979e066b9cc04cf434c9b09a341c97490fa239b" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/51/44/21c8e10ae6bc4411f35d5e05d17179d04a3ad52dcad4b210bc37a0422a45/windows_toasts-1.3.1-py3-none-any.whl", hash = "sha256:fb1ab71cc3b7c239508dce0acb651a2a5b7dcaee98921dc4e7355ea0a5355998" },
+]
+
+[[package]]
+name = "winrt-runtime"
+version = "3.2.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/16/dd/acdd527c1d890c8f852cc2af644aa6c160974e66631289420aa871b05e65/winrt_runtime-3.2.1.tar.gz", hash = "sha256:c8dca19e12b234ae6c3dadf1a4d0761b51e708457492c13beb666556958801ea" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d3/54/3dd06f2341fab6abb06588a16b30e0b213b0125be7b79dafc3bdba3b334a/winrt_runtime-3.2.1-cp312-cp312-win32.whl", hash = "sha256:762b3d972a2f7037f7db3acbaf379dd6d8f6cda505f71f66c6b425d1a1eae2f1" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ca/a1/1d7248d5c62ccbea5f3e0da64ca4529ce99c639c3be2485b6ed709f5c740/winrt_runtime-3.2.1-cp312-cp312-win_amd64.whl", hash = "sha256:06510db215d4f0dc45c00fbb1251c6544e91742a0ad928011db33b30677e1576" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/8a/ae/6a205d8dafc79f7c242be7f940b1e0c1971fd64ab3079bda4b514aa3d714/winrt_runtime-3.2.1-cp312-cp312-win_arm64.whl", hash = "sha256:14562c29a087ccad38e379e585fef333e5c94166c807bdde67b508a6261aa195" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/79/d4/1a555d8bdcb8b920f8e896232c82901cc0cda6d3e4f92842199ae7dff70a/winrt_runtime-3.2.1-cp313-cp313-win32.whl", hash = "sha256:44e2733bc709b76c554aee6c7fe079443b8306b2e661e82eecfebe8b9d71e4d1" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/aa/24/2b6e536ca7745d788dfd17a2ec376fa03a8c7116dc638bb39b035635484f/winrt_runtime-3.2.1-cp313-cp313-win_amd64.whl", hash = "sha256:3c1fdcaeedeb2920dc3b9039db64089a6093cad2be56a3e64acc938849245a6d" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d4/7f/6d72973279e2929b2a71ed94198ad4a5d63ee2936e91a11860bf7b431410/winrt_runtime-3.2.1-cp313-cp313-win_arm64.whl", hash = "sha256:28f3dab083412625ff4d2b46e81246932e6bebddf67bea7f05e01712f54e6159" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/c8/87/88bd98419a9da77a68e030593fee41702925a7ad8a8aec366945258cbb31/winrt_runtime-3.2.1-cp314-cp314-win32.whl", hash = "sha256:9b6298375468ac2f6815d0c008a059fc16508c8f587e824c7936ed9216480dad" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/87/85/e5c2a10d287edd9d3ee8dc24bf7d7f335636b92bf47119768b7dd2fd1669/winrt_runtime-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:e36e587ab5fd681ee472cd9a5995743f75107a1a84d749c64f7e490bc86bc814" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/52/2a/eb9e78397132175f70dd51dfa4f93e489c17d6b313ae9dce60369b8d84a7/winrt_runtime-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:35d6241a2ebd5598e4788e69768b8890ee1eee401a819865767a1fbdd3e9a650" },
+]
+
+[[package]]
+name = "winrt-windows-data-xml-dom"
+version = "3.2.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "winrt-runtime" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/cc/11/6b1e59abf5f8f0cba1fee13447c9d077d144332b9b664bb236fdfa878558/winrt_windows_data_xml_dom-3.2.1.tar.gz", hash = "sha256:db81f5956bf63ce8c9d8bfb6d0794ab2849f26e62a6256b833af8de3d6451399" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e8/f6/215e54dce3099507d2a1009792d32555ec1354bfb43cb3431e7389ec3dda/winrt_windows_data_xml_dom-3.2.1-cp312-cp312-win32.whl", hash = "sha256:be2e9edbc4702c0cfd88ae48260b55bb30ee3e15c86c6c4240aaf4f2c54ff380" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/9f/f0/b44bdce659118fb684a45f6c4e4932cb7356883079b7ce284352433ecf3f/winrt_windows_data_xml_dom-3.2.1-cp312-cp312-win_amd64.whl", hash = "sha256:b531a61a30106ecc7c7b3ad8f1b22e98d8366bbc2c60c47f5053fe62479109d6" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/78/57/cbd053f01b0a50073e4b6e92d1d1e97e992a8cd7dea3dd9afc35a19f5e57/winrt_windows_data_xml_dom-3.2.1-cp312-cp312-win_arm64.whl", hash = "sha256:0b3eed7fd618d0bfbafea730bbcb24cb6a94dcd742b2b9c7d5d66319494e5f35" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ad/3f/682185135537c99629663935155c2332bc500553a2f6aad134deadd2c2d3/winrt_windows_data_xml_dom-3.2.1-cp313-cp313-win32.whl", hash = "sha256:7091ee8d472a18336887edee6bf90d9261783f82b1a0fec00ba0e6a1a00623eb" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e6/02/89057b180a2dda10af0ae8a256180e7f6ec8f688b547501a89a36c72c4e4/winrt_windows_data_xml_dom-3.2.1-cp313-cp313-win_amd64.whl", hash = "sha256:b51b67c0bf88995827151d4e8ff0edcb2120406d4aedcb9574854b904b92a11f" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e5/aa/9894e19b34275307e4857ea3ada1d230bcdc7e399ce0ae504c6309c7e55d/winrt_windows_data_xml_dom-3.2.1-cp313-cp313-win_arm64.whl", hash = "sha256:e4ed27ec593b96bcd13fffd9fd0bf74744b0dacc249faa5af0ef1d903ed59c1b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a2/e1/22556c7dd4d777c35a270d776a87c4de7e8316d91b51888816e565d4f1f0/winrt_windows_data_xml_dom-3.2.1-cp314-cp314-win32.whl", hash = "sha256:77258030a725a32359fd2a93855cafa0e3f3f38e67afd5dfe74a8a215cbb31c4" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ab/d2/3a4b7e38feafdec21cb044e0c1ee2c76a71cfbda02bfedcc50634e9fb652/winrt_windows_data_xml_dom-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:1cf1b6f31fff4e4c0ae30f1643b169da72b3b053a2996010f2c3a1e26b5d4970" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/45/cc/9d301892e9a640a63ac56f565d38d5897002598e18acdfbd4ed168836ab3/winrt_windows_data_xml_dom-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:6de83f853d889444e4897413c2fa8183f86aa602edd34abf36a4fdc69db1650e" },
+]
+
+[[package]]
+name = "winrt-windows-foundation"
+version = "3.2.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "winrt-runtime" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/0c/55/098ce7ea0679efcc1298b269c48768f010b6c68f90c588f654ec874c8a74/winrt_windows_foundation-3.2.1.tar.gz", hash = "sha256:ad2f1fcaa6c34672df45527d7c533731fdf65b67c4638c2b4aca949f6eec0656" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/f3/f8/495e304ddedd5ff2f196efbde906265cb75ade4d79e2937837f72ef654a0/winrt_windows_foundation-3.2.1-cp312-cp312-win32.whl", hash = "sha256:867642ccf629611733db482c4288e17b7919f743a5873450efb6d69ae09fdc2b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/9b/5e/b5059e4ece095351c496c9499783130c302d25e353c18031d5231b1b3b3c/winrt_windows_foundation-3.2.1-cp312-cp312-win_amd64.whl", hash = "sha256:45550c5b6c2125cde495c409633e6b1ea5aa1677724e3b95eb8140bfccbe30c9" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a5/70/acbcb3ef07b1b67e2de4afab9176a5282cfd775afd073efe6828dfc65ace/winrt_windows_foundation-3.2.1-cp312-cp312-win_arm64.whl", hash = "sha256:94f4661d71cb35ebc52be7af112f2eeabdfa02cb05e0243bf9d6bd2cafaa6f37" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/7b/71/5e87131e4aecc8546c76b9e190bfe4e1292d028bda3f9dd03b005d19c76c/winrt_windows_foundation-3.2.1-cp313-cp313-win32.whl", hash = "sha256:3998dc58ed50ecbdbabace1cdef3a12920b725e32a5806d648ad3f4829d5ba46" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ba/7f/8d5108461351d4f6017f550af8874e90c14007f9122fa2eab9f9e0e9b4e1/winrt_windows_foundation-3.2.1-cp313-cp313-win_amd64.whl", hash = "sha256:6e98617c1e46665c7a56ce3f5d28e252798416d1ebfee3201267a644a4e3c479" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/44/f5/2edf70922a3d03500dab17121b90d368979bd30016f6dbca0d043f0c71f1/winrt_windows_foundation-3.2.1-cp313-cp313-win_arm64.whl", hash = "sha256:2a8c1204db5c352f6a563130a5a41d25b887aff7897bb677d4ff0b660315aad4" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e3/0a/d77346e39fe0c81f718cde49f83fe77c368c0e14c6418f72dfa1e7ef22d0/winrt_windows_foundation-3.2.1-cp314-cp314-win32.whl", hash = "sha256:35e973ab3c77c2a943e139302256c040e017fd6ff1a75911c102964603bba1da" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a1/56/4d2b545bea0f34f68df6d4d4ca22950ff8a935497811dccdc0ca58737a05/winrt_windows_foundation-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:a22a7ebcec0d262e60119cff728f32962a02df60471ded8b2735a655eccc0ef5" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ed/ed/b9d3a11cac73444c0a3703200161cd7267dab5ab85fd00e1f965526e74a8/winrt_windows_foundation-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:3be7fbae829b98a6a946db4fbaf356b11db1fbcbb5d4f37e7a73ac6b25de8b87" },
+]
+
+[[package]]
+name = "winrt-windows-foundation-collections"
+version = "3.2.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "winrt-runtime" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/ef/62/d21e3f1eeb8d47077887bbf0c3882c49277a84d8f98f7c12bda64d498a07/winrt_windows_foundation_collections-3.2.1.tar.gz", hash = "sha256:0eff1ad0d8d763ad17e9e7bbd0c26a62b27215016393c05b09b046d6503ae6d5" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/1d/0b/7802349391466d3f7e8f62f588f36a1a0b6560abfcdbdaa426fe21d322b4/winrt_windows_foundation_collections-3.2.1-cp312-cp312-win32.whl", hash = "sha256:15704eef3125788f846f269cf54a3d89656fa09a1dc8428b70871f717d595ad6" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/37/94/5b888713e472746635a382e523513ab1b8200af55c5b56bc70e1e4369115/winrt_windows_foundation_collections-3.2.1-cp312-cp312-win_amd64.whl", hash = "sha256:550dfb8c82fe74d9e0728a2a16a9175cc9e34ca2b8ef758d69b2a398894b698b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/5f/3c/829273622c9b37c67b97f187b92be318404f7d33db045e31d72b7d50f54c/winrt_windows_foundation_collections-3.2.1-cp312-cp312-win_arm64.whl", hash = "sha256:810ad4bd11ab4a74fdbcd3ed33b597ef7c0b03af73fc9d7986c22bcf3bd24f84" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a6/cd/99ef050d80bea2922fa1ded93e5c250732634095d8bd3595dd808083e5ca/winrt_windows_foundation_collections-3.2.1-cp313-cp313-win32.whl", hash = "sha256:4267a711b63476d36d39227883aeb3fb19ac92b88a9fc9973e66fbce1fd4aed9" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/94/93/4f75fd6a4c96f1e9bee198c5dc9a9b57e87a9c38117e1b5e423401886353/winrt_windows_foundation_collections-3.2.1-cp313-cp313-win_amd64.whl", hash = "sha256:5e12a6e75036ee90484c33e204b85fb6785fcc9e7c8066ad65097301f48cdd10" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/40/76/de47ccc390017ec5575e7e7fd9f659ee3747c52049cdb2969b1b538ce947/winrt_windows_foundation_collections-3.2.1-cp313-cp313-win_arm64.whl", hash = "sha256:34b556255562f1b36d07fba933c2bcd9f0db167fa96727a6cbb4717b152ad7a2" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e1/47/b3301d964422d4611c181348149a7c5956a2a76e6339de451a000d4ae8e7/winrt_windows_foundation_collections-3.2.1-cp314-cp314-win32.whl", hash = "sha256:33188ed2d63e844c8adfbb82d1d3d461d64aaf78d225ce9c5930421b413c45ab" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/20/59/5f2c940ff606297129e93ebd6030c813e6a43a786de7fc33ccb268e0b06b/winrt_windows_foundation_collections-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:d4cfece7e9c0ead2941e55a1da82f20d2b9c8003bb7a8853bb7f999b539f80a4" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/f8/2d/2c8eb89062c71d4be73d618457ed68e7e2ba29a660ac26349d44fc121cbf/winrt_windows_foundation_collections-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:3884146fea13727510458f6a14040b7632d5d90127028b9bfd503c6c655d0c01" },
+]
+
+[[package]]
+name = "winrt-windows-ui-notifications"
+version = "3.2.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "winrt-runtime" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/fc/f9/4798657fd6999e6dae2c84876b40e91873ccd5f056b27c40ebd7f4ff11d8/winrt_windows_ui_notifications-3.2.1.tar.gz", hash = "sha256:eb29bf1c3306f3ceabd71d092b5505d5fe73fbc0660347dcc63ebc4204d34d21" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/73/ae/d495b602154ee70ede2baf3fdb1c60703a581f678e1acc70089a3bdc7d60/winrt_windows_ui_notifications-3.2.1-cp312-cp312-win32.whl", hash = "sha256:041643bd83762900cdd5704a6e08f886879f78952cfc9834b184ee81df924d72" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/f7/68/0775e390275cc8fcbd0515eed51e43d78562bfa5d647454e3c8992c2ac8c/winrt_windows_ui_notifications-3.2.1-cp312-cp312-win_amd64.whl", hash = "sha256:7f2378246f6db14d16bf93830f1bcd8efa1c5b4c740878ad86d2f482fb08feab" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d2/fa/09e304022e0ccb4816b27627b04783526e496fe84fd84fade79465b8ad2f/winrt_windows_ui_notifications-3.2.1-cp312-cp312-win_arm64.whl", hash = "sha256:e7eda8cb11a1e82d2da87b2b98cbf73ce153417cb93debe95c739534c6dbde7c" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ab/34/eee24f0ff5522ff3d9c91c983c706fc2a06ed78a5aa84dd9b9fe51125b78/winrt_windows_ui_notifications-3.2.1-cp313-cp313-win32.whl", hash = "sha256:cff07f0193365c38a07cf87030c609b57b7ca7fcbf8740c720425edfa6205fa8" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/14/7c/8163639827003c411787d6f6f682e543206ecb47abd29291d184006b5834/winrt_windows_ui_notifications-3.2.1-cp313-cp313-win_amd64.whl", hash = "sha256:9f8d109c8c6634dac258a32d7f3d939aa50605bd7a6a43137a3ffc2ab4a8f667" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/0d/10/89012eeb14b932eb3f0ac541d8788d794e09f8fe1934fdae1760d0cbd252/winrt_windows_ui_notifications-3.2.1-cp313-cp313-win_arm64.whl", hash = "sha256:aec78f6a632e2ae57a55b7aee60f8df848ccffd1c4d14c3c9fbfaa6bb564e1a2" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/68/43/c81672457002908b8c0f1e4672db1d0b8885c2894c6768fe9b0162af9ee5/winrt_windows_ui_notifications-3.2.1-cp314-cp314-win32.whl", hash = "sha256:00a7579ca0870134c27def1418c259fb18efe5b88aa399de85b4712f1add1b55" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/17/d8/910a58698d722120f2401c3bfeb6018361d92f3b2814caae839f54693305/winrt_windows_ui_notifications-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:943599c727abf710ae94644b1d521e11857bd568e080e894a8be11aa717e383a" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/b5/a3/1db0f2ec28a4eadd0876c0ac3a3d78514027c5afe35737b164e03c98b234/winrt_windows_ui_notifications-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:2a496c7e796b537966df7b26753b20bc40c5c1fbe96b3b3051a1debc00b80f07" },
 ]
 
 [[package]]

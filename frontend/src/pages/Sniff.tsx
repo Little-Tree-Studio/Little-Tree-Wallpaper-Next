@@ -128,8 +128,7 @@ export default function Sniff() {
 
   const handleDownloadSelected = () =>
     downloadManyWithProgress(
-      selectedImages.map((img) => ({ url: img.url, filename: img.filename })),
-      { concurrency: 3 }
+      selectedImages.map((img) => ({ url: img.url, filename: img.filename }))
     );
 
   return (

@@ -20,6 +20,8 @@ import WallpaperSourceBrowser from './WallpaperSourceBrowser';
 import CnuPanel from '@/components/CnuPanel';
 import PixivelPanel from '@/components/PixivelPanel';
 import TimelinePanel from '@/components/TimelinePanel';
+import { usePlugins } from '@/plugins/context';
+import PluginRenderer from '@/plugins/PluginRenderer';
 
 function formatBingDate(item: any, category: string): string {
   if (category === 'daily') return '今日';
@@ -118,6 +120,8 @@ function SpotlightSkeleton() {
 export default function Resource() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
+  const requestedPluginTab = useRef(requestedTab && requestedTab.includes(':') ? requestedTab : null);
+  const { contributions } = usePlugins();
   const [activeTab, setActiveTab] = useState(
     requestedTab === 'cnu' ? 'cnu'
       : requestedTab === 'pixivel' ? 'pixivel'
@@ -137,6 +141,15 @@ export default function Resource() {
   const [bingQuality, setBingQuality] = useState<'1080p' | 'uhd'>('1080p');
   const mountedRef = useRef(false);
   const { openViewer } = useImageViewer();
+  const pluginTabs = contributions.resource_pages;
+
+  useEffect(() => {
+    const target = requestedPluginTab.current;
+    if (target && pluginTabs.some((page) => `${page.pluginId}:${page.id}` === target)) {
+      setActiveTab(target);
+      requestedPluginTab.current = null;
+    }
+  }, [pluginTabs]);
 
   const fetchBing = useCallback(async (category: string = 'daily', forceRefresh: boolean = false) => {
     setBingLoading(true);
@@ -262,6 +275,11 @@ export default function Resource() {
             <Tabs.Tab id="pixivel">Pixiv 排行榜<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="intellimarkets">IntelliMarkets<Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="sources">壁纸源<Tabs.Indicator /></Tabs.Tab>
+            {pluginTabs.map((page) => (
+              <Tabs.Tab key={`${page.pluginId}:${page.id}`} id={`${page.pluginId}:${page.id}`}>
+                {page.label}<Tabs.Indicator />
+              </Tabs.Tab>
+            ))}
           </Tabs.List>
         </Tabs.ListContainer>
 
@@ -455,6 +473,18 @@ export default function Resource() {
         <Tabs.Panel id="sources">
           <WallpaperSourceBrowser />
         </Tabs.Panel>
+        {pluginTabs.map((page) => (
+          <Tabs.Panel key={`${page.pluginId}:${page.id}`} id={`${page.pluginId}:${page.id}`}>
+            <PluginRenderer
+              root
+              pluginId={page.pluginId}
+              pluginName={page.plugin.name}
+              packageHash={page.packageHash}
+              blocks={page.blocks}
+              className={page.className}
+            />
+          </Tabs.Panel>
+        ))}
       </Tabs>
     </div>
   );

@@ -32,6 +32,7 @@ from backend.logging_setup import LOG_DIR  # noqa: E402
 from backend.logging_setup import configure as configure_logging
 from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir  # noqa: E402
 from backend.server import create_app  # noqa: E402
+from backend.tray import ApplicationTray  # noqa: E402
 
 ensure_dirs()
 
@@ -248,38 +249,71 @@ def main() -> None:
 
     api = BackendAPI()
     api.set_api_token(token)
-    server = _start_backend(api, token, port)
-
+    server: uvicorn.Server | None = None
     try:
-        _wait_for_ready(base_url, token)
-    except Exception as exc:
-        report_path = _generate_crash_report()
-        logger.error("Backend startup failed: {}. Crash report: {}", exc, report_path)
-        raise
+        server = _start_backend(api, token, port)
+        try:
+            _wait_for_ready(base_url, token)
+        except Exception as exc:
+            report_path = _generate_crash_report()
+            logger.error("Backend startup failed: {}. Crash report: {}", exc, report_path)
+            raise
 
-    # The token is delivered to the frontend via the launch URL; the React app
-    # reads it once, stores it in sessionStorage and strips it from the bar.
-    launch_url = f"{base_url}/?token={token}"
-    logger.info("Launching pywebview window at {}", base_url)
+        # The token is delivered to the frontend via the launch URL; the React app
+        # reads it once, stores it in sessionStorage and strips it from the bar.
+        launch_url = f"{base_url}/?token={token}"
+        logger.info("Launching pywebview window at {}", base_url)
 
-    try:
-        webview.create_window(
-            title=APP_NAME,
-            url=launch_url,
-            width=1200,
-            height=800,
-            min_size=(800, 600),
-            text_select=True,
-        )
-        webview.start(debug=True, icon=_resolve_icon(frontend_dir))
-    except Exception as exc:
-        report_path = _generate_crash_report()
-        logger.error("Window runtime error: {}. Crash report: {}", exc, report_path)
-        raise
+        try:
+            main_window = webview.create_window(
+                title=APP_NAME,
+                url=launch_url,
+                width=1200,
+                height=800,
+                min_size=(800, 600),
+                text_select=True,
+            )
+            dynamic_host = webview.create_window(
+                title="Little Tree Dynamic Wallpaper Host",
+                html="<!doctype html><html><body style='margin:0;background:#000'></body></html>",
+                width=800,
+                height=450,
+                resizable=False,
+                hidden=True,
+                frameless=True,
+                easy_drag=False,
+                shadow=False,
+                focus=False,
+                background_color="#000000",
+                text_select=False,
+            )
+            api.configure_dynamic_wallpaper_runtime(base_url, token, dynamic_host)
+            tray = ApplicationTray(
+                api=api,
+                launch_url=launch_url,
+                title=APP_NAME,
+                icon_path=_resolve_icon(frontend_dir),
+                dynamic_host=dynamic_host,
+                on_quit=lambda: setattr(server, "should_exit", True),
+            )
+            api._configure_desktop_notifications(tray.notify)
+            tray.attach_main_window(main_window)
+            def start_background_runtime() -> None:
+                api.start_automation_runtime()
+                tray.start()
+
+            webview.start(start_background_runtime, debug=True, icon=_resolve_icon(frontend_dir))
+        except Exception as exc:
+            report_path = _generate_crash_report()
+            logger.error("Window runtime error: {}. Crash report: {}", exc, report_path)
+            raise
     finally:
-        # The window has been closed; tear down the backend.
-        logger.info("Window closed, stopping backend server")
-        server.should_exit = True
+        logger.info("Stopping backend server and plugins")
+        api.shutdown_automation()
+        api.shutdown_dynamic_wallpaper()
+        if server is not None:
+            server.should_exit = True
+        api.plugin_manager.shutdown()
 
 
 if __name__ == "__main__":

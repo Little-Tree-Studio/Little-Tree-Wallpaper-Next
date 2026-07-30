@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type {
   ChangeEvent,
+  Key,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
   WheelEvent as ReactWheelEvent,
 } from 'react';
 import {
+  AlertDialog,
   Button,
   ColorArea,
   ColorField,
@@ -14,9 +17,11 @@ import {
   ColorSwatch,
   Description,
   Input,
+  Kbd,
   Label,
   ListBox,
   Modal,
+  Separator,
   Select,
   Slider,
   Spinner,
@@ -39,6 +44,8 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  CircleHelp,
+  ClipboardPaste,
   Copy,
   CopyPlus,
   Crop,
@@ -73,6 +80,8 @@ import {
   Redo2,
   RotateCcw,
   Save,
+  SaveAll,
+  Scissors,
   Shapes,
   SlidersHorizontal,
   Smile,
@@ -93,9 +102,12 @@ import {
 import {
   copyImageToClipboard,
   getDisplayResolutions,
+  getSetting,
   saveBlobAs,
+  saveBlobToPath,
   saveBlobToDownloads,
   setWallpaper,
+  setSetting,
 } from '@/api/backend';
 import type { DisplayResolution } from '@/api/backend';
 import EditorCanvas from '@/components/WallpaperEditor/EditorCanvas';
@@ -108,6 +120,7 @@ import {
   DEFAULT_LAYER_EFFECTS,
 } from '@/components/WallpaperEditor/types';
 import { decodeWallpaperProject, encodeWallpaperProject } from '@/components/WallpaperEditor/projectFormat';
+import { layerLocalToWorld } from '@/components/WallpaperEditor/renderer';
 import { BEFORE_NAVIGATE_EVENT } from '@/lib/navigationGuard';
 import type { NavigationRequestDetail } from '@/lib/navigationGuard';
 import type {
@@ -135,9 +148,68 @@ type ToolTab = 'background' | 'add' | 'brush';
 type MobilePanel = 'tools' | 'layers' | null;
 type CanvasTool = 'move' | 'hand' | 'brush';
 
+type CanvasContextMenu = {
+  x: number;
+  y: number;
+  point: { x: number; y: number } | null;
+  layerIds: string[];
+  targetId: string | null;
+};
+
 const MIN_ZOOM = 5;
 const MAX_ZOOM = 800;
 const QUICK_EDITOR_SETTING_KEY = 'ltw:create:quick-editor-enabled';
+const QUICK_EDITOR_PANEL_WIDTH = 380;
+const QUICK_EDITOR_PANEL_HEIGHT = 44;
+
+const SHORTCUT_GROUPS = [
+  {
+    title: '文件',
+    items: [
+      { keys: 'Ctrl / Cmd + S', label: '保存项目' },
+      { keys: 'Ctrl / Cmd + Shift + S', label: '项目另存为' },
+      { keys: 'Ctrl / Cmd + Alt + S', label: '打开导出' },
+    ],
+  },
+  {
+    title: '编辑',
+    items: [
+      { keys: 'Ctrl / Cmd + Z', label: '撤销' },
+      { keys: 'Ctrl / Cmd + Shift + Z', label: '重做' },
+      { keys: 'Ctrl / Cmd + D / J', label: '复制主选组件' },
+      { keys: 'Delete / Backspace', label: '删除所选组件' },
+    ],
+  },
+  {
+    title: '选择与移动',
+    items: [
+      { keys: 'Ctrl / Cmd + 点击', label: '切换多选' },
+      { keys: 'Shift + 点击', label: '追加或连续选择' },
+      { keys: 'Alt + 拖动', label: '复制并拖动组件' },
+      { keys: '方向键', label: '移动 1 像素' },
+      { keys: 'Shift + 方向键', label: '移动 10 像素' },
+    ],
+  },
+  {
+    title: '画布与工具',
+    items: [
+      { keys: 'V / H / B', label: '移动 / 抓手 / 画笔' },
+      { keys: '空格', label: '临时抓手' },
+      { keys: 'Ctrl / Cmd + 0', label: '适应窗口' },
+      { keys: 'Ctrl / Cmd + 1', label: '恢复 100%' },
+      { keys: '+ / -', label: '缩放画布' },
+      { keys: 'Tab', label: '显示或隐藏面板' },
+      { keys: '? / F1', label: '打开快捷帮助' },
+    ],
+  },
+] as const;
+
+const EDITOR_TIPS = [
+  '首次保存项目时选择文件位置，之后使用保存会直接写入该文件；另存为会创建新的项目文件。',
+  '画布和右侧图层列表共用多选状态；拖动任一已选组件会整体移动所有未锁定组件。',
+  '图片图层可在右侧打开可视化裁剪，裁剪形状会同步改变画布中的裁剪器轮廓。',
+  'LTWP 项目保留图层与样式供继续编辑；导出 PNG 或 JPEG 用于生成最终壁纸。',
+] as const;
 
 const SIZE_PRESETS = [
   { id: '1920x1080', label: '桌面 1920 × 1080', width: 1920, height: 1080 },
@@ -459,6 +531,8 @@ export default function Create() {
   const historyGroupRef = useRef<{ key: string; updatedAt: number } | null>(null);
   const documentRevisionRef = useRef(0);
   const dirtyRef = useRef(false);
+  const projectSavingRef = useRef(false);
+  const layerSelectionAnchorRef = useRef<string | null>(null);
   const pendingNavigationRef = useRef<(() => void) | null>(null);
   const zoomRef = useRef(30);
   const spacePressedRef = useRef(false);
@@ -471,6 +545,7 @@ export default function Create() {
   } | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [toolTab, setToolTab] = useState<ToolTab>('background');
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>('tools');
   const [panelsHidden, setPanelsHidden] = useState(false);
@@ -484,6 +559,10 @@ export default function Create() {
   const [isDirty, setIsDirty] = useState(false);
   const [navigationPromptOpen, setNavigationPromptOpen] = useState(false);
   const [navigationSaving, setNavigationSaving] = useState(false);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [resetPromptOpen, setResetPromptOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<'png' | 'jpeg'>('png');
   const [exportQuality, setExportQuality] = useState(92);
@@ -493,15 +572,25 @@ export default function Create() {
   const [brushSettings, setBrushSettings] = useState<BrushSettings>(DEFAULT_BRUSH_SETTINGS);
   const [adjustmentTarget, setAdjustmentTarget] = useState<'background' | string | null>(null);
   const [quickEditorEnabled, setQuickEditorEnabled] = useState(() => localStorage.getItem(QUICK_EDITOR_SETTING_KEY) !== 'false');
-  const [quickEditor, setQuickEditor] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [quickEditor, setQuickEditor] = useState<{ id: string; x: number; y: number; visible: boolean } | null>(null);
   const [textSelection, setTextSelection] = useState({ start: 0, end: 0 });
+  const [contextMenu, setContextMenu] = useState<CanvasContextMenu | null>(null);
+  const [layerClipboard, setLayerClipboard] = useState<EditorLayer[]>([]);
   const canvasRef = useRef<EditorCanvasHandle>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
+  const layerListRef = useRef<HTMLDivElement>(null);
+  const quickEditorRafRef = useRef<number | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
   const layerImageInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const brushImageInputRef = useRef<HTMLInputElement>(null);
   const selectedLayer = document.layers.find((layer) => layer.id === selectedId) || null;
+  const contextTargetLayer = contextMenu?.targetId
+    ? document.layers.find((layer) => layer.id === contextMenu.targetId) || null
+    : null;
+  const contextLayers = contextMenu ? document.layers.filter((layer) => contextMenu.layerIds.includes(layer.id)) : [];
+  const contextAllLocked = contextLayers.length > 0 && contextLayers.every((layer) => layer.locked);
+  const contextAllVisible = contextLayers.length > 0 && contextLayers.every((layer) => layer.visible);
   const selectedImageCrop = selectedLayer?.type === 'image'
     ? selectedLayer.crop || { x: 0, y: 0, width: 1, height: 1 }
     : null;
@@ -561,6 +650,102 @@ export default function Create() {
     setIsDirty(dirty);
   };
 
+  const toggleGrid = () => {
+    setShowGrid((current) => {
+      const next = !current;
+      void setSetting('create.show_grid', next);
+      return next;
+    });
+  };
+
+  const toggleSnapToGuides = () => {
+    setSnapToGuides((current) => {
+      const next = !current;
+      void setSetting('create.snap_to_guides', next);
+      return next;
+    });
+  };
+
+  const updateExportFormat = (value: 'png' | 'jpeg') => {
+    setExportFormat(value);
+    void setSetting('create.export_format', value);
+  };
+
+  const updateExportQuality = (value: number) => {
+    const next = Math.max(40, Math.min(100, value));
+    setExportQuality(next);
+    void setSetting('create.jpeg_quality', next);
+  };
+
+  const selectOnlyLayer = (id: string | null) => {
+    setSelectedId(id);
+    setSelectedIds(id ? new Set([id]) : new Set());
+    layerSelectionAnchorRef.current = id;
+  };
+
+  const selectLayerFromList = (id: string, modifiers: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    const command = modifiers.ctrlKey || modifiers.metaKey;
+    const anchorId = layerSelectionAnchorRef.current;
+    if (modifiers.shiftKey && anchorId) {
+      const visualOrder = [...documentRef.current.layers].reverse().map((layer) => layer.id);
+      const anchorIndex = visualOrder.indexOf(anchorId);
+      const targetIndex = visualOrder.indexOf(id);
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const range = visualOrder.slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1);
+        const next = command ? new Set(selectedIds) : new Set<string>();
+        range.forEach((layerId) => next.add(layerId));
+        setSelectedIds(next);
+        setSelectedId(id);
+        setQuickEditor(null);
+        return;
+      }
+    }
+    if (command) {
+      const next = new Set(selectedIds);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      const nextPrimary = next.has(id)
+        ? id
+        : selectedId === id
+          ? [...next].pop() || null
+          : selectedId;
+      setSelectedIds(next);
+      setSelectedId(nextPrimary);
+      layerSelectionAnchorRef.current = nextPrimary;
+      setQuickEditor(null);
+      return;
+    }
+    selectOnlyLayer(id);
+    setQuickEditor(null);
+  };
+
+  const selectLayerFromCanvas = (id: string | null, modifiers: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    const command = modifiers.ctrlKey || modifiers.metaKey;
+    if (!id) {
+      if (!command && !modifiers.shiftKey) selectOnlyLayer(null);
+      return;
+    }
+    if (command) {
+      selectLayerFromList(id, modifiers);
+      return;
+    }
+    if (modifiers.shiftKey) {
+      const next = new Set(selectedIds);
+      next.add(id);
+      setSelectedIds(next);
+      setSelectedId(id);
+      layerSelectionAnchorRef.current = id;
+      setQuickEditor(null);
+      return;
+    }
+    if (selectedIds.size > 1 && selectedIds.has(id)) {
+      setSelectedId(id);
+      layerSelectionAnchorRef.current = id;
+      setQuickEditor(null);
+      return;
+    }
+    selectOnlyLayer(id);
+  };
+
   const pushPast = (snapshot: WallpaperDocument) => {
     pastRef.current = [...pastRef.current, cloneDocument(snapshot)].slice(-60);
     futureRef.current = [];
@@ -615,7 +800,7 @@ export default function Create() {
 
   const openLayerProperties = (id: string) => {
     const layer = documentRef.current.layers.find((item) => item.id === id);
-    setSelectedId(id);
+    selectOnlyLayer(id);
     setPanelsHidden(false);
     setMobilePanel('layers');
     setQuickEditor(null);
@@ -661,6 +846,14 @@ export default function Create() {
     setCurrentDocument(next);
   };
 
+  const replaceLayersLive = (nextLayers: EditorLayer[]) => {
+    const replacements = new Map(nextLayers.map((layer) => [layer.id, layer]));
+    setCurrentDocument({
+      ...documentRef.current,
+      layers: documentRef.current.layers.map((layer) => replacements.get(layer.id) || layer),
+    });
+  };
+
   const replaceCropLive = (id: string, crop: { x: number; y: number; width: number; height: number }) => {
     setCurrentDocument({
       ...documentRef.current,
@@ -692,6 +885,19 @@ export default function Create() {
     pushPast(before);
   };
 
+  const commitCanvasGroupInteraction = (originals: EditorLayer[]) => {
+    const current = documentRef.current;
+    const originalsById = new Map(originals.map((layer) => [layer.id, layer]));
+    const changed = current.layers.some((layer) => {
+      const original = originalsById.get(layer.id);
+      return original && (layer.x !== original.x || layer.y !== original.y);
+    });
+    if (!changed) return;
+    const before = cloneDocument(current);
+    before.layers = before.layers.map((layer) => originalsById.get(layer.id) || layer);
+    pushPast(before);
+  };
+
   const undo = () => {
     const previous = pastRef.current.pop();
     if (!previous) return;
@@ -714,7 +920,7 @@ export default function Create() {
 
   const addLayer = (layer: EditorLayer) => {
     commitDocument((current) => ({ ...current, layers: [...current.layers, layer] }));
-    setSelectedId(layer.id);
+    selectOnlyLayer(layer.id);
     setMobilePanel(null);
   };
 
@@ -792,23 +998,112 @@ export default function Create() {
       points: points.map((point) => ({ x: point.x - x, y: point.y - y, angle: point.angle })),
     };
     commitDocument((current) => ({ ...current, layers: [...current.layers, layer] }));
-    setSelectedId(layer.id);
+    selectOnlyLayer(layer.id);
   };
 
   const patchBrushSettings = (patch: Partial<BrushSettings>) => {
     setBrushSettings((current) => ({ ...current, ...patch }));
   };
 
-  const removeLayer = (id: string) => {
-    commitDocument((current) => ({ ...current, layers: current.layers.filter((layer) => layer.id !== id) }));
-    if (selectedId === id) setSelectedId(null);
-    if (quickEditor?.id === id) setQuickEditor(null);
+  const removeLayers = (ids: Iterable<string>) => {
+    const removedIds = new Set(ids);
+    if (removedIds.size === 0) return;
+    commitDocument((current) => ({ ...current, layers: current.layers.filter((layer) => !removedIds.has(layer.id)) }));
+    const remainingSelection = [...selectedIds].filter((id) => !removedIds.has(id));
+    const nextPrimary = selectedId && !removedIds.has(selectedId) ? selectedId : remainingSelection.pop() || null;
+    setSelectedIds(new Set(remainingSelection.concat(nextPrimary ? [nextPrimary] : [])));
+    setSelectedId(nextPrimary);
+    layerSelectionAnchorRef.current = nextPrimary;
+    if (quickEditor && removedIds.has(quickEditor.id)) setQuickEditor(null);
+    if (cropEditingId && removedIds.has(cropEditingId)) setCropEditingId(null);
+  };
+
+  const removeLayer = (id: string) => removeLayers([id]);
+
+  const removeSelectedLayers = () => removeLayers(selectedIds.size > 0 ? selectedIds : selectedId ? [selectedId] : []);
+
+  const nudgeSelectedLayers = (deltaX: number, deltaY: number) => {
+    const ids = selectedIds.size > 0 ? selectedIds : selectedId ? new Set([selectedId]) : new Set<string>();
+    if (ids.size === 0 || !documentRef.current.layers.some((layer) => ids.has(layer.id) && !layer.locked)) return;
+    commitDocument((current) => ({
+      ...current,
+      layers: current.layers.map((layer) => ids.has(layer.id) && !layer.locked
+        ? { ...layer, x: layer.x + deltaX, y: layer.y + deltaY }
+        : layer),
+    }), `layers:${[...ids].sort().join(',')}:position`);
   };
 
   const duplicateLayer = (id: string) => {
     const source = documentRef.current.layers.find((layer) => layer.id === id);
     if (!source) return;
     addLayer({ ...structuredClone(source), id: createLayerId(source.type), name: `${source.name} 副本`, x: source.x + 36, y: source.y + 36 });
+  };
+
+  const getLayersById = (ids: Iterable<string>) => {
+    const idSet = new Set(ids);
+    return documentRef.current.layers.filter((layer) => idSet.has(layer.id));
+  };
+
+  const copyLayers = (ids: Iterable<string>) => {
+    const layers = getLayersById(ids).map((layer) => structuredClone(layer));
+    if (layers.length) setLayerClipboard(layers);
+    return layers;
+  };
+
+  const duplicateLayers = (ids: Iterable<string>) => {
+    const layers = getLayersById(ids);
+    if (!layers.length) return;
+    const duplicates = layers.map((layer) => ({
+      ...structuredClone(layer),
+      id: createLayerId(layer.type),
+      name: `${layer.name} 副本`,
+      x: layer.x + 36,
+      y: layer.y + 36,
+    }));
+    commitDocument((current) => ({ ...current, layers: [...current.layers, ...duplicates] }));
+    setSelectedIds(new Set(duplicates.map((layer) => layer.id)));
+    setSelectedId(duplicates[duplicates.length - 1].id);
+    layerSelectionAnchorRef.current = duplicates[duplicates.length - 1].id;
+    setQuickEditor(null);
+  };
+
+  const pasteLayers = (point?: { x: number; y: number } | null) => {
+    if (!layerClipboard.length) return;
+    const left = Math.min(...layerClipboard.map((layer) => layer.x - layer.width / 2));
+    const right = Math.max(...layerClipboard.map((layer) => layer.x + layer.width / 2));
+    const top = Math.min(...layerClipboard.map((layer) => layer.y - layer.height / 2));
+    const bottom = Math.max(...layerClipboard.map((layer) => layer.y + layer.height / 2));
+    const offsetX = point ? point.x - (left + right) / 2 : 36;
+    const offsetY = point ? point.y - (top + bottom) / 2 : 36;
+    const pasted = layerClipboard.map((layer) => ({
+      ...structuredClone(layer),
+      id: createLayerId(layer.type),
+      name: `${layer.name} 副本`,
+      x: layer.x + offsetX,
+      y: layer.y + offsetY,
+    }));
+    commitDocument((current) => ({ ...current, layers: [...current.layers, ...pasted] }));
+    setSelectedIds(new Set(pasted.map((layer) => layer.id)));
+    setSelectedId(pasted[pasted.length - 1].id);
+    layerSelectionAnchorRef.current = pasted[pasted.length - 1].id;
+    setQuickEditor(null);
+  };
+
+  const patchLayers = (ids: Iterable<string>, patch: (layer: EditorLayer) => Partial<EditorLayer>) => {
+    const idSet = new Set(ids);
+    if (!idSet.size) return;
+    commitDocument((current) => ({
+      ...current,
+      layers: current.layers.map((layer) => idSet.has(layer.id) ? { ...layer, ...patch(layer) } as EditorLayer : layer),
+    }));
+  };
+
+  const selectAllLayers = () => {
+    const ids = documentRef.current.layers.map((layer) => layer.id);
+    setSelectedIds(new Set(ids));
+    setSelectedId(ids[ids.length - 1] || null);
+    layerSelectionAnchorRef.current = ids[ids.length - 1] || null;
+    setQuickEditor(null);
   };
 
   const duplicateLayerForDrag = (source: EditorLayer): EditorLayer => {
@@ -818,7 +1113,7 @@ export default function Create() {
       name: `${source.name} 副本`,
     };
     commitDocument((current) => ({ ...current, layers: [...current.layers, duplicate] }));
-    setSelectedId(duplicate.id);
+    selectOnlyLayer(duplicate.id);
     return duplicate;
   };
 
@@ -937,24 +1232,78 @@ export default function Create() {
     setIsPanning(false);
   };
 
+  const handleViewportContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    selectOnlyLayer(null);
+    setQuickEditor(null);
+    setContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 260)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 520)),
+      point: null,
+      layerIds: [],
+      targetId: null,
+    });
+  };
+
+  const computeQuickEditorPosition = (layer: EditorLayer): { x: number; y: number; visible: boolean } | null => {
+    const viewport = canvasViewportRef.current;
+    const canvas = viewport?.querySelector('canvas');
+    if (!viewport || !canvas) return null;
+    const canvasBounds = canvas.getBoundingClientRect();
+    const viewBounds = viewport.getBoundingClientRect();
+    const corners = [
+      layerLocalToWorld(layer, { x: -layer.width / 2, y: -layer.height / 2 }),
+      layerLocalToWorld(layer, { x: layer.width / 2, y: -layer.height / 2 }),
+      layerLocalToWorld(layer, { x: layer.width / 2, y: layer.height / 2 }),
+      layerLocalToWorld(layer, { x: -layer.width / 2, y: layer.height / 2 }),
+    ];
+    const clientXs = corners.map((point) => canvasBounds.left + (point.x / document.width) * canvasBounds.width);
+    const clientYs = corners.map((point) => canvasBounds.top + (point.y / document.height) * canvasBounds.height);
+    const left = Math.min(...clientXs);
+    const top = Math.min(...clientYs);
+    const right = Math.max(...clientXs);
+    const bottom = Math.max(...clientYs);
+    const inView = right >= viewBounds.left && left <= viewBounds.right && bottom >= viewBounds.top && top <= viewBounds.bottom;
+    if (!inView) return { x: left, y: top, visible: false };
+    const x = Math.max(8, Math.min(window.innerWidth - QUICK_EDITOR_PANEL_WIDTH - 8, (left + right - QUICK_EDITOR_PANEL_WIDTH) / 2));
+    const y = top >= QUICK_EDITOR_PANEL_HEIGHT + 12
+      ? top - QUICK_EDITOR_PANEL_HEIGHT - 8
+      : Math.min(window.innerHeight - QUICK_EDITOR_PANEL_HEIGHT - 8, bottom + 8);
+    return { x, y, visible: true };
+  };
+
+  const repositionQuickEditor = () => {
+    setQuickEditor((current) => {
+      if (!current) return current;
+      const layer = document.layers.find((item) => item.id === current.id);
+      if (!layer) return null;
+      const next = computeQuickEditorPosition(layer);
+      if (!next) return current;
+      if (next.x === current.x && next.y === current.y && next.visible === current.visible) return current;
+      return { id: current.id, x: next.x, y: next.y, visible: next.visible };
+    });
+  };
+
+  const scheduleQuickEditorReposition = () => {
+    if (quickEditorRafRef.current != null) return;
+    quickEditorRafRef.current = window.requestAnimationFrame(() => {
+      quickEditorRafRef.current = null;
+      repositionQuickEditor();
+    });
+  };
+
   const handleLayerQuickEdit = (id: string | null, bounds: { left: number; top: number; right: number; bottom: number } | null) => {
-    if (!id || !quickEditorEnabled || canvasTool !== 'move' || cropEditingId) {
+    if (!id || selectedIds.size > 1 || !quickEditorEnabled || canvasTool !== 'move' || cropEditingId) {
       setQuickEditor(null);
       return;
     }
     if (!bounds) return;
-    const panelWidth = 380;
-    const panelHeight = 44;
     if (quickEditor?.id === id) return;
-    const x = Math.max(8, Math.min(window.innerWidth - panelWidth - 8, (bounds.left + bounds.right - panelWidth) / 2));
-    const y = bounds.top >= panelHeight + 12
-      ? bounds.top - panelHeight - 8
-      : Math.min(window.innerHeight - panelHeight - 8, bounds.bottom + 8);
-    setQuickEditor({
-      id,
-      x,
-      y,
-    });
+    const x = Math.max(8, Math.min(window.innerWidth - QUICK_EDITOR_PANEL_WIDTH - 8, (bounds.left + bounds.right - QUICK_EDITOR_PANEL_WIDTH) / 2));
+    const y = bounds.top >= QUICK_EDITOR_PANEL_HEIGHT + 12
+      ? bounds.top - QUICK_EDITOR_PANEL_HEIGHT - 8
+      : Math.min(window.innerHeight - QUICK_EDITOR_PANEL_HEIGHT - 8, bounds.bottom + 8);
+    setQuickEditor({ id, x, y, visible: true });
   };
 
   const fitCanvas = () => {
@@ -972,6 +1321,22 @@ export default function Create() {
   }, [document.width, document.height]);
 
   useEffect(() => {
+    const frame = window.requestAnimationFrame(repositionQuickEditor);
+    return () => window.cancelAnimationFrame(frame);
+  }, [zoom, document, canvasTool, cropEditingId, quickEditorEnabled]);
+
+  useEffect(() => {
+    const container = layerListRef.current;
+    if (!container || !selectedId) return;
+    const row = container.querySelector<HTMLElement>(`[data-layer-id="${CSS.escape(selectedId)}"]`);
+    if (!row) return;
+    const top = row.offsetTop;
+    const bottom = top + row.offsetHeight;
+    if (top < container.scrollTop) container.scrollTop = top;
+    else if (bottom > container.scrollTop + container.clientHeight) container.scrollTop = bottom - container.clientHeight;
+  }, [selectedId, document.layers]);
+
+  useEffect(() => {
     let active = true;
     void getDisplayResolutions()
       .then((resolutions) => {
@@ -985,6 +1350,20 @@ export default function Create() {
           setDisplayResolutions([{ id: 'browser', name: '当前显示器', width, height, is_primary: true }]);
         }
       });
+    void Promise.all([
+      getSetting('create.show_grid'),
+      getSetting('create.snap_to_guides'),
+      getSetting('create.export_format'),
+      getSetting('create.jpeg_quality'),
+    ])
+      .then(([savedGrid, savedSnap, savedFormat, savedQuality]) => {
+        if (!active) return;
+        setShowGrid(savedGrid === true);
+        setSnapToGuides(savedSnap !== false);
+        if (savedFormat === 'png' || savedFormat === 'jpeg') setExportFormat(savedFormat);
+        setExportQuality(Math.max(40, Math.min(100, Number(savedQuality) || 92)));
+      })
+      .catch(() => { /* Defaults remain usable when preferences cannot be loaded. */ });
     return () => { active = false; };
   }, []);
 
@@ -997,6 +1376,24 @@ export default function Create() {
     window.addEventListener('ltw:quick-editor-setting', handleQuickEditorSetting);
     return () => window.removeEventListener('ltw:quick-editor-setting', handleQuickEditorSetting);
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('blur', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     if (cropEditingId && cropEditingId !== selectedId) setCropEditingId(null);
@@ -1027,6 +1424,7 @@ export default function Create() {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isEditable = Boolean(target?.closest('button, input, textarea, select, [role="slider"], [role="option"], [role="combobox"], [contenteditable="true"]'));
+      const isTextEditable = Boolean(target?.closest('input, textarea, select, [role="combobox"], [contenteditable="true"]'));
       const command = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
 
@@ -1042,6 +1440,7 @@ export default function Create() {
       if (command && key === 's') {
         event.preventDefault();
         if (event.altKey) setExportOpen(true);
+        else if (event.shiftKey) void saveProjectAs();
         else void saveProject();
         return;
       }
@@ -1057,6 +1456,28 @@ export default function Create() {
       if (command && key === '1') {
         event.preventDefault(); setZoomLevel(100); return;
       }
+      if (command && key === 'a' && !isEditable) {
+        event.preventDefault(); selectAllLayers(); return;
+      }
+      if (command && key === 'c' && !isEditable && (selectedIds.size > 0 || selectedId)) {
+        event.preventDefault(); copyLayers(selectedIds.size > 0 ? selectedIds : selectedId ? [selectedId] : []); return;
+      }
+      if (command && key === 'x' && !isEditable && (selectedIds.size > 0 || selectedId)) {
+        event.preventDefault();
+        const ids = selectedIds.size > 0 ? selectedIds : selectedId ? [selectedId] : [];
+        copyLayers(ids);
+        removeLayers(ids);
+        return;
+      }
+      if (command && key === 'v' && !isEditable && layerClipboard.length) {
+        event.preventDefault(); pasteLayers(); return;
+      }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && !isTextEditable && (selectedIds.size > 0 || selectedId)) {
+        event.preventDefault(); removeSelectedLayers(); return;
+      }
+      if (key === '?' || event.key === 'F1') {
+        event.preventDefault(); setShortcutHelpOpen(true); return;
+      }
       if (isEditable) return;
       if (command && key === 'z') {
         event.preventDefault();
@@ -1071,9 +1492,9 @@ export default function Create() {
         if (event.shiftKey) moveLayerToEdge(selectedId, moveForward ? 'front' : 'back');
         else moveLayer(selectedId, moveForward ? 1 : -1);
       } else if (command && key === "'") {
-        event.preventDefault(); setShowGrid((value) => !value);
+        event.preventDefault(); toggleGrid();
       } else if (command && key === ';') {
-        event.preventDefault(); setSnapToGuides((value) => !value);
+        event.preventDefault(); toggleSnapToGuides();
       } else if (key === 'tab') {
         event.preventDefault(); setPanelsHidden((value) => !value);
       } else if (key === 'h') {
@@ -1086,7 +1507,7 @@ export default function Create() {
         event.preventDefault();
         if (selectedLayer) patchSelected({ locked: !selectedLayer.locked });
       } else if (key === 'escape') {
-        setSelectedId(null);
+        selectOnlyLayer(null);
         setMobilePanel(null);
         setCropEditingId(null);
         setQuickEditor(null);
@@ -1094,15 +1515,13 @@ export default function Create() {
         event.preventDefault(); changeZoom(1);
       } else if (key === '-' || key === '_') {
         event.preventDefault(); changeZoom(-1);
-      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedId) {
-        event.preventDefault(); removeLayer(selectedId);
       } else if (selectedId && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault();
         const step = event.shiftKey ? 10 : 1;
-        patchSelected({
-          x: selectedLayer ? selectedLayer.x + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0) : 0,
-          y: selectedLayer ? selectedLayer.y + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0) : 0,
-        });
+        nudgeSelectedLayers(
+          event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0,
+          event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0,
+        );
       }
     };
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -1185,15 +1604,23 @@ export default function Create() {
     }
   };
 
-  const saveProject = async (): Promise<boolean> => {
+  const persistProject = async (forceSaveAs: boolean): Promise<boolean> => {
+    if (projectSavingRef.current) return false;
+    projectSavingRef.current = true;
+    setProjectSaving(true);
     try {
       const savedRevision = documentRevisionRef.current;
       const blob = encodeWallpaperProject(documentRef.current);
-      const path = await saveBlobAs(blob, `${exportName.trim() || '壁纸项目'}.ltwp`);
+      const path = forceSaveAs || !projectPath
+        ? await saveBlobAs(blob, `${exportName.trim() || '壁纸项目'}.ltwp`)
+        : await saveBlobToPath(blob, projectPath);
       if (!path) {
         toast.warning('项目未保存', { description: '已取消保存或写入失败。', timeout: 3000 });
         return false;
       }
+      setProjectPath(path);
+      const savedName = path.split(/[\\/]/).pop()?.replace(/\.ltwp$/i, '');
+      if (savedName) setExportName(savedName);
       const isCurrentRevision = documentRevisionRef.current === savedRevision;
       if (isCurrentRevision) setProjectDirty(false);
       toast.success(isCurrentRevision ? '项目已保存' : '已保存操作前的版本', {
@@ -1204,8 +1631,15 @@ export default function Create() {
     } catch (error) {
       toast.danger(error instanceof Error ? error.message : '保存项目失败', { timeout: 0 });
       return false;
+    } finally {
+      projectSavingRef.current = false;
+      setProjectSaving(false);
     }
   };
+
+  const saveProject = (): Promise<boolean> => persistProject(false);
+
+  const saveProjectAs = (): Promise<boolean> => persistProject(true);
 
   const loadProject = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1215,8 +1649,10 @@ export default function Create() {
       const parsed = await decodeWallpaperProject(file);
       pushPast(documentRef.current);
       setCurrentDocument(parsed);
-      setSelectedId(null);
+      selectOnlyLayer(null);
       setQuickEditor(null);
+      setProjectPath(null);
+      setExportName(file.name.replace(/\.ltwp$/i, '') || '壁纸项目');
       setProjectDirty(false);
       toast.success('项目已打开', { timeout: 2500 });
     } catch (error) {
@@ -1240,6 +1676,7 @@ export default function Create() {
         const path = await saveBlobToDownloads(blob, filename);
         if (!path) throw new Error('保存图片失败');
         const result = await setWallpaper(path);
+        if (result.cancelled) return;
         if (!result.success) throw new Error(result.error || '设置壁纸失败');
         toast.success('已设为壁纸', { description: path, timeout: 3500 });
       } else {
@@ -1267,10 +1704,16 @@ export default function Create() {
   };
 
   const resetDocument = () => {
+    setResetPromptOpen(true);
+  };
+
+  const confirmResetDocument = () => {
     pushPast(documentRef.current);
     setCurrentDocument(cloneDocument(DEFAULT_DOCUMENT));
-    setSelectedId(null);
+    selectOnlyLayer(null);
     setQuickEditor(null);
+    setCropEditingId(null);
+    setResetPromptOpen(false);
   };
 
   const continuePendingNavigation = () => {
@@ -1292,6 +1735,95 @@ export default function Create() {
   const handleDiscardAndNavigate = () => {
     setProjectDirty(false);
     continuePendingNavigation();
+  };
+
+  const openCanvasContextMenu = ({ clientX, clientY, point, layerId }: { clientX: number; clientY: number; point: { x: number; y: number }; layerId: string | null }) => {
+    let layerIds: string[] = [];
+    if (layerId) {
+      if (selectedIds.has(layerId)) {
+        layerIds = [...selectedIds];
+        setSelectedId(layerId);
+        layerSelectionAnchorRef.current = layerId;
+      } else {
+        selectOnlyLayer(layerId);
+        layerIds = [layerId];
+      }
+    } else {
+      selectOnlyLayer(null);
+    }
+    setQuickEditor(null);
+    setContextMenu({
+      x: Math.max(8, Math.min(clientX, window.innerWidth - 260)),
+      y: Math.max(8, Math.min(clientY, window.innerHeight - (layerId ? 560 : 520))),
+      point,
+      layerIds,
+      targetId: layerId,
+    });
+  };
+
+  const openLayerContextMenu = (event: ReactMouseEvent, layerId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const layerIds = selectedIds.has(layerId) ? [...selectedIds] : [layerId];
+    if (!selectedIds.has(layerId)) selectOnlyLayer(layerId);
+    else {
+      setSelectedId(layerId);
+      layerSelectionAnchorRef.current = layerId;
+    }
+    setQuickEditor(null);
+    setContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 260)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 560)),
+      point: null,
+      layerIds,
+      targetId: layerId,
+    });
+  };
+
+  const handleContextMenuAction = (key: Key) => {
+    if (!contextMenu) return;
+    const action = String(key);
+    const ids = contextMenu.layerIds;
+    const target = contextMenu.targetId
+      ? documentRef.current.layers.find((layer) => layer.id === contextMenu.targetId) || null
+      : null;
+    if (action === 'undo') undo();
+    else if (action === 'redo') redo();
+    else if (action === 'cut') { copyLayers(ids); removeLayers(ids); }
+    else if (action === 'copy') copyLayers(ids);
+    else if (action === 'paste') pasteLayers(contextMenu.point);
+    else if (action === 'duplicate') duplicateLayers(ids);
+    else if (action === 'delete') removeLayers(ids);
+    else if (action === 'select-all') selectAllLayers();
+    else if (action === 'lock') patchLayers(ids, () => ({ locked: !ids.every((id) => documentRef.current.layers.find((item) => item.id === id)?.locked) }));
+    else if (action === 'visibility') patchLayers(ids, () => ({ visible: !ids.every((id) => documentRef.current.layers.find((item) => item.id === id)?.visible) }));
+    else if (action === 'front' && target) moveLayerToEdge(target.id, 'front');
+    else if (action === 'forward' && target) moveLayer(target.id, 1);
+    else if (action === 'backward' && target) moveLayer(target.id, -1);
+    else if (action === 'back' && target) moveLayerToEdge(target.id, 'back');
+    else if (action === 'align-left') alignSelected('left');
+    else if (action === 'align-horizontal') alignSelected('horizontal');
+    else if (action === 'align-right') alignSelected('right');
+    else if (action === 'align-top') alignSelected('top');
+    else if (action === 'align-vertical') alignSelected('vertical');
+    else if (action === 'align-bottom') alignSelected('bottom');
+    else if (action === 'flip-horizontal' && target && !target.locked) patchLayers([target.id], (layer) => ({ flipX: !layer.flipX }));
+    else if (action === 'flip-vertical' && target && !target.locked) patchLayers([target.id], (layer) => ({ flipY: !layer.flipY }));
+    else if (action === 'crop' && target?.type === 'image') { setCropEditingId(target.id); setCanvasTool('move'); }
+    else if (action === 'properties' && target) openLayerProperties(target.id);
+    else if (action === 'add-text') addText();
+    else if (action === 'add-shape') addShape('rectangle');
+    else if (action === 'add-image') layerImageInputRef.current?.click();
+    else if (action === 'save') void saveProject();
+    else if (action === 'save-as') void saveProjectAs();
+    else if (action === 'copy-image') void handleCopy();
+    else if (action === 'export') setExportOpen(true);
+    else if (action === 'fit') fitCanvas();
+    else if (action === 'zoom-100') setZoomLevel(100);
+    else if (action === 'grid') toggleGrid();
+    else if (action === 'snap') toggleSnapToGuides();
+    else if (action === 'help') setShortcutHelpOpen(true);
+    setContextMenu(null);
   };
 
   const applyTemplate = (template: 'editorial' | 'botanical' | 'poster' | 'mono' | 'sunset' | 'bauhaus' | 'collage' | 'whitespace' | 'night') => {
@@ -1369,7 +1901,7 @@ export default function Create() {
     }
     pushPast(documentRef.current);
     setCurrentDocument(current);
-    setSelectedId(null);
+    selectOnlyLayer(null);
   };
 
   const leftPanel = (
@@ -1406,13 +1938,13 @@ export default function Create() {
                 <span className="block aspect-[4/3] rounded-md border border-border bg-[radial-gradient(circle_at_72%_48%,#f2d8a0_0_19%,transparent_20%),linear-gradient(135deg,#162b46,#c65f57,#e5af61)] transition-transform group-hover:-translate-y-0.5" />落日
               </button>
               <button onClick={() => applyTemplate('bauhaus')} className="group space-y-1 text-left text-xs">
-                <span className="block aspect-[4/3] rounded-md border border-border bg-[radial-gradient(circle_at_28%_34%,#275b78_0_18%,transparent_19%),linear-gradient(145deg,transparent_45%,#c85250_46%_66%,transparent_67%),#eee6d3] transition-transform group-hover:-translate-y-0.5" />几何
+                <span className="block aspect-[4/3] rounded-md border border-border transition-transform group-hover:-translate-y-0.5" style={{ background: 'radial-gradient(circle at 28% 34%, #275b78 0 18%, transparent 19%), linear-gradient(145deg, transparent 45%, #c85250 46% 66%, transparent 67%), #eee6d3' }} />几何
               </button>
               <button onClick={() => applyTemplate('collage')} className="group space-y-1 text-left text-xs">
-                <span className="block aspect-[4/3] rounded-md border border-border bg-[linear-gradient(82deg,transparent_12%,#315e59_13%_45%,transparent_46%),linear-gradient(98deg,transparent_51%,#c95d56_52%_84%,transparent_85%),#dce3dd] transition-transform group-hover:-translate-y-0.5" />拼贴
+                <span className="block aspect-[4/3] rounded-md border border-border transition-transform group-hover:-translate-y-0.5" style={{ background: 'linear-gradient(82deg, transparent 12%, #315e59 13% 45%, transparent 46%), linear-gradient(98deg, transparent 51%, #c95d56 52% 84%, transparent 85%), #dce3dd' }} />拼贴
               </button>
               <button onClick={() => applyTemplate('whitespace')} className="group space-y-1 text-left text-xs">
-                <span className="block aspect-[4/3] rounded-md border border-border bg-[radial-gradient(circle_at_72%_42%,#a8c0b5_0_20%,transparent_21%),#fafaf7] transition-transform group-hover:-translate-y-0.5" />留白
+                <span className="block aspect-[4/3] rounded-md border border-border transition-transform group-hover:-translate-y-0.5" style={{ background: 'radial-gradient(circle at 72% 42%, #a8c0b5 0 20%, transparent 21%), #fafaf7' }} />留白
               </button>
               <button onClick={() => applyTemplate('night')} className="group space-y-1 text-left text-xs">
                 <span className="block aspect-[4/3] rounded-md border border-border bg-[linear-gradient(145deg,#071622,#16404a_70%,#b38b50)] transition-transform group-hover:-translate-y-0.5" />夜幕
@@ -1530,26 +2062,32 @@ export default function Create() {
   const rightPanel = (
     <aside className={`absolute inset-y-0 right-0 z-30 min-h-0 w-full max-w-[276px] flex-col overflow-hidden border-l border-border bg-background shadow-xl xl:relative xl:z-auto xl:w-[276px] xl:shadow-none ${panelsHidden ? 'hidden' : mobilePanel === 'layers' ? 'flex xl:flex' : 'hidden xl:flex'}`}>
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-        <div className="flex items-center gap-2 font-semibold"><Layers3 size={16} />图层 <span className="text-xs font-normal text-muted">{document.layers.length}</span></div>
+        <div className="flex items-center gap-2 font-semibold"><Layers3 size={16} />图层 <span className="text-xs font-normal text-muted">{document.layers.length}{selectedIds.size > 1 ? ` · 已选 ${selectedIds.size}` : ''}</span></div>
         <div className="flex items-center gap-1">
           <IconAction label="添加文字" onPress={() => addText()}><Type size={15} /></IconAction>
           <IconAction label="添加形状" onPress={() => addShape('rectangle')}><Shapes size={15} /></IconAction>
           <Button isIconOnly size="sm" variant="ghost" onPress={() => setMobilePanel(null)} aria-label="关闭图层面板" className="xl:hidden"><X size={17} /></Button>
         </div>
       </div>
-      <div className="max-h-[42%] min-h-[132px] overflow-y-auto border-b border-border p-2">
+      <div ref={layerListRef} className="max-h-[42%] min-h-[132px] overflow-y-auto border-b border-border p-2">
         {document.layers.length === 0 ? (
           <div className="flex h-28 flex-col items-center justify-center gap-2 text-center text-xs text-muted"><Layers3 size={24} strokeWidth={1.5} /><span>从左侧添加文字、形状或图片</span></div>
         ) : [...document.layers].reverse().map((layer) => (
-          <div key={layer.id} className={`group mb-1 flex h-10 items-center gap-1 rounded-md px-1 transition-colors ${selectedId === layer.id ? 'bg-primary/12 text-primary' : 'hover:bg-surface-secondary'}`}>
+          <div key={layer.id} data-layer-id={layer.id} className={`group mb-1 flex h-10 items-center gap-1 rounded-md border px-1 transition-colors ${selectedIds.has(layer.id) ? 'border-accent bg-accent-soft text-accent-soft-foreground' : 'border-transparent hover:bg-surface-secondary'}`} onContextMenu={(event) => openLayerContextMenu(event, layer.id)}>
             <IconAction label={layer.visible ? '隐藏图层' : '显示图层'} onPress={() => commitDocument((current) => ({ ...current, layers: current.layers.map((item) => item.id === layer.id ? { ...item, visible: !item.visible } : item) }))}>{layer.visible ? <Eye size={14} /> : <EyeOff size={14} />}</IconAction>
-            <Button size="sm" variant="ghost" className="min-w-0 flex-1 justify-start gap-2 px-1" onPress={() => setSelectedId(layer.id)}><span className="text-muted">{layerIcon(layer)}</span><span className="min-w-0 truncate text-xs">{layer.name}</span></Button>
+            <Button size="sm" variant="ghost" className="min-w-0 flex-1 justify-start gap-2 px-1" aria-pressed={selectedIds.has(layer.id)} onPress={(event) => selectLayerFromList(layer.id, event)}><span className="text-muted">{layerIcon(layer)}</span><span className="min-w-0 truncate text-xs">{layer.name}</span></Button>
             <Button isIconOnly size="sm" variant="ghost" aria-label={layer.locked ? '解锁图层' : '锁定图层'} onPress={() => commitDocument((current) => ({ ...current, layers: current.layers.map((item) => item.id === layer.id ? { ...item, locked: !item.locked } : item) }))}>{layer.locked ? <Lock size={13} /> : <Unlock size={13} />}</Button>
           </div>
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {selectedLayer ? (
+        {selectedIds.size > 1 ? (
+          <div className="divide-y divide-border">
+            <PanelSection title={`已选择 ${selectedIds.size} 个图层`}>
+              <Button fullWidth variant="danger-soft" onPress={removeSelectedLayers}><Trash2 size={16} />删除所选图层</Button>
+            </PanelSection>
+          </div>
+        ) : selectedLayer ? (
           <div className="divide-y divide-border">
             <PanelSection title="图层属性">
               <Input value={selectedLayer.name} onChange={(event) => patchSelected({ name: event.target.value })} aria-label="图层名称" />
@@ -1704,14 +2242,14 @@ export default function Create() {
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-1 border-b border-border bg-background px-2 py-1.5 sm:px-3">
         <div className="mr-1 flex items-center gap-2 px-1"><div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground"><Frame size={16} /></div><div className="hidden lg:block"><div className="text-sm font-semibold leading-4">壁纸制作</div><div className="text-[10px] text-muted">创意画布</div></div></div>
         <Button isIconOnly size="sm" variant="ghost" className="xl:hidden" onPress={() => { setPanelsHidden(false); setMobilePanel(mobilePanel === 'tools' ? null : 'tools'); }} aria-label="打开素材面板"><PanelLeft size={17} /></Button>
-        <Button isIconOnly size="sm" variant="ghost" className="xl:hidden" onPress={() => { setPanelsHidden(false); setMobilePanel(mobilePanel === 'layers' ? null : 'layers'); }} aria-label="打开图层面板"><PanelRight size={17} /></Button>
+        <Button isIconOnly size="sm" variant={mobilePanel === 'layers' || selectedIds.size > 0 ? 'secondary' : 'ghost'} className="xl:hidden" onPress={() => { setPanelsHidden(false); setMobilePanel(mobilePanel === 'layers' ? null : 'layers'); }} aria-label="打开图层面板" aria-pressed={mobilePanel === 'layers'}><PanelRight size={17} /></Button>
         <div className="mx-1 h-5 w-px bg-border" />
         <IconAction label="撤销 (Ctrl+Z)" onPress={undo} isDisabled={!canUndo}><Undo2 size={17} /></IconAction><IconAction label="重做 (Ctrl+Shift+Z)" onPress={redo} isDisabled={!canRedo}><Redo2 size={17} /></IconAction>
         <div className="mx-1 hidden h-5 w-px bg-border sm:block" />
         <Select className="hidden w-56 md:block" selectedKey={currentSizeId} onSelectionChange={(key) => { const preset = sizeOptions.find((item) => item.id === String(key)); if (preset) patchDocument({ width: preset.width, height: preset.height }); }} aria-label="画布尺寸"><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox>{sizeOptions.map((preset) => <ListBox.Item key={preset.id} id={preset.id} textValue={preset.label}>{preset.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover></Select>
         <span className="hidden text-xs tabular-nums text-muted lg:inline">{document.width} × {document.height}</span>{isDirty && <span className="hidden rounded-full bg-warning/15 px-2 py-1 text-[11px] text-warning sm:inline">未保存</span>}
         <div className="ml-auto flex items-center gap-1">
-          <IconAction label="打开项目" onPress={() => projectInputRef.current?.click()}><FolderOpen size={17} /></IconAction><IconAction label="保存项目 (Ctrl+S)" onPress={() => void saveProject()}><FileArchive size={17} /></IconAction><IconAction label="复制图片" onPress={() => void handleCopy()}><Copy size={17} /></IconAction><IconAction label="重置画布" onPress={resetDocument}><RotateCcw size={17} /></IconAction>
+          <IconAction label="打开项目" onPress={() => projectInputRef.current?.click()}><FolderOpen size={17} /></IconAction><IconAction label="保存项目 (Ctrl+S)" onPress={() => void saveProject()} isDisabled={projectSaving}>{projectSaving ? <Spinner size="sm" /> : <FileArchive size={17} />}</IconAction><IconAction label="项目另存为 (Ctrl+Shift+S)" onPress={() => void saveProjectAs()} isDisabled={projectSaving}><SaveAll size={17} /></IconAction><IconAction label="复制图片" onPress={() => void handleCopy()}><Copy size={17} /></IconAction><IconAction label="重置画布" onPress={resetDocument}><RotateCcw size={17} /></IconAction><IconAction label="快捷帮助 (?)" onPress={() => setShortcutHelpOpen(true)}><CircleHelp size={17} /></IconAction>
           <Button size="sm" aria-label="导出壁纸" onPress={() => setExportOpen(true)}><Download size={16} /><span className="hidden sm:inline">导出</span></Button>
         </div>
       </header>
@@ -1723,25 +2261,27 @@ export default function Create() {
             ref={canvasViewportRef}
             className={`min-h-0 flex-1 overflow-auto ${isPanning ? 'cursor-grabbing' : canvasTool === 'hand' || isSpacePressed ? 'cursor-grab' : ''}`}
             onWheel={handleViewportWheel}
+            onScroll={scheduleQuickEditorReposition}
             onPointerDownCapture={handleViewportPointerDown}
             onPointerMoveCapture={handleViewportPointerMove}
             onPointerUpCapture={handleViewportPointerUp}
             onPointerCancelCapture={handleViewportPointerUp}
+            onContextMenu={handleViewportContextMenu}
           >
-            <div className="flex min-h-full min-w-full items-center justify-center p-9">
-              <div className="overflow-hidden bg-white" style={{ borderRadius: `${Math.min(12, document.border.radius * zoom / 100)}px` }}>
-                <EditorCanvas ref={canvasRef} document={document} selectedId={selectedId} zoom={zoom} showGrid={showGrid} snapToGuides={snapToGuides} isPanningMode={canvasTool === 'hand' || isSpacePressed} canvasTool={canvasTool} brushSettings={brushSettings} cropEditingId={cropEditingId} onSelect={setSelectedId} onLayerClick={handleLayerQuickEdit} onLayerInteractionStart={() => setQuickEditor(null)} onOpenProperties={openLayerProperties} onDuplicateForDrag={duplicateLayerForDrag} onCommitBrushStroke={commitBrushStroke} onLiveCropChange={replaceCropLive} onCommitCrop={commitCrop} onLiveLayerChange={replaceLayerLive} onCommitInteraction={commitCanvasInteraction} />
+            <div className="flex w-max h-max min-h-full min-w-full items-center justify-center p-9">
+              <div className="shrink-0 overflow-hidden bg-white" style={{ borderRadius: `${Math.min(12, document.border.radius * zoom / 100)}px` }}>
+                <EditorCanvas ref={canvasRef} document={document} selectedId={selectedId} selectedIds={selectedIds} zoom={zoom} showGrid={showGrid} snapToGuides={snapToGuides} isPanningMode={canvasTool === 'hand' || isSpacePressed} canvasTool={canvasTool} brushSettings={brushSettings} cropEditingId={cropEditingId} onSelect={selectLayerFromCanvas} onLayerClick={handleLayerQuickEdit} onLayerInteractionStart={() => setQuickEditor(null)} onOpenProperties={openLayerProperties} onDuplicateForDrag={duplicateLayerForDrag} onCommitBrushStroke={commitBrushStroke} onLiveCropChange={replaceCropLive} onCommitCrop={commitCrop} onLiveLayerChange={replaceLayerLive} onLiveLayersChange={replaceLayersLive} onCommitInteraction={commitCanvasInteraction} onCommitGroupInteraction={commitCanvasGroupInteraction} onContextMenu={openCanvasContextMenu} />
               </div>
             </div>
           </div>
           <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-border bg-background/95 p-1 shadow-md backdrop-blur">
-            <div className="hidden items-center gap-1 sm:flex"><IconAction label="移动工具 (V)" onPress={() => setCanvasTool('move')} isActive={canvasTool === 'move'}><MousePointer2 size={16} /></IconAction><IconAction label="抓手工具 (H / 空格)" onPress={() => setCanvasTool('hand')} isActive={canvasTool === 'hand'}><Hand size={16} /></IconAction><IconAction label="画笔工具 (B)" onPress={() => { setCanvasTool('brush'); setToolTab('brush'); }} isActive={canvasTool === 'brush'}><Brush size={16} /></IconAction><div className="mx-1 h-5 w-px bg-border" /></div><IconAction label="缩小 (- / Ctrl+-)" onPress={() => changeZoom(-1)} isDisabled={zoom <= MIN_ZOOM}><ZoomOut size={16} /></IconAction><Button size="sm" variant="ghost" className="w-14 px-1 text-xs tabular-nums" aria-label="恢复 100% 缩放" onPress={() => setZoomLevel(100)}>{zoom}%</Button><IconAction label="放大 (+ / Ctrl++)" onPress={() => changeZoom(1)} isDisabled={zoom >= MAX_ZOOM}><ZoomIn size={16} /></IconAction><div className="mx-1 h-5 w-px bg-border" /><IconAction label="适应窗口 (Ctrl+0)" onPress={fitCanvas}><Maximize2 size={16} /></IconAction><IconAction label={showGrid ? "隐藏网格 (Ctrl+')" : "显示网格 (Ctrl+')"} onPress={() => setShowGrid((value) => !value)} isActive={showGrid}><Grid3X3 size={16} /></IconAction><IconAction label={snapToGuides ? '关闭智能吸附 (Ctrl+;)' : '开启智能吸附 (Ctrl+;)'} onPress={() => setSnapToGuides((value) => !value)} isActive={snapToGuides}><Magnet size={16} /></IconAction>
+            <div className="hidden items-center gap-1 sm:flex"><IconAction label="移动工具 (V)" onPress={() => setCanvasTool('move')} isActive={canvasTool === 'move'}><MousePointer2 size={16} /></IconAction><IconAction label="抓手工具 (H / 空格)" onPress={() => setCanvasTool('hand')} isActive={canvasTool === 'hand'}><Hand size={16} /></IconAction><IconAction label="画笔工具 (B)" onPress={() => { setCanvasTool('brush'); setToolTab('brush'); }} isActive={canvasTool === 'brush'}><Brush size={16} /></IconAction><div className="mx-1 h-5 w-px bg-border" /></div><IconAction label="缩小 (- / Ctrl+-)" onPress={() => changeZoom(-1)} isDisabled={zoom <= MIN_ZOOM}><ZoomOut size={16} /></IconAction><Button size="sm" variant="ghost" className="w-14 px-1 text-xs tabular-nums" aria-label="恢复 100% 缩放" onPress={() => setZoomLevel(100)}>{zoom}%</Button><IconAction label="放大 (+ / Ctrl++)" onPress={() => changeZoom(1)} isDisabled={zoom >= MAX_ZOOM}><ZoomIn size={16} /></IconAction><div className="mx-1 h-5 w-px bg-border" /><IconAction label="适应窗口 (Ctrl+0)" onPress={fitCanvas}><Maximize2 size={16} /></IconAction><IconAction label={showGrid ? "隐藏网格 (Ctrl+')" : "显示网格 (Ctrl+')"} onPress={toggleGrid} isActive={showGrid}><Grid3X3 size={16} /></IconAction><IconAction label={snapToGuides ? '关闭智能吸附 (Ctrl+;)' : '开启智能吸附 (Ctrl+;)'} onPress={toggleSnapToGuides} isActive={snapToGuides}><Magnet size={16} /></IconAction>
           </div>
         </main>
         {rightPanel}
       </div>
 
-      {quickEditorEnabled && quickEditor && quickLayer && (
+      {quickEditorEnabled && quickEditor && quickLayer && quickEditor.visible && (
         <div className="fixed z-50 flex h-11 items-center gap-0.5 rounded-lg border border-border bg-background/98 p-1 shadow-xl backdrop-blur" style={{ left: quickEditor.x, top: quickEditor.y }}>
           {quickLayer.type === 'shape' && <QuickColorAction label="填充颜色" value={quickLayer.fill} onChange={(fill) => patchSelected({ fill })} />}
           {quickLayer.type === 'text' && <QuickColorAction label="文字颜色" value={quickLayer.color} onChange={(color) => patchSelected({ color })} />}
@@ -1754,9 +2294,70 @@ export default function Create() {
           <IconAction label="复制" onPress={() => duplicateLayer(quickLayer.id)}><CopyPlus size={15} /></IconAction>
           <IconAction label={quickLayer.locked ? '解锁' : '锁定'} onPress={() => patchSelected({ locked: !quickLayer.locked })} isActive={quickLayer.locked}>{quickLayer.locked ? <Lock size={15} /> : <Unlock size={15} />}</IconAction>
           {quickLayer.type === 'image' && <IconAction label="可视化裁剪" onPress={() => { setCropEditingId(quickLayer.id); setCanvasTool('move'); setQuickEditor(null); }}><Crop size={15} /></IconAction>}
-          <IconAction label="更多设置" onPress={() => { setSelectedId(quickLayer.id); setPanelsHidden(false); setMobilePanel('layers'); setQuickEditor(null); }}><SlidersHorizontal size={15} /></IconAction>
+          <IconAction label="更多设置" onPress={() => { selectOnlyLayer(quickLayer.id); setPanelsHidden(false); setMobilePanel('layers'); setQuickEditor(null); }}><SlidersHorizontal size={15} /></IconAction>
           <IconAction label="删除" onPress={() => removeLayer(quickLayer.id)}><Trash2 size={15} className="text-danger" /></IconAction>
           <IconAction label="关闭" onPress={() => setQuickEditor(null)}><X size={15} /></IconAction>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          className="context-menu-enter fixed z-[70] max-h-[calc(100vh-16px)] w-[252px] overflow-y-auto rounded-xl border border-border bg-background/98 p-1.5 shadow-xl backdrop-blur"
+          style={{ left: contextMenu.x, top: contextMenu.y, maxHeight: window.innerHeight - contextMenu.y - 8 }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <ListBox aria-label="壁纸制作操作" selectionMode="none" onAction={handleContextMenuAction}>
+            {contextTargetLayer ? <>
+              <ListBox.Item id="cut" textValue="剪切"><Scissors size={15} className="text-muted" /><Label>剪切{contextLayers.length > 1 ? ` ${contextLayers.length} 个图层` : ''}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl X</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="copy" textValue="复制"><Copy size={15} className="text-muted" /><Label>复制{contextLayers.length > 1 ? ` ${contextLayers.length} 个图层` : ''}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl C</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="paste" textValue="粘贴图层" isDisabled={!layerClipboard.length}><ClipboardPaste size={15} className="text-muted" /><Label>粘贴图层{layerClipboard.length > 1 ? ` (${layerClipboard.length})` : ''}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl V</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="duplicate" textValue="创建副本"><CopyPlus size={15} className="text-muted" /><Label>创建副本</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl D</Kbd.Content></Kbd></ListBox.Item>
+              <Separator />
+              <ListBox.Item id="front" textValue="置于顶层" isDisabled={document.layers[document.layers.length - 1]?.id === contextTargetLayer.id}><ArrowUpToLine size={15} className="text-muted" /><Label>置于顶层</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl ⇧ ]</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="forward" textValue="上移一层" isDisabled={document.layers[document.layers.length - 1]?.id === contextTargetLayer.id}><ChevronUp size={15} className="text-muted" /><Label>上移一层</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl ]</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="backward" textValue="下移一层" isDisabled={document.layers[0]?.id === contextTargetLayer.id}><ChevronDown size={15} className="text-muted" /><Label>下移一层</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl [</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="back" textValue="置于底层" isDisabled={document.layers[0]?.id === contextTargetLayer.id}><ArrowDownToLine size={15} className="text-muted" /><Label>置于底层</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl ⇧ [</Kbd.Content></Kbd></ListBox.Item>
+              {contextLayers.length === 1 && <>
+                <Separator />
+                <ListBox.Item id="align-left" textValue="左对齐画布" isDisabled={contextTargetLayer.locked}><ArrowLeftToLine size={15} className="text-muted" /><Label>左对齐画布</Label></ListBox.Item>
+                <ListBox.Item id="align-horizontal" textValue="水平居中" isDisabled={contextTargetLayer.locked}><ArrowLeftRight size={15} className="text-muted" /><Label>水平居中</Label></ListBox.Item>
+                <ListBox.Item id="align-right" textValue="右对齐画布" isDisabled={contextTargetLayer.locked}><ArrowRightToLine size={15} className="text-muted" /><Label>右对齐画布</Label></ListBox.Item>
+                <ListBox.Item id="align-top" textValue="顶部对齐画布" isDisabled={contextTargetLayer.locked}><ArrowUpToLine size={15} className="text-muted" /><Label>顶部对齐画布</Label></ListBox.Item>
+                <ListBox.Item id="align-vertical" textValue="垂直居中" isDisabled={contextTargetLayer.locked}><Maximize2 size={15} className="text-muted" /><Label>垂直居中</Label></ListBox.Item>
+                <ListBox.Item id="align-bottom" textValue="底部对齐画布" isDisabled={contextTargetLayer.locked}><ArrowDownToLine size={15} className="text-muted" /><Label>底部对齐画布</Label></ListBox.Item>
+                <ListBox.Item id="flip-horizontal" textValue="水平翻转" isDisabled={contextTargetLayer.locked}><FlipHorizontal2 size={15} className="text-muted" /><Label>水平翻转</Label></ListBox.Item>
+                <ListBox.Item id="flip-vertical" textValue="垂直翻转" isDisabled={contextTargetLayer.locked}><FlipVertical2 size={15} className="text-muted" /><Label>垂直翻转</Label></ListBox.Item>
+              </>}
+              <Separator />
+              <ListBox.Item id="visibility" textValue={contextAllVisible ? '隐藏图层' : '显示图层'}>{contextAllVisible ? <EyeOff size={15} className="text-muted" /> : <Eye size={15} className="text-muted" />}<Label>{contextAllVisible ? '隐藏' : '显示'}{contextLayers.length > 1 ? '所选图层' : '图层'}</Label></ListBox.Item>
+              <ListBox.Item id="lock" textValue={contextAllLocked ? '解锁图层' : '锁定图层'}>{contextAllLocked ? <Unlock size={15} className="text-muted" /> : <Lock size={15} className="text-muted" />}<Label>{contextAllLocked ? '解锁' : '锁定'}{contextLayers.length > 1 ? '所选图层' : '图层'}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>/</Kbd.Content></Kbd></ListBox.Item>
+              {contextTargetLayer.type === 'image' && contextLayers.length === 1 && <ListBox.Item id="crop" textValue="可视化裁剪"><Crop size={15} className="text-muted" /><Label>可视化裁剪</Label></ListBox.Item>}
+              {contextLayers.length === 1 && <ListBox.Item id="properties" textValue="更多设置"><SlidersHorizontal size={15} className="text-muted" /><Label>更多设置</Label></ListBox.Item>}
+              <Separator />
+              <ListBox.Item id="delete" textValue="删除" className="text-danger"><Trash2 size={15} /><Label>删除{contextLayers.length > 1 ? ` ${contextLayers.length} 个图层` : '图层'}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Del</Kbd.Content></Kbd></ListBox.Item>
+            </> : <>
+              <ListBox.Item id="undo" textValue="撤销" isDisabled={!canUndo}><Undo2 size={15} className="text-muted" /><Label>撤销</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl Z</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="redo" textValue="重做" isDisabled={!canRedo}><Redo2 size={15} className="text-muted" /><Label>重做</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl ⇧ Z</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="paste" textValue="粘贴图层" isDisabled={!layerClipboard.length}><ClipboardPaste size={15} className="text-muted" /><Label>粘贴图层{layerClipboard.length > 1 ? ` (${layerClipboard.length})` : ''}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl V</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="select-all" textValue="全选图层" isDisabled={!document.layers.length}><Layers3 size={15} className="text-muted" /><Label>全选图层</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl A</Kbd.Content></Kbd></ListBox.Item>
+              <Separator />
+              <ListBox.Item id="add-text" textValue="添加文字"><Type size={15} className="text-muted" /><Label>添加文字</Label></ListBox.Item>
+              <ListBox.Item id="add-shape" textValue="添加形状"><Shapes size={15} className="text-muted" /><Label>添加形状</Label></ListBox.Item>
+              <ListBox.Item id="add-image" textValue="添加图片"><ImagePlus size={15} className="text-muted" /><Label>添加图片</Label></ListBox.Item>
+              <Separator />
+              <ListBox.Item id="fit" textValue="适应窗口"><Maximize2 size={15} className="text-muted" /><Label>适应窗口</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl 0</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="zoom-100" textValue="恢复 100%"><ZoomIn size={15} className="text-muted" /><Label>恢复 100%</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl 1</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="grid" textValue={showGrid ? '隐藏网格' : '显示网格'}><Grid3X3 size={15} className="text-muted" /><Label>{showGrid ? '隐藏' : '显示'}网格</Label><span className="ms-auto text-[10px] text-muted">{showGrid ? '已开启' : '已关闭'}</span></ListBox.Item>
+              <ListBox.Item id="snap" textValue={snapToGuides ? '关闭智能吸附' : '开启智能吸附'}><Magnet size={15} className="text-muted" /><Label>{snapToGuides ? '关闭' : '开启'}智能吸附</Label><span className="ms-auto text-[10px] text-muted">{snapToGuides ? '已开启' : '已关闭'}</span></ListBox.Item>
+              <Separator />
+              <ListBox.Item id="save" textValue="保存项目" isDisabled={projectSaving}><FileArchive size={15} className="text-muted" /><Label>保存项目</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl S</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="save-as" textValue="项目另存为" isDisabled={projectSaving}><SaveAll size={15} className="text-muted" /><Label>项目另存为</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl ⇧ S</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="copy-image" textValue="复制成品图片"><Copy size={15} className="text-muted" /><Label>复制成品图片</Label></ListBox.Item>
+              <ListBox.Item id="export" textValue="导出壁纸"><Download size={15} className="text-muted" /><Label>导出壁纸</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>Ctrl Alt S</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="help" textValue="快捷帮助"><CircleHelp size={15} className="text-muted" /><Label>快捷帮助</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>?</Kbd.Content></Kbd></ListBox.Item>
+            </>}
+          </ListBox>
         </div>
       )}
 
@@ -1781,8 +2382,18 @@ export default function Create() {
       </Modal.Backdrop>
 
       <Modal.Backdrop isOpen={exportOpen} onOpenChange={(open) => !exporting && setExportOpen(open)}>
-        <Modal.Container size="sm"><Modal.Dialog><Modal.CloseTrigger /><Modal.Header><Modal.Icon className="bg-accent-soft text-accent-soft-foreground"><Download size={20} /></Modal.Icon><Modal.Heading>导出壁纸</Modal.Heading><p className="text-sm text-muted">以完整画布尺寸输出当前设计。</p></Modal.Header><Modal.Body><div className="space-y-5"><Input value={exportName} onChange={(event) => setExportName(event.target.value)} aria-label="文件名" placeholder="文件名" /><SelectControl label="图片格式" value={exportFormat} options={[{ id: 'png', label: 'PNG 无损图片' }, { id: 'jpeg', label: 'JPEG 图片' }]} onChange={(value) => setExportFormat(value as 'png' | 'jpeg')} />{exportFormat === 'jpeg' && <SliderControl label="图片质量" value={exportQuality} min={40} max={100} suffix="%" onChange={setExportQuality} />}<div className="rounded-lg bg-surface-secondary px-3 py-2 text-xs text-muted">输出尺寸 {document.width} × {document.height}，辅助网格和选中框不会出现在成品中。</div></div></Modal.Body><Modal.Footer><Button variant="ghost" onPress={() => setExportOpen(false)} isDisabled={exporting}>取消</Button><Button variant="secondary" onPress={() => void handleExport(true)} isDisabled={exporting}><ImageIcon size={16} />设为壁纸</Button><Button onPress={() => void handleExport(false)} isPending={exporting}>{({ isPending }) => <>{isPending ? <Spinner color="current" size="sm" /> : <Save size={16} />}{isPending ? '导出中...' : '另存为'}</>}</Button></Modal.Footer></Modal.Dialog></Modal.Container>
+        <Modal.Container size="sm"><Modal.Dialog><Modal.CloseTrigger /><Modal.Header><Modal.Icon className="bg-accent-soft text-accent-soft-foreground"><Download size={20} /></Modal.Icon><Modal.Heading>导出壁纸</Modal.Heading><p className="text-sm text-muted">以完整画布尺寸输出当前设计。</p></Modal.Header><Modal.Body><div className="space-y-5"><Input value={exportName} onChange={(event) => setExportName(event.target.value)} aria-label="文件名" placeholder="文件名" /><SelectControl label="图片格式" value={exportFormat} options={[{ id: 'png', label: 'PNG 无损图片' }, { id: 'jpeg', label: 'JPEG 图片' }]} onChange={(value) => updateExportFormat(value as 'png' | 'jpeg')} />{exportFormat === 'jpeg' && <SliderControl label="图片质量" value={exportQuality} min={40} max={100} suffix="%" onChange={updateExportQuality} />}<div className="rounded-lg bg-surface-secondary px-3 py-2 text-xs text-muted">输出尺寸 {document.width} × {document.height}，辅助网格和选中框不会出现在成品中。</div></div></Modal.Body><Modal.Footer><Button variant="ghost" onPress={() => setExportOpen(false)} isDisabled={exporting}>取消</Button><Button variant="secondary" onPress={() => void handleExport(true)} isDisabled={exporting}><ImageIcon size={16} />设为壁纸</Button><Button onPress={() => void handleExport(false)} isPending={exporting}>{({ isPending }) => <>{isPending ? <Spinner color="current" size="sm" /> : <Save size={16} />}{isPending ? '导出中...' : '另存为'}</>}</Button></Modal.Footer></Modal.Dialog></Modal.Container>
       </Modal.Backdrop>
+
+      <Modal.Backdrop isOpen={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen}>
+        <Modal.Container size="lg"><Modal.Dialog><Modal.CloseTrigger /><Modal.Header><Modal.Icon className="bg-accent-soft text-accent-soft-foreground"><CircleHelp size={20} /></Modal.Icon><Modal.Heading>快捷键与使用帮助</Modal.Heading><p className="text-sm text-muted">壁纸制作中的常用操作。</p></Modal.Header><Modal.Body className="max-h-[60vh] overflow-y-auto"><div className="grid gap-x-8 gap-y-6 md:grid-cols-2">
+          {SHORTCUT_GROUPS.map((group) => <section key={group.title}><h3 className="mb-2 text-sm font-semibold">{group.title}</h3><div className="divide-y divide-border">{group.items.map((item) => <div key={item.keys} className="flex min-h-9 items-center justify-between gap-3 py-1.5"><span className="text-sm text-muted">{item.label}</span><Kbd variant="light" className="shrink-0"><Kbd.Content>{item.keys}</Kbd.Content></Kbd></div>)}</div></section>)}
+        </div><section className="mt-6 border-t border-border pt-5"><h3 className="mb-3 text-sm font-semibold">使用方法</h3><ol className="space-y-2 text-sm leading-6 text-muted">{EDITOR_TIPS.map((tip, index) => <li key={tip} className="flex gap-3"><span className="shrink-0 tabular-nums text-foreground">{index + 1}.</span><span>{tip}</span></li>)}</ol></section></Modal.Body><Modal.Footer><Button onPress={() => setShortcutHelpOpen(false)}>知道了</Button></Modal.Footer></Modal.Dialog></Modal.Container>
+      </Modal.Backdrop>
+
+      <AlertDialog.Backdrop isOpen={resetPromptOpen} onOpenChange={setResetPromptOpen}>
+        <AlertDialog.Container size="sm"><AlertDialog.Dialog><AlertDialog.CloseTrigger /><AlertDialog.Header><AlertDialog.Icon status="warning"><RotateCcw size={20} /></AlertDialog.Icon><AlertDialog.Heading>重置整个画布？</AlertDialog.Heading><p className="text-sm text-muted">当前画布尺寸、背景和全部图层将恢复为默认状态。</p></AlertDialog.Header><AlertDialog.Body><p className="text-sm text-muted">重置后仍可使用撤销恢复本次操作。</p></AlertDialog.Body><AlertDialog.Footer><Button variant="ghost" onPress={() => setResetPromptOpen(false)}>取消</Button><Button variant="danger" onPress={confirmResetDocument}>确认重置</Button></AlertDialog.Footer></AlertDialog.Dialog></AlertDialog.Container>
+      </AlertDialog.Backdrop>
 
       <Modal.Backdrop isOpen={navigationPromptOpen} onOpenChange={(open) => { if (!open && !navigationSaving) { setNavigationPromptOpen(false); pendingNavigationRef.current = null; } }}>
         <Modal.Container size="sm"><Modal.Dialog><Modal.CloseTrigger /><Modal.Header><Modal.Icon className="bg-warning-soft text-warning-soft-foreground"><Save size={20} /></Modal.Icon><Modal.Heading>保存当前制作？</Modal.Heading><p className="text-sm text-muted">当前壁纸包含未保存的修改。切换页面前可以保存为 LTWP 项目。</p></Modal.Header><Modal.Body><div className="rounded-lg bg-surface-secondary px-3 py-2 text-sm"><span className="font-medium">{exportName.trim() || '壁纸项目'}.ltwp</span><p className="mt-1 text-xs text-muted">保存后可继续编辑全部图层和样式。</p></div></Modal.Body><Modal.Footer><Button variant="ghost" onPress={() => { setNavigationPromptOpen(false); pendingNavigationRef.current = null; }} isDisabled={navigationSaving}>取消</Button><Button variant="secondary" onPress={handleDiscardAndNavigate} isDisabled={navigationSaving}>不保存</Button><Button onPress={() => void handleSaveAndNavigate()} isPending={navigationSaving}>{({ isPending }) => <>{isPending && <Spinner color="current" size="sm" />}{isPending ? '保存中...' : '保存并切换'}</>}</Button></Modal.Footer></Modal.Dialog></Modal.Container>

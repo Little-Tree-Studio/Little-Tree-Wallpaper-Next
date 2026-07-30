@@ -18,8 +18,8 @@ Security notes
 from __future__ import annotations
 
 import hmac
-import ipaddress
 import io
+import ipaddress
 import json
 import socket
 import time
@@ -30,7 +30,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from anyio import CapacityLimiter, to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
@@ -55,12 +56,23 @@ _BLOCKED_MEMBERS = frozenset(
         "spotlight_service",
         "sniff_service",
         "timeline_service",
+        "dynamic_wallpaper_service",
+        "automation_service",
         "im_service",
         "ltws_service",
+        "theme_service",
+        "plugin_manager",
         "set_api_token",
+        "configure_dynamic_wallpaper_runtime",
+        "shutdown_dynamic_wallpaper",
+        "shutdown_automation",
+        "start_automation_runtime",
+        "update_dynamic_wallpaper_telemetry",
         "safe_roots",
         "is_path_safe",
         "serve_image_bytes",
+        "resolve_plugin_asset",
+        "resolve_dynamic_wallpaper_media",
     }
 )
 
@@ -73,9 +85,7 @@ _MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 _CNU_IMAGE_HOSTS = frozenset({"imgoss.cnu.cc", "img.cnu.cc"})
 
 # Pixiv CDN hostnames allowed for the /api/pixiv-image proxy (SSRF guard).
-_PIXIV_IMAGE_HOSTS = frozenset(
-    {"i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh"}
-)
+_PIXIV_IMAGE_HOSTS = frozenset({"i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh"})
 
 # Bounds for the general sniff-image proxy. The endpoint is authenticated, but
 # it still must not become an unbounded memory sink or an SSRF primitive.
@@ -99,6 +109,47 @@ _SNIFF_IMAGE_CONTENT_TYPES = frozenset(
 # other control-plane requests remain responsive while a gallery is loading.
 _IMAGE_PROXY_LIMITER = CapacityLimiter(8)
 
+# Data-source RPCs can spend tens of seconds waiting on third-party services.
+# Both RPC groups are independent from AnyIO's default limiter, which is used by
+# local previews and file endpoints. A gallery therefore cannot consume the
+# workers needed by settings/status RPCs at either layer.
+_DATA_RPC_LIMITER = CapacityLimiter(12)
+_CONTROL_RPC_LIMITER = CapacityLimiter(16)
+_DATA_RPC_METHODS = frozenset(
+    {
+        "bootstrap",
+        "download_file",
+        "execute_intelligent_market_source",
+        "execute_wallpaper_source",
+        "get_automation_resource_catalog",
+        "get_bing_wallpaper",
+        "get_cnu_work",
+        "get_hitokoto",
+        "get_pixivel_work",
+        "get_sentence",
+        "get_spotlight_wallpapers",
+        "list_intelligent_market_sources",
+        "list_system_fonts",
+        "list_timeline_topics",
+        "query_bing",
+        "query_cnu_selected",
+        "query_cnu_works",
+        "query_pixivel_ranking",
+        "query_spotlight",
+        "query_timeline_wallpapers",
+        "search_baidu_images",
+        "search_pexels_images",
+        "search_pixiv_images",
+        "sniff_images",
+        "check_intelligent_market_sources_health",
+    }
+)
+
+
+def _rpc_limiter_for_method(method: str) -> CapacityLimiter:
+    """Keep data loading and control-plane RPCs on independent worker budgets."""
+    return _DATA_RPC_LIMITER if method in _DATA_RPC_METHODS else _CONTROL_RPC_LIMITER
+
 
 def _validate_public_http_url(value: str) -> tuple[str, str, int]:
     """Validate a remote URL before the backend makes an outbound request."""
@@ -115,8 +166,7 @@ def _validate_public_http_url(value: str) -> tuple[str, str, int]:
 
     try:
         addresses = {
-            ipaddress.ip_address(info[4][0])
-            for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
     except (OSError, ValueError) as exc:
         raise ValueError("remote URL hostname could not be resolved") from exc
@@ -148,7 +198,7 @@ _QUIET_RPC_METHODS = frozenset({"get_log_stats", "get_debug_log"})
 def _rpc_method_from_path(path: str) -> str | None:
     """Return the RPC method name for a ``/api/rpc/{method}`` path, else None."""
     prefix = "/api/rpc/"
-    return path[len(prefix):] if path.startswith(prefix) else None
+    return path[len(prefix) :] if path.startswith(prefix) else None
 
 
 def _token_matches(supplied: str | None, expected: str) -> bool:
@@ -193,7 +243,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):  # type: ignore[override]
         # Quiet RPC methods (log inspection) must not be access-logged, otherwise
         # every refresh would add entries and inflate the displayed count.
-        quiet = _rpc_method_from_path(request.url.path) in _QUIET_RPC_METHODS
+        quiet = (
+            _rpc_method_from_path(request.url.path) in _QUIET_RPC_METHODS
+            or request.url.path == "/api/dynamic-wallpaper/telemetry"
+        )
         start = time.perf_counter()
         try:
             response = await call_next(request)
@@ -296,6 +349,15 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    # Media URLs use localhost while RPC stays on 127.0.0.1. These are distinct
+    # browser origins (and therefore distinct HTTP connection pools), but only
+    # the loopback application origin may read responses across that boundary.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://127\.0\.0\.1(?::\d+)?$",
+        allow_methods=["GET", "OPTIONS"],
+        allow_headers=["X-Api-Token"],
+    )
     # Register HostCheck first so RequestLogging wraps it (added next) and still
     # logs the 403 responses produced by rejected Host headers.
     app.add_middleware(HostCheckMiddleware)
@@ -305,14 +367,147 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
 
     @app.on_event("startup")
     async def _on_startup() -> None:  # pragma: no cover - lifecycle hook
+        result = await run_in_threadpool(api.plugin_manager.start_enabled)
+        logger.info("Started {} enabled plugin(s)", len(result.get("plugins", [])))
         logger.info("FastAPI backend started (serving frontend from {})", frontend_dir)
 
     @app.on_event("shutdown")
     async def _on_shutdown() -> None:  # pragma: no cover - lifecycle hook
+        await run_in_threadpool(api.plugin_manager.shutdown)
         logger.info("FastAPI backend shutting down")
 
     @app.get("/api/health")
     async def health(_: None = Depends(verify_token)) -> dict[str, Any]:
+        return {"ok": True}
+
+    @app.get("/api/dynamic-wallpaper/player")
+    async def dynamic_wallpaper_player(
+        muted: bool = True,
+        loop: bool = True,
+        rate: float = 1.0,
+        revision: int = 0,
+        _: None = Depends(verify_token),
+    ) -> HTMLResponse:
+        media_url = f"/api/dynamic-wallpaper/media?token={token}&revision={revision}"
+        telemetry_url = f"/api/dynamic-wallpaper/telemetry?token={token}"
+        safe_rate = max(0.25, min(4.0, float(rate)))
+        muted_json = "true" if muted else "false"
+        loop_json = "true" if loop else "false"
+        html = f"""<!doctype html>
+<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<style>html,body,video{{width:100%;height:100%;margin:0;background:#000;overflow:hidden}}video{{display:block;object-fit:cover}}</style>
+</head><body><video id=\"wallpaper\" src={json.dumps(media_url)} autoplay playsinline></video>
+<script>
+const video=document.getElementById('wallpaper');
+const telemetryUrl={json.dumps(telemetry_url)};
+const revision={int(revision)};
+let lastReport=0;
+let fps=0;
+let fpsSource='';
+let frameCount=0;
+let frameSampleStarted=performance.now();
+let previousTotalFrames=0;
+let previousFrameTime=performance.now();
+function finite(value) {{ return Number.isFinite(value) ? value : 0; }}
+function report(event, force=false) {{
+  const now=Date.now();
+  if (!force && now-lastReport < 750) return;
+  lastReport=now;
+  const quality=video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+  const ranges=video.buffered.length;
+  const duration=finite(video.duration);
+  const payload={{
+    event, media_revision:revision, current_time:finite(video.currentTime), duration,
+    progress:duration > 0 ? finite(video.currentTime)/duration : 0,
+    paused:video.paused, ended:video.ended, seeking:video.seeking,
+    ready_state:video.readyState, network_state:video.networkState,
+    video_width:video.videoWidth, video_height:video.videoHeight,
+    buffered_start:ranges ? finite(video.buffered.start(0)) : 0,
+    buffered_end:ranges ? finite(video.buffered.end(ranges-1)) : 0,
+    buffered_ranges:ranges, muted:video.muted, volume:video.volume, loop:video.loop,
+    playback_rate:video.playbackRate,
+    fps, fps_source:fpsSource,
+    dropped_frames:quality ? quality.droppedVideoFrames : 0,
+    total_frames:quality ? quality.totalVideoFrames : 0,
+    error_code:video.error ? video.error.code : 0,
+    error_message:video.error ? video.error.message : '',
+    visibility:document.visibilityState
+  }};
+  fetch(telemetryUrl, {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload),keepalive:true}}).catch(()=>{{}});
+}}
+for (const event of ['loadedmetadata','loadeddata','canplay','playing','pause','waiting','stalled','seeking','seeked','ended','error','emptied','ratechange','volumechange']) {{
+  video.addEventListener(event, () => report(event, true));
+}}
+video.addEventListener('timeupdate', () => report('timeupdate'));
+video.addEventListener('progress', () => report('progress'));
+document.addEventListener('visibilitychange', () => report('visibilitychange', true));
+window.__ltwPlayer={{
+  play:()=>video.play(), pause:()=>video.pause(),
+  reload:()=>{{video.load();return video.play();}}, snapshot:()=>{{report('snapshot',true);return true;}}
+}};
+if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {{
+  fpsSource='requestVideoFrameCallback';
+  const countFrame=(now)=>{{
+    frameCount++;
+    const elapsed=now-frameSampleStarted;
+    if (elapsed >= 1000) {{ fps=frameCount*1000/elapsed; frameCount=0; frameSampleStarted=now; }}
+    video.requestVideoFrameCallback(countFrame);
+  }};
+  video.requestVideoFrameCallback(countFrame);
+}} else {{
+  fpsSource='getVideoPlaybackQuality';
+  setInterval(()=>{{
+    const now=performance.now();
+    const quality=video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    if (quality) {{
+      const elapsed=now-previousFrameTime;
+      fps=elapsed > 0 ? Math.max(0, quality.totalVideoFrames-previousTotalFrames)*1000/elapsed : 0;
+      previousTotalFrames=quality.totalVideoFrames; previousFrameTime=now;
+    }}
+  }},1000);
+}}
+video.muted={muted_json}; video.loop={loop_json}; video.playbackRate={safe_rate};
+video.play().catch(() => {{ video.muted=true; report('autoplay-muted',true); video.play().catch(()=>report('error',true)); }});
+report('player-ready',true);
+</script></body></html>"""
+        return HTMLResponse(
+            html,
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": "default-src 'none'; media-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+            },
+        )
+
+    @app.get("/api/dynamic-wallpaper/media")
+    async def dynamic_wallpaper_media(revision: int = 0, _: None = Depends(verify_token)) -> FileResponse:
+        resolved = await run_in_threadpool(api.resolve_dynamic_wallpaper_media, revision)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="dynamic wallpaper media not available")
+        path, content_type = resolved
+        return FileResponse(
+            path,
+            media_type=content_type,
+            content_disposition_type="inline",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Wallpaper-Revision": str(revision),
+            },
+        )
+
+    @app.post("/api/dynamic-wallpaper/telemetry")
+    async def dynamic_wallpaper_telemetry(request: Request, _: None = Depends(verify_token)) -> dict[str, bool]:
+        raw = await request.body()
+        if len(raw) > 64 * 1024:
+            raise HTTPException(status_code=413, detail="telemetry body too large")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="invalid telemetry json") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="telemetry must be an object")
+        await run_in_threadpool(api.update_dynamic_wallpaper_telemetry, payload)
         return {"ok": True}
 
     @app.post("/api/rpc/{method}")
@@ -339,10 +534,10 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
 
         if method not in _QUIET_RPC_METHODS:
             logger.debug("RPC {} called with {} argument(s)", method, len(args))
-        # BackendAPI methods are synchronous (requests/file IO). Run them in the
-        # Starlette threadpool so the event loop is never blocked.
+        # BackendAPI methods are synchronous (requests/file IO). Keep slow data
+        # loading on its own worker budget so control-plane RPC stays responsive.
         try:
-            result = await run_in_threadpool(target, *args)
+            result = await to_thread.run_sync(target, *args, limiter=_rpc_limiter_for_method(method))
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001 - surface any backend error to the client
@@ -377,6 +572,25 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
             content=data,
             media_type=content_type,
             headers={"Cache-Control": "private, max-age=600"},
+        )
+
+    @app.get("/api/plugin-assets/{plugin_id}/{asset_path:path}")
+    async def plugin_asset(
+        plugin_id: str,
+        asset_path: str,
+        _: None = Depends(verify_token),
+    ) -> Response:
+        resolved = await run_in_threadpool(api.resolve_plugin_asset, plugin_id, asset_path)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="plugin asset not available")
+        data, content_type = resolved
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @app.get("/api/cnu-image")
@@ -487,8 +701,7 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
                         content_type = "image/jpeg"
                     generic_content_types = {"", "application/octet-stream", "binary/octet-stream"}
                     if content_type == "image/svg+xml" or (
-                        content_type not in _SNIFF_IMAGE_CONTENT_TYPES
-                        and content_type not in generic_content_types
+                        content_type not in _SNIFF_IMAGE_CONTENT_TYPES and content_type not in generic_content_types
                     ):
                         raise requests.RequestException("sniff image upstream returned non-image content")
 
@@ -659,6 +872,32 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         logger.info("Saved download to {}", saved_path)
         return {"path": saved_path}
 
+    @app.post("/api/save-generated")
+    async def save_generated(
+        filename: str,
+        request: Request,
+        meta: str | None = None,
+        _: None = Depends(verify_token),
+    ) -> dict[str, Any]:
+        """Persist a generated image and register its generation record."""
+        body = await request.body()
+        if len(body) > _MAX_UPLOAD_BYTES:
+            logger.warning("save-generated rejected oversized body ({} bytes)", len(body))
+            raise HTTPException(status_code=413, detail="request body too large")
+        meta_dict: dict[str, Any] | None = None
+        if meta:
+            try:
+                parsed = json.loads(meta)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="invalid meta json") from None
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="meta must be an object")
+            meta_dict = parsed
+        record = await run_in_threadpool(api.save_generated_image, body, filename, meta_dict)
+        if not record:
+            raise HTTPException(status_code=500, detail="save failed")
+        return {"record": record}
+
     @app.post("/api/save-as")
     async def save_as(
         filename: str,
@@ -679,6 +918,22 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
             logger.info("Saved file as {}", saved_path)
         return {"path": saved_path}
 
+    @app.post("/api/save-file")
+    async def save_file(
+        path: str,
+        request: Request,
+        _: None = Depends(verify_token),
+    ) -> dict[str, Any]:
+        """Overwrite a file path returned by a previous save-as operation."""
+        body = await request.body()
+        if len(body) > _MAX_UPLOAD_BYTES:
+            logger.warning("save-file rejected oversized body ({} bytes)", len(body))
+            raise HTTPException(status_code=413, detail="request body too large")
+        saved_path = await run_in_threadpool(api.save_blob_to_path, body, path)
+        if not saved_path:
+            raise HTTPException(status_code=500, detail="save failed")
+        return {"path": saved_path}
+
     @app.post("/api/copy-image")
     async def copy_image(
         request: Request,
@@ -694,6 +949,45 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
             raise HTTPException(status_code=413, detail="request body too large")
         ok = await run_in_threadpool(api.copy_image_to_clipboard, body)
         return {"ok": ok}
+
+    @app.get("/api/theme-media/{theme_id}/{role}")
+    async def theme_media(
+        theme_id: str,
+        role: str,
+        _: None = Depends(verify_token),
+    ) -> FileResponse:
+        resolved = await run_in_threadpool(api.theme_service.resolve_asset, theme_id, role)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="theme asset not available")
+        path, content_type = resolved
+        return FileResponse(
+            path,
+            media_type=content_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "private, max-age=3600",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/api/theme-preview/{preview_token}")
+    async def theme_preview(
+        preview_token: str,
+        _: None = Depends(verify_token),
+    ) -> FileResponse:
+        resolved = await run_in_threadpool(api.theme_service.resolve_preview, preview_token)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="theme preview not available")
+        path, content_type = resolved
+        return FileResponse(
+            path,
+            media_type=content_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     # Serve the built frontend last so /api/* routes always take precedence.
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")

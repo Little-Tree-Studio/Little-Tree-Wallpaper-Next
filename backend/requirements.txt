@@ -3,6 +3,7 @@ pywin32>=306; platform_system=='Windows'
 requests>=2.32.0
 platformdirs>=4.0.0
 pillow>=10.0.0
+fonttools>=4.60.0
 psutil>=5.9.0
 pystray>=0.19.0
 pyperclip>=1.8.0
@@ -12,5 +13,6 @@ certifi>=2024.0.0
 cryptography>=45.0.0
 fastapi>=0.115.0
 uvicorn>=0.32.0
+windows-toasts>=1.3.1; platform_system=='Windows'
 beautifulsoup4>=4.12.0
 lxml>=4.9.0

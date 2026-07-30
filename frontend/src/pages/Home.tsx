@@ -18,6 +18,7 @@ export default function Home() {
   const [hitokoto, setHitokoto] = useState<Hitokoto | null>(null);
   const [showAuthor, setShowAuthor] = useState(true);
   const [showSource, setShowSource] = useState(true);
+  const [wallpaperRefreshSeconds, setWallpaperRefreshSeconds] = useState(30);
   const [wpLoading, setWpLoading] = useState(true);
   const [bingLoading, setBingLoading] = useState(true);
   const [quoteLoading, setQuoteLoading] = useState(true);
@@ -49,6 +50,7 @@ export default function Home() {
     if (cache?.settings?.home_page) {
       setShowAuthor(cache.settings.home_page.show_author ?? true);
       setShowSource(cache.settings.home_page.show_source ?? true);
+      setWallpaperRefreshSeconds(Math.max(10, Number(cache.settings.home_page.wallpaper_refresh_seconds) || 30));
     }
 
     getCurrentWallpaper().then((wp) => {
@@ -69,10 +71,10 @@ export default function Home() {
     getSettings().then((s) => {
       setShowAuthor(s.home_page.show_author ?? true);
       setShowSource(s.home_page.show_source ?? true);
+      setWallpaperRefreshSeconds(Math.max(10, Number(s.home_page.wallpaper_refresh_seconds) || 30));
     }).catch(() => { /* ignore */ });
   }, []);
 
-  // Auto-refresh current wallpaper every 30 seconds
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -81,9 +83,9 @@ export default function Home() {
       } catch {
         // ignore auto-refresh errors
       }
-    }, 30000);
+    }, wallpaperRefreshSeconds * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [wallpaperRefreshSeconds]);
 
   const refreshWallpaper = async () => {
     setWpLoading(true);

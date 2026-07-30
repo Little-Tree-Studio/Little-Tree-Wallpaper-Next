@@ -1,6 +1,7 @@
 import type { ImageProviderConfig } from '@/types';
 
 const MODELS_DEV_API = 'https://models.dev/api.json';
+export const POLLINATIONS_PROVIDER_ID = 'pollinations';
 
 export interface ModelsDevProvider {
   id: string;
@@ -73,16 +74,12 @@ export function getEndpointForProvider(provider: ModelsDevProvider): string {
   }
 }
 
-export function getFormatForNpm(npm: string, providerId: string): ImageProviderConfig['format'] {
-  if (providerId === 'openai' && npm === '@ai-sdk/openai') return 'openai';
-  if (providerId.includes('volcano') || providerId.includes('volces')) return 'volcano';
-  return 'openai-compatible';
-}
-
 export interface GenerateImageOptions {
   size?: string;
   n?: number;
   responseFormat?: 'url' | 'b64_json';
+  /** Quality tier: auto/low/medium/high, forwarded as-is. */
+  quality?: string;
   /** Optional negative prompt appended to the request body when supported. */
   negativePrompt?: string;
   /** Optional random seed forwarded to the provider when supported. */
@@ -96,6 +93,10 @@ export async function generateImage(
   prompt: string,
   options?: GenerateImageOptions
 ): Promise<ImageGenerationResponse> {
+  if (provider.format === 'pollinations') {
+    return generatePollinationsImage(provider, prompt, options);
+  }
+
   const endpoint = provider.endpoint.replace(/\/$/, '');
   const url = `${endpoint}/images/generations`;
   const body: Record<string, unknown> = {
@@ -105,12 +106,11 @@ export async function generateImage(
   };
   if (options?.size) body.size = options.size;
   if (options?.responseFormat) body.response_format = options.responseFormat;
-  // These optional fields are not accepted by the native OpenAI image API.
-  // Keep them for Volcano and compatible providers where they are commonly supported.
-  if (provider.format !== 'openai' && options?.negativePrompt?.trim()) {
+  if (options?.quality) body.quality = options.quality;
+  if (options?.negativePrompt?.trim()) {
     body.negative_prompt = options.negativePrompt.trim();
   }
-  if (provider.format !== 'openai' && typeof options?.seed === 'number' && Number.isFinite(options.seed)) {
+  if (typeof options?.seed === 'number' && Number.isFinite(options.seed)) {
     body.seed = options.seed;
   }
 
@@ -134,7 +134,139 @@ export async function generateImage(
     throw new Error(`API 错误 (${resp.status}): ${text}`);
   }
 
-  return resp.json();
+  const json: ImageGenerationResponse = await resp.json();
+  const target = parseSize(options?.size);
+  if (target && Array.isArray(json.data)) {
+    json.data = await Promise.all(json.data.map((item) => enforceSize(item, target, options?.signal)));
+  }
+  return json;
+}
+
+async function generatePollinationsImage(
+  provider: ImageProviderConfig,
+  prompt: string,
+  options?: GenerateImageOptions,
+): Promise<ImageGenerationResponse> {
+  const params = new URLSearchParams({
+    model: provider.model || 'flux',
+  });
+  const endpoint = provider.endpoint.replace(/\/$/, '');
+  const url = `${endpoint}/${encodeURIComponent(prompt.trim())}?${params}`;
+  const headers: Record<string, string> = { ...provider.customHeaders };
+  if (provider.apiKey) headers.Authorization = `Bearer ${provider.apiKey}`;
+
+  const response = await fetch(url, { headers, signal: options?.signal });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Pollinations API 错误 (${response.status}): ${text}`);
+  }
+  const blob = await response.blob();
+  if (!blob.type.startsWith('image/')) {
+    throw new Error('Pollinations 未返回图片');
+  }
+  return { data: [{ b64_json: await blobToDataUrl(blob, options?.signal) }] };
+}
+
+function blobToDataUrl(blob: Blob, signal?: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const reader = new FileReader();
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    const onAbort = () => reader.abort();
+    reader.onload = () => {
+      cleanup();
+      resolve(String(reader.result));
+    };
+    reader.onerror = () => {
+      cleanup();
+      reject(reader.error || new Error('读取图片失败'));
+    };
+    reader.onabort = () => {
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    reader.readAsDataURL(blob);
+  });
+}
+
+function parseSize(size?: string): { width: number; height: number } | null {
+  const match = /^(\d+)\s*[x*×]\s*(\d+)$/i.exec(size?.trim() || '');
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+async function enforceSize(
+  item: ImageGenerationResult,
+  target: { width: number; height: number },
+  signal?: AbortSignal,
+): Promise<ImageGenerationResult> {
+  const source = item.url
+    || (item.b64_json
+      ? (item.b64_json.startsWith('data:') ? item.b64_json : `data:image/png;base64,${item.b64_json}`)
+      : '');
+  if (!source) return item;
+  try {
+    const dataUrl = await resizeImage(source, target.width, target.height, signal);
+    if (!dataUrl) return item;
+    return { ...item, url: undefined, b64_json: dataUrl };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    // CORS-tainted or undecodable images are returned as-is.
+    return item;
+  }
+}
+
+function loadImage(source: string, signal?: AbortSignal): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const onAbort = () => {
+      img.src = '';
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    img.onload = () => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(img);
+    };
+    img.onerror = () => {
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error('图片加载失败'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    img.src = source;
+  });
+}
+
+async function resizeImage(
+  source: string,
+  width: number,
+  height: number,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const img = await loadImage(source, signal);
+  if (img.naturalWidth === width && img.naturalHeight === height) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  // Cover: fill the target exactly, cropping overflow from the center.
+  const scale = Math.max(width / img.naturalWidth, height / img.naturalHeight);
+  const drawWidth = img.naturalWidth * scale;
+  const drawHeight = img.naturalHeight * scale;
+  ctx.drawImage(img, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+  return canvas.toDataURL('image/png');
 }
 
 export function parseProviderFromModelsDev(
@@ -147,7 +279,7 @@ export function parseProviderFromModelsDev(
   return {
     id: `${provider.id}-${modelId}`,
     name: `${provider.name} - ${model?.name || modelId}`,
-    format: getFormatForNpm(provider.npm, provider.id),
+    format: 'openai-compatible',
     endpoint,
     apiKey,
     model: modelId,
@@ -155,20 +287,20 @@ export function parseProviderFromModelsDev(
   };
 }
 
-export const VOLCANO_PRESET: Omit<ImageProviderConfig, 'id' | 'apiKey' | 'model'> = {
-  name: '火山引擎',
-  format: 'volcano',
-  endpoint: 'https://ark.cn-beijing.volces.com/api/v3',
-};
+export const DEFAULT_ENDPOINT = 'https://api.openai.com/v1';
 
-export const OPENAI_PRESET: Omit<ImageProviderConfig, 'id' | 'apiKey' | 'model'> = {
-  name: 'OpenAI',
-  format: 'openai',
-  endpoint: 'https://api.openai.com/v1',
-};
+// Size tiers supported by gpt-image models; other OpenAI-compatible providers
+// generally accept the same WxH values.
+export const IMAGE_SIZE_OPTIONS = [
+  '1024x1024',
+  '1536x1024',
+  '1024x1536',
+  '1792x1024',
+  '1024x1792',
+  '2048x1024',
+  '2048x2048',
+];
 
-export const SIZE_OPTIONS: Record<string, string[]> = {
-  openai: ['1024x1024', '1536x1024', '1024x1536', '2048x2048', '1536x1536'],
-  volcano: ['1024x1024', '2048x2048', '2K', '3K', '4K'],
-  'openai-compatible': ['1024x1024', '512x512', '256x256', '1792x1024', '1024x1792'],
-};
+export const IMAGE_QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high'];
+
+export const MAX_IMAGES_PER_BATCH = 8;

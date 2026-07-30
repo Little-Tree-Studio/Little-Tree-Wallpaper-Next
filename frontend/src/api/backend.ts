@@ -1,5 +1,6 @@
 import { toast } from '@heroui/react';
 import { logError } from '@/lib/log';
+import { confirmStaticWallpaperSwitch } from '@/lib/staticWallpaperConfirmation';
 import {
   fetchBlobWithProgress,
   formatProgressDescription,
@@ -25,7 +26,22 @@ import type {
   TimelineWallpaperPage,
   WallpaperItem,
   StorageOverview,
+  Plugin,
+  PluginListResult,
+  PluginOperationResult,
 } from '@/types';
+import type {
+  ActiveThemeResponse,
+  ThemeAssetSelection,
+  ThemeAssetSource,
+  ThemeProfile,
+  ThemeSummary,
+} from '@/theme/types';
+import type {
+  AutomationDocument,
+  AutomationRuntime,
+  AutomationSummary,
+} from '@/components/AutomationEditor/types';
 
 // ---------------------------------------------------------------------------
 // Bridge: the frontend talks to the FastAPI backend over HTTP (same origin).
@@ -34,6 +50,7 @@ import type {
 // ---------------------------------------------------------------------------
 const TOKEN_STORAGE_KEY = '__ltw_api_token__';
 export const FAVORITES_CHANGED_EVENT = 'ltw:favorites-changed';
+export const PLUGIN_REGISTRY_CHANGED_EVENT = 'ltw:plugin-registry-changed';
 
 export function notifyFavoritesChanged(): void {
   if (typeof window !== 'undefined') {
@@ -41,8 +58,48 @@ export function notifyFavoritesChanged(): void {
   }
 }
 
+export function notifyPluginRegistryChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PLUGIN_REGISTRY_CHANGED_EVENT));
+  }
+}
+
 let _token: string | null = null;
 let _readyPromise: Promise<void> | null = null;
+
+const MEDIA_API_PATHS = [
+  '/api/preview',
+  '/api/cnu-image',
+  '/api/sniff-image',
+  '/api/pixiv-image',
+  '/api/theme-media/',
+  '/api/theme-preview/',
+  '/api/plugin-assets/',
+] as const;
+
+/**
+ * Keep media transfers out of the RPC origin's browser connection pool.
+ * pywebview launches from 127.0.0.1; localhost reaches the same loopback
+ * server while being scheduled as a separate browser origin.
+ */
+function mediaApiUrl(path: string): string {
+  if (typeof window === 'undefined' || window.location.hostname !== '127.0.0.1') return path;
+  if (!readToken()) return path;
+  if (!MEDIA_API_PATHS.some((prefix) => path === prefix || path.startsWith(prefix))) return path;
+  const port = window.location.port ? `:${window.location.port}` : '';
+  return `${window.location.protocol}//localhost${port}${path}`;
+}
+
+function isolateMediaUrls<T>(value: T): T {
+  if (typeof value === 'string') return mediaApiUrl(value) as T;
+  if (Array.isArray(value)) return value.map(isolateMediaUrls) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, isolateMediaUrls(item)]),
+    ) as T;
+  }
+  return value;
+}
 
 function readToken(): string | null {
   if (_token) return _token;
@@ -138,11 +195,40 @@ async function callRequest<T>(method: string, args: any[], signal?: AbortSignal)
     logError(`RPC ${method} failed`, new Error(message));
     throw new Error(message);
   }
-  return payload.result as T;
+  return isolateMediaUrls(payload.result as T);
 }
 
 async function call<T>(method: string, ...args: any[]): Promise<T> {
   return callRequest<T>(method, args);
+}
+
+export async function listAutomations(): Promise<AutomationSummary[]> { return call('list_automations'); }
+export async function getAutomation(id: string): Promise<AutomationDocument> { return call('get_automation', id); }
+export async function pickAndImportAutomation(): Promise<AutomationDocument | null> { return call('pick_and_import_automation'); }
+export async function exportAutomation(id: string, format: 'ltauto' | 'json'): Promise<string | null> { return call('export_automation', id, format); }
+export async function saveAutomation(document: AutomationDocument): Promise<AutomationDocument> { return call('save_automation', document); }
+export async function deleteAutomation(id: string): Promise<void> { return call('delete_automation', id); }
+export async function setAutomationEnabled(id: string, enabled: boolean): Promise<AutomationDocument> { return call('set_automation_enabled', id, enabled); }
+export async function runAutomation(id: string, variables: Record<string, unknown> = {}): Promise<AutomationRuntime> { return call('run_automation', id, variables); }
+export async function cancelAutomation(): Promise<AutomationRuntime> { return call('cancel_automation'); }
+export async function getAutomationRuntime(): Promise<AutomationRuntime> { return call('get_automation_runtime'); }
+
+export interface AutomationResourceCatalog {
+  intelligent_market: IntelligentMarketSource[];
+  wallpaper_sources: WallpaperSource[];
+  favorite_folders: FavoriteFolder[];
+}
+
+export async function getAutomationResourceCatalog(): Promise<AutomationResourceCatalog> {
+  return call('get_automation_resource_catalog');
+}
+
+export async function selectAutomationLocalImage(): Promise<string | null> {
+  return call('select_automation_local_image');
+}
+
+export async function selectAutomationDirectory(): Promise<string | null> {
+  return call('select_automation_directory');
 }
 
 // --- Global bootstrap cache ---
@@ -187,10 +273,50 @@ export async function getDisplayResolutions(): Promise<DisplayResolution[]> {
 export interface SetWallpaperResult {
   success: boolean;
   error?: string;
+  code?: string;
+  requires_confirmation?: boolean;
+  cancelled?: boolean;
+}
+
+async function setWallpaperRaw(path: string, confirmed = false): Promise<SetWallpaperResult> {
+  return call('set_wallpaper', path, confirmed);
+}
+
+async function applyStaticWallpaper(path: string, confirmed: boolean): Promise<SetWallpaperResult> {
+  const result = await setWallpaperRaw(path, confirmed);
+  if (!result.requires_confirmation) return result;
+  if (!await confirmStaticWallpaperSwitch()) return { success: false, cancelled: true };
+  return setWallpaperRaw(path, true);
+}
+
+async function confirmDynamicWallpaperStopIfNeeded(): Promise<boolean | null> {
+  const status = await getDynamicWallpaperStatus();
+  if (!status.running && !status.operation_busy) return false;
+  return await confirmStaticWallpaperSwitch() ? true : null;
 }
 
 export async function setWallpaper(path: string): Promise<SetWallpaperResult> {
-  return call('set_wallpaper', path);
+  const confirmed = await confirmDynamicWallpaperStopIfNeeded();
+  if (confirmed === null) return { success: false, cancelled: true };
+  return applyStaticWallpaper(path, confirmed);
+}
+
+export interface PendingStaticWallpaper {
+  id: string;
+  path: string;
+  name: string;
+  created_at: string;
+}
+
+export async function getPendingStaticWallpaper(): Promise<PendingStaticWallpaper | null> {
+  return call('get_pending_static_wallpaper');
+}
+
+export async function resolvePendingStaticWallpaper(
+  taskId: string,
+  confirmed: boolean,
+): Promise<SetWallpaperResult> {
+  return call('resolve_pending_static_wallpaper', taskId, confirmed);
 }
 
 /** Static application identity (rarely changes). Sourced from the
@@ -271,6 +397,10 @@ export async function copyToClipboard(text: string): Promise<void> {
   return call('copy_to_clipboard', text);
 }
 
+export async function getClipboardText(): Promise<string> {
+  return call('get_clipboard_text');
+}
+
 /** Persist a raw binary blob into the downloads directory. Returns the path. */
 export async function saveBlobToDownloads(blob: Blob, filename: string): Promise<string | null> {
   await waitForApi();
@@ -308,6 +438,26 @@ function filenameForBlob(filename: string, blob: Blob): string {
     : `${filename}${extension}`;
 }
 
+interface DownloadPreferences {
+  timeoutMs: number;
+  concurrentTasks: number;
+}
+
+let downloadPreferencesCache: DownloadPreferences | null = null;
+
+async function getDownloadPreferences(): Promise<DownloadPreferences> {
+  if (downloadPreferencesCache) return downloadPreferencesCache;
+  try {
+    const configured = await call<Record<string, unknown>>('get_setting', 'download');
+    const timeoutSeconds = Math.max(10, Math.min(600, Number(configured?.timeout_seconds) || 120));
+    const concurrentTasks = Math.max(1, Math.min(8, Number(configured?.concurrent_tasks) || 3));
+    downloadPreferencesCache = { timeoutMs: timeoutSeconds * 1000, concurrentTasks };
+  } catch {
+    downloadPreferencesCache = { timeoutMs: 120_000, concurrentTasks: 3 };
+  }
+  return downloadPreferencesCache;
+}
+
 /** Prompt for a save location and persist a raw binary blob there. */
 export async function saveBlobAs(blob: Blob, filename: string): Promise<string | null> {
   await waitForApi();
@@ -325,6 +475,27 @@ export async function saveBlobAs(blob: Blob, filename: string): Promise<string |
     return (payload.path as string) ?? null;
   } catch (e) {
     logError('saveBlobAs failed', e);
+    return null;
+  }
+}
+
+/** Overwrite a file path returned by a previous save-as operation. */
+export async function saveBlobToPath(blob: Blob, path: string): Promise<string | null> {
+  await waitForApi();
+  try {
+    const res = await fetch(`/api/save-file?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: blob,
+    });
+    const payload = await res.json();
+    if (!res.ok || payload?.error) {
+      logError('saveBlobToPath failed', new Error(payload?.error?.message || `HTTP ${res.status}`));
+      return null;
+    }
+    return (payload.path as string) ?? null;
+  } catch (e) {
+    logError('saveBlobToPath failed', e);
     return null;
   }
 }
@@ -347,13 +518,14 @@ export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
 }
 
 export async function copyImageToClipboardWithProgress(url: string): Promise<boolean> {
+  const { timeoutMs } = await getDownloadPreferences();
   const blob = await runWithProgressToast<Blob | null>(
     {
       loadingLabel: '正在拉取数据…',
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders() })
+    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return false;
 
@@ -383,6 +555,7 @@ export async function downloadWithProgress(
       async () => downloadFile(localPath, filename),
     );
   }
+  const { timeoutMs } = await getDownloadPreferences();
 
   return runWithProgressToast<string | null>(
     {
@@ -392,7 +565,7 @@ export async function downloadWithProgress(
       failureLabel: '下载失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders() });
+      const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs });
       const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         toast.danger('保存失败', { timeout: 0 });
@@ -408,6 +581,7 @@ export async function saveAsWithProgress(
   localPath?: string | null,
 ): Promise<string | null> {
   const sourceUrl = localPath ? localPreviewUrl(localPath) : url;
+  const { timeoutMs } = await getDownloadPreferences();
   const result = await runWithProgressToast<{ path: string | null; cancelled: boolean }>(
     {
       loadingLabel: '正在拉取数据…',
@@ -416,7 +590,7 @@ export async function saveAsWithProgress(
       failureLabel: '拉取数据失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(sourceUrl, onProgress, { headers: authHeaders() });
+      const blob = await fetchBlobWithProgress(sourceUrl, onProgress, { headers: authHeaders(), timeoutMs });
       const path = await saveBlobAs(blob, filenameForBlob(filename, blob));
       return { path, cancelled: path === null };
     }
@@ -434,19 +608,25 @@ export async function setWallpaperWithProgress(
   filename: string,
   localPath?: string | null,
 ): Promise<string | null> {
+  const confirmed = await confirmDynamicWallpaperStopIfNeeded();
+  if (confirmed === null) return null;
   if (localPath) {
-    return runWithProgressToast<string | null>(
+    const appliedPath = await runWithProgressToast<string | null>(
       {
         loadingLabel: '正在应用壁纸…',
-        successLabel: '已设为壁纸',
         failureLabel: '设为壁纸失败',
       },
       async () => {
-        await setWallpaper(localPath);
+        const applied = await applyStaticWallpaper(localPath, confirmed);
+        if (applied.cancelled) return null;
+        if (!applied.success) throw new Error(applied.error || '设置壁纸失败');
         return localPath;
       }
     );
+    if (appliedPath) toast.success('已设为壁纸', { timeout: 3000 });
+    return appliedPath;
   }
+  const { timeoutMs } = await getDownloadPreferences();
 
   // Two-stage flow: fetch with progress toast, then save + apply via
   // toast.promise. This keeps the progress bar visible for the slow part
@@ -458,26 +638,28 @@ export async function setWallpaperWithProgress(
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders() })
+    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return null;
 
-  const result = await toast.promise(
-    (async () => {
+  const result = await runWithProgressToast<string | null>(
+    {
+      loadingLabel: '正在应用壁纸…',
+      failureLabel: '设为壁纸失败',
+    },
+    async () => {
       const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         throw new Error('保存临时文件失败');
       }
-      await setWallpaper(path);
+      const applied = await applyStaticWallpaper(path, confirmed);
+      if (applied.cancelled) return null;
+      if (!applied.success) throw new Error(applied.error || '设置壁纸失败');
       return path;
-    })(),
-    {
-      loading: '正在应用壁纸…',
-      success: '已设为壁纸',
-      error: (err) => `设为壁纸失败: ${err instanceof Error ? err.message : String(err)}`,
     }
   );
-  return (result as string | null) ?? null;
+  if (result) toast.success('已设为壁纸', { timeout: 3000 });
+  return result;
 }
 
 export async function openWithSystemWithProgress(
@@ -498,6 +680,7 @@ export async function openWithSystemWithProgress(
       }
     );
   }
+  const { timeoutMs } = await getDownloadPreferences();
 
   const blob = await runWithProgressToast<Blob | null>(
     {
@@ -505,7 +688,7 @@ export async function openWithSystemWithProgress(
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders() })
+    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return null;
 
@@ -537,7 +720,9 @@ export async function downloadManyWithProgress(
   items: Array<{ url: string; filename: string }>,
   options: DownloadManyOptions = {}
 ): Promise<Array<{ url: string; filename: string; path: string | null }>> {
-  const { concurrency = 3, onItemStart, onItemComplete } = options;
+  const preferences = await getDownloadPreferences();
+  const { onItemStart, onItemComplete } = options;
+  const concurrency = Math.max(1, Math.min(8, options.concurrency ?? preferences.concurrentTasks));
   const results: Array<{ url: string; filename: string; path: string | null }> = items.map((i) => ({
     ...i,
     path: null,
@@ -648,6 +833,122 @@ export async function setSettings(settings: AppSettings): Promise<void> {
   return call('set_settings', settings);
 }
 
+export async function listThemes(): Promise<ThemeSummary[]> {
+  return call('list_themes');
+}
+
+export async function getTheme(themeId: string): Promise<ThemeProfile> {
+  return call('get_theme', themeId);
+}
+
+export interface SystemFontInfo {
+  family: string;
+  full_name: string;
+  style: string;
+}
+
+export async function listSystemFonts(): Promise<SystemFontInfo[]> {
+  return call('list_system_fonts');
+}
+
+export async function getActiveTheme(): Promise<ActiveThemeResponse> {
+  return call('get_active_theme');
+}
+
+export async function saveTheme(theme: ThemeProfile): Promise<ThemeProfile> {
+  return call('save_theme', theme);
+}
+
+export async function activateThemeProfile(themeId: string): Promise<ThemeProfile> {
+  return call('activate_theme', themeId);
+}
+
+export async function duplicateTheme(themeId: string, name?: string): Promise<ThemeProfile> {
+  return call('duplicate_theme', themeId, name);
+}
+
+export async function deleteTheme(themeId: string): Promise<void> {
+  return call('delete_theme', themeId);
+}
+
+export async function pickThemeAsset(
+  themeId: string,
+  role: 'image' | 'video' | 'font',
+  mode: Extract<ThemeAssetSource['mode'], 'bundled' | 'path'>,
+): Promise<ThemeAssetSelection | null> {
+  return call('pick_theme_asset', themeId, role, mode);
+}
+
+export async function pickAndImportTheme(): Promise<ThemeProfile | null> {
+  return call('pick_and_import_theme');
+}
+
+export async function exportTheme(themeId: string): Promise<string | null> {
+  return call('export_theme', themeId);
+}
+
+export function themeMediaUrl(themeId: string, role: 'background' | 'font'): string {
+  const token = readToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return mediaApiUrl(`/api/theme-media/${encodeURIComponent(themeId)}/${role}${query}`);
+}
+
+export function themePreviewUrl(previewToken: string): string {
+  const token = readToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return mediaApiUrl(`/api/theme-preview/${encodeURIComponent(previewToken)}${query}`);
+}
+
+export function pluginAssetUrl(pluginId: string, assetPath: string, packageHash?: string | null): string {
+  const token = readToken();
+  const encodedPath = assetPath.split('/').map(encodeURIComponent).join('/');
+  const query = new URLSearchParams();
+  if (token) query.set('token', token);
+  if (packageHash) query.set('v', packageHash);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return mediaApiUrl(`/api/plugin-assets/${encodeURIComponent(pluginId)}/${encodedPath}${suffix}`);
+}
+
+export async function listPlugins(signal?: AbortSignal): Promise<PluginListResult> {
+  return callRequest('list_plugins', [], signal);
+}
+
+async function pluginMutation<T extends Plugin | PluginOperationResult>(
+  method: string,
+  args: unknown[],
+): Promise<T> {
+  const result = await callRequest<T>(method, args);
+  notifyPluginRegistryChanged();
+  return result;
+}
+
+export async function installPluginPackage(
+  path?: string | null,
+  allowDowngrade = false,
+): Promise<PluginOperationResult> {
+  return pluginMutation('install_plugin_package', [path ?? null, allowDowngrade]);
+}
+
+export async function setPluginEnabled(pluginId: string, enabled: boolean): Promise<Plugin> {
+  return pluginMutation('set_plugin_enabled', [pluginId, enabled]);
+}
+
+export async function reloadPlugin(pluginId: string): Promise<Plugin> {
+  return pluginMutation('reload_plugin', [pluginId]);
+}
+
+export async function removePlugin(pluginId: string): Promise<PluginOperationResult> {
+  return pluginMutation('remove_plugin', [pluginId]);
+}
+
+export async function invokePluginAction(
+  pluginId: string,
+  action: string,
+  payload: unknown = null,
+): Promise<PluginOperationResult> {
+  return call('invoke_plugin_action', pluginId, action, payload);
+}
+
 export async function getSetting(key: string): Promise<any> {
   return call('get_setting', key);
 }
@@ -655,6 +956,7 @@ export async function getSetting(key: string): Promise<any> {
 let settingWriteQueue: Promise<void> = Promise.resolve();
 
 export function setSetting(key: string, value: any): Promise<void> {
+  if (key === 'download' || key.startsWith('download.')) downloadPreferencesCache = null;
   const request = settingWriteQueue.then(() => call<void>('set_setting', key, value));
   settingWriteQueue = request.catch(() => undefined);
   return request;
@@ -686,6 +988,124 @@ export async function openUrl(url: string): Promise<void> {
 
 export async function selectLocalImage(): Promise<string | null> {
   return call('select_local_image');
+}
+
+export interface DynamicWallpaperEvent {
+  time: string;
+  level: 'debug' | 'info' | 'warning' | 'error';
+  message: string;
+}
+
+export interface DynamicWallpaperStatus {
+  supported: boolean;
+  platform: string;
+  windows_version: {
+    major: number;
+    minor: number;
+    build: number;
+    revision: number;
+    display_version: string;
+    text: string;
+    modern_expected: boolean;
+  };
+  expected_structure: 'modern_child' | 'legacy_top_level';
+  detected_structure: 'modern_child' | 'legacy_top_level' | 'not_initialized' | 'unsupported';
+  structure_label: string;
+  structure_reason: string;
+  structure_matches_version: boolean;
+  runtime_ready: boolean;
+  host_window_ready: boolean;
+  prepared_window_handle: string;
+  operation_busy: boolean;
+  operation_phase: string;
+  operation_started_at: string;
+  explorer_ready: boolean;
+  workerw_ready: boolean;
+  progman_handle: string;
+  def_view_handle: string;
+  workerw_handle: string;
+  desktop_host_kind: string;
+  window_handle: string;
+  window: {
+    valid: boolean;
+    visible: boolean;
+    parent_matches: boolean;
+    parent_handle: string;
+    class_name: string;
+    title: string;
+    window_rect: { left: number; top: number; width: number; height: number };
+    host_rect: { left: number; top: number; width: number; height: number };
+    error?: string;
+  };
+  running: boolean;
+  media_path: string;
+  media_name: string;
+  media_exists: boolean;
+  media_size: number;
+  media_modified_at: string;
+  media_content_type: string;
+  media_revision: number;
+  started_at: string;
+  last_error: string;
+  last_operation: string;
+  telemetry: {
+    received: boolean;
+    event: string;
+    updated_at: string;
+    player_loaded_at: string;
+    media_revision: number;
+    current_time: number;
+    duration: number;
+    progress: number;
+    paused: boolean;
+    ended: boolean;
+    seeking: boolean;
+    ready_state: number;
+    network_state: number;
+    video_width: number;
+    video_height: number;
+    buffered_start: number;
+    buffered_end: number;
+    buffered_ranges: number;
+    muted: boolean;
+    volume: number;
+    loop: boolean;
+    playback_rate: number;
+    fps: number;
+    fps_source: string;
+    dropped_frames: number;
+    total_frames: number;
+    error_code: number;
+    error_message: string;
+    visibility: string;
+  };
+  supported_extensions: string[];
+  events: DynamicWallpaperEvent[];
+}
+
+export async function selectDynamicWallpaperMedia(): Promise<string | null> {
+  return call('select_dynamic_wallpaper_media');
+}
+
+export async function getDynamicWallpaperStatus(): Promise<DynamicWallpaperStatus> {
+  return call('get_dynamic_wallpaper_status');
+}
+
+export async function startDynamicWallpaper(
+  path: string,
+  muted: boolean,
+  loop: boolean,
+  playbackRate: number,
+): Promise<DynamicWallpaperStatus> {
+  return call('start_dynamic_wallpaper', path, muted, loop, playbackRate);
+}
+
+export async function stopDynamicWallpaper(): Promise<DynamicWallpaperStatus> {
+  return call('stop_dynamic_wallpaper');
+}
+
+export async function controlDynamicWallpaper(action: 'play' | 'pause' | 'reload'): Promise<DynamicWallpaperStatus> {
+  return call('control_dynamic_wallpaper', action);
 }
 
 export type FavoriteExportScope = 'selected' | 'folder' | 'all';
@@ -741,7 +1161,67 @@ export async function getLocalImageUrl(path: string, maxSize = 960): Promise<str
 export function localPreviewUrl(path: string, maxSize = 960): string {
   const token = readToken();
   const q = `path=${encodeURIComponent(path)}&max=${maxSize}${token ? `&token=${token}` : ''}`;
-  return `/api/preview?${q}`;
+  return mediaApiUrl(`/api/preview?${q}`);
+}
+
+/** Original-quality URL for a local image file (no thumbnail re-encode). */
+export function localFileUrl(path: string): string {
+  const token = readToken();
+  const q = `path=${encodeURIComponent(path)}${token ? `&token=${token}` : ''}`;
+  return mediaApiUrl(`/api/preview?${q}`);
+}
+
+// --- AI generation records ---
+
+export interface GeneratedImageRecord {
+  id: string;
+  path: string;
+  prompt?: string;
+  negativePrompt?: string;
+  seed?: number;
+  size?: string;
+  providerName?: string;
+  modelName?: string;
+  revisedPrompt?: string;
+  createdAt?: number;
+  preview_url?: string;
+}
+
+export async function getGeneratedImages(): Promise<GeneratedImageRecord[]> {
+  return call('get_generated_images');
+}
+
+export async function saveGeneratedImage(
+  blob: Blob,
+  filename: string,
+  meta: Omit<GeneratedImageRecord, 'path' | 'preview_url'>,
+): Promise<GeneratedImageRecord | null> {
+  await waitForApi();
+  try {
+    const params = new URLSearchParams({ filename, meta: JSON.stringify(meta) });
+    const res = await fetch(`/api/save-generated?${params}`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: blob,
+    });
+    const payload = await res.json();
+    if (!res.ok || payload?.error) {
+      logError('saveGeneratedImage failed', new Error(payload?.error?.message || `HTTP ${res.status}`));
+      return null;
+    }
+    return (payload.record as GeneratedImageRecord) ?? null;
+  } catch (e) {
+    logError('saveGeneratedImage failed', e);
+    return null;
+  }
+}
+
+export async function deleteGeneratedImage(id: string): Promise<void> {
+  return call('delete_generated_image', id);
+}
+
+export async function clearGeneratedImages(deleteFiles: boolean = true): Promise<void> {
+  return call('clear_generated_images', deleteFiles);
 }
 
 // --- Enhanced API methods ---

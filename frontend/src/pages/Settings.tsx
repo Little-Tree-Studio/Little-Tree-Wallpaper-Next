@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
   Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
-  TagGroup, useFilter, Checkbox, CheckboxGroup, Spinner,
+  TagGroup, useFilter, Checkbox, CheckboxGroup, Spinner, Chip,
 } from '@heroui/react';
 import type { Key } from '@heroui/react';
 import {
@@ -11,10 +11,39 @@ import {
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download, RefreshCw,
 } from 'lucide-react';
 import { getSettings, setSetting, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
-import { useThemeContext } from '@/components/ThemeProvider';
 import StorageSettingsPanel from '@/components/StorageSettingsPanel';
+import ThemeSettingsPanel from '@/components/ThemeSettingsPanel';
+import PluginSettingsPanel from '@/components/PluginSettingsPanel';
+import { requestNavigation } from '@/lib/navigationGuard';
 import type { AppSettings, ImageProviderConfig, CustomSentence, StorageOverview } from '@/types';
-import { fetchImageProviders, parseProviderFromModelsDev, VOLCANO_PRESET, OPENAI_PRESET } from '@/api/generate';
+import {
+  fetchImageProviders,
+  parseProviderFromModelsDev,
+  DEFAULT_ENDPOINT,
+  IMAGE_QUALITY_OPTIONS,
+  IMAGE_SIZE_OPTIONS,
+  MAX_IMAGES_PER_BATCH,
+  POLLINATIONS_PROVIDER_ID,
+} from '@/api/generate';
+
+function getNestedValue(source: unknown, key: string): unknown {
+  return key.split('.').reduce<unknown>((current, part) => (
+    current && typeof current === 'object' ? (current as Record<string, unknown>)[part] : undefined
+  ), source);
+}
+
+function setNestedValue(source: AppSettings, key: string, value: unknown): AppSettings {
+  const parts = key.split('.');
+  const next = { ...source } as unknown as Record<string, unknown>;
+  let current = next;
+  for (const part of parts.slice(0, -1)) {
+    const child = current[part];
+    current[part] = child && typeof child === 'object' ? { ...(child as Record<string, unknown>) } : {};
+    current = current[part] as Record<string, unknown>;
+  }
+  current[parts[parts.length - 1]] = value;
+  return next as unknown as AppSettings;
+}
 
 export default function Settings() {
   const { tab } = useParams<{ tab?: string }>();
@@ -78,25 +107,24 @@ export default function Settings() {
     };
   }, []);
 
-  const update = (key: string, value: any) => {
+  const update = (key: string, value: unknown) => {
     if (!settings) return;
-    setLocalSettings((currentSettings) => {
-      if (!currentSettings) return currentSettings;
-      const parts = key.split('.');
-      const next = { ...currentSettings };
-      let cur: any = next;
-      for (let i = 0; i < parts.length - 1; i++) {
-        cur[parts[i]] = { ...cur[parts[i]] };
-        cur = cur[parts[i]];
-      }
-      cur[parts[parts.length - 1]] = value;
-      return next;
+    const previousValue = getNestedValue(settings, key);
+    setLocalSettings((currentSettings) => currentSettings ? setNestedValue(currentSettings, key, value) : currentSettings);
+    void setSetting(key, value).catch((error: unknown) => {
+      setLocalSettings((currentSettings) => {
+        if (!currentSettings || !Object.is(getNestedValue(currentSettings, key), value)) return currentSettings;
+        return setNestedValue(currentSettings, key, previousValue);
+      });
+      toast.danger('设置保存失败', {
+        description: error instanceof Error ? error.message : '请稍后重试',
+        timeout: 0,
+      });
     });
-    void setSetting(key, value);
   };
 
   if (settingsLoading && !settings) return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className={`mx-auto space-y-4 ${activeTab === 'appearance' ? 'max-w-6xl' : activeTab === 'plugins' ? 'max-w-5xl' : 'max-w-3xl'}`}>
       <h1 className="text-2xl font-bold">设置</h1>
       <Card className="flex flex-col items-center justify-center gap-3 py-20">
         <Spinner size="sm" />
@@ -119,25 +147,40 @@ export default function Settings() {
   );
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className={`mx-auto space-y-4 ${activeTab === 'appearance' ? 'max-w-6xl' : activeTab === 'plugins' ? 'max-w-5xl' : 'max-w-3xl'}`}>
       <h1 className="text-2xl font-bold">设置</h1>
 
-      <Tabs selectedKey={activeTab} onSelectionChange={(k) => setActiveTab(String(k))}>
+      <Tabs
+        selectedKey={activeTab}
+        onSelectionChange={(key) => {
+          const nextTab = String(key);
+          if (nextTab === activeTab) return;
+          requestNavigation(`settings:${nextTab}`, () => setActiveTab(nextTab));
+        }}
+      >
         <Tabs.ListContainer>
           <Tabs.List aria-label="设置分类">
-            <Tabs.Tab id="general">通用<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="wallpaper">壁纸<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="content">内容<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="storage">存储<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="generate">生成<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="sniff">嗅探<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="appearance">外观<Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="about">关于<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="general"><span className="whitespace-nowrap">通用</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="wallpaper"><span className="whitespace-nowrap">壁纸</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="content"><span className="whitespace-nowrap">内容</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="storage"><span className="whitespace-nowrap">存储</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="generate"><span className="whitespace-nowrap">生成</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="sniff"><span className="whitespace-nowrap">嗅探</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="appearance"><span className="whitespace-nowrap">外观</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="plugins"><span className="whitespace-nowrap">插件</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="about"><span className="whitespace-nowrap">关于</span><Tabs.Indicator /></Tabs.Tab>
           </Tabs.List>
         </Tabs.ListContainer>
 
         <Tabs.Panel id="general">
           <Card className="space-y-4 p-4">
+            <Section title="窗口与托盘">
+              <Row label="关闭主窗口时隐藏到托盘"><Switch aria-label="关闭主窗口时隐藏到托盘" isSelected={settings.ui.hide_on_close} onChange={(v) => update('ui.hide_on_close', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="启用系统托盘"><Switch aria-label="启用系统托盘" isSelected={settings.ui.minimize_to_tray} onChange={(v) => update('ui.minimize_to_tray', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="关闭时释放主界面内存"><Switch aria-label="关闭时释放主界面内存" isSelected={settings.ui.release_webview_on_close} onChange={(v) => update('ui.release_webview_on_close', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <p className="text-xs text-muted">释放主界面后，自动化和动态壁纸继续在后台运行；从托盘打开时会重新创建界面。托盘开关重启程序后生效。</p>
+            </Section>
+            <Separator />
             <HomePagePanel settings={settings} onUpdate={update} onReload={async () => {
               const s = await getSettings();
               setLocalSettings(s as AppSettings);
@@ -145,70 +188,35 @@ export default function Settings() {
             <Separator />
             <Section title="壁纸制作">
               <Row label="点击组件时显示快捷编辑面板"><Switch aria-label="点击组件时显示快捷编辑面板" isSelected={quickEditorEnabled} onChange={(enabled) => { setQuickEditorEnabled(enabled); localStorage.setItem('ltw:create:quick-editor-enabled', String(enabled)); window.dispatchEvent(new CustomEvent('ltw:quick-editor-setting', { detail: enabled })); }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-            </Section>
-            <Separator />
-            <Section title="开机与后台">
-              <Row label="开机后自动隐藏到后台"><Switch aria-label="开机后自动隐藏到后台" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="开机自启动"><Switch aria-label="开机自启动" isSelected={settings.startup.auto_start} onChange={(v) => update('startup.auto_start', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="默认显示辅助网格"><Switch aria-label="默认显示辅助网格" isSelected={settings.create.show_grid} onChange={(v) => update('create.show_grid', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="默认启用智能吸附"><Switch aria-label="默认启用智能吸附" isSelected={settings.create.snap_to_guides} onChange={(v) => update('create.snap_to_guides', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="默认导出格式">
+                <ComboBox aria-label="默认导出格式" className="w-full sm:w-40" selectedKey={settings.create.export_format} onSelectionChange={(key) => update('create.export_format', String(key))}>
+                  <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+                  <ComboBox.Popover><ListBox>
+                    <ListBox.Item id="png" textValue="PNG">PNG</ListBox.Item>
+                    <ListBox.Item id="jpeg" textValue="JPEG">JPEG</ListBox.Item>
+                  </ListBox></ComboBox.Popover>
+                </ComboBox>
+              </Row>
+              {settings.create.export_format === 'jpeg' && (
+                <Row label="JPEG 默认质量">
+                  <Input aria-label="JPEG 默认质量" type="number" min={40} max={100} className="w-full sm:w-28" value={String(settings.create.jpeg_quality)} onChange={(event) => update('create.jpeg_quality', Math.max(40, Math.min(100, Number(event.target.value) || 40)))} />
+                </Row>
+              )}
             </Section>
           </Card>
         </Tabs.Panel>
 
         <Tabs.Panel id="wallpaper">
           <Card className="space-y-4 p-4">
-            <Section title="自动更换">
-              <Row label="启用"><Switch aria-label="启用" isSelected={settings.wallpaper.auto_change.enabled} onChange={(v) => update('wallpaper.auto_change.enabled', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="模式">
-                <ComboBox
-                  className="w-40"
-                  selectedKey={settings.wallpaper.auto_change.mode}
-                  onSelectionChange={(key) => update('wallpaper.auto_change.mode', String(key))}
-                >
-                  <ComboBox.InputGroup>
-                    <Input />
-                    <ComboBox.Trigger />
-                  </ComboBox.InputGroup>
-                  <ComboBox.Popover>
-                    <ListBox>
-                      <ListBox.Item id="off" textValue="关闭">关闭</ListBox.Item>
-                      <ListBox.Item id="interval" textValue="间隔">间隔</ListBox.Item>
-                      <ListBox.Item id="schedule" textValue="定时">定时</ListBox.Item>
-                      <ListBox.Item id="slideshow" textValue="轮播">轮播</ListBox.Item>
-                    </ListBox>
-                  </ComboBox.Popover>
-                </ComboBox>
-              </Row>
-              {settings.wallpaper.auto_change.mode === 'interval' && (
-                <Row label="间隔">
-                  <Input
-                    type="number"
-                    className="w-24"
-                    value={String(settings.wallpaper.auto_change.interval.value)}
-                    onChange={(e) => update('wallpaper.auto_change.interval.value', Number(e.target.value))}
-                  />
-                  <ComboBox
-                    className="w-24"
-                    selectedKey={settings.wallpaper.auto_change.interval.unit}
-                    onSelectionChange={(key) => update('wallpaper.auto_change.interval.unit', String(key))}
-                  >
-                    <ComboBox.InputGroup>
-                      <Input />
-                      <ComboBox.Trigger />
-                    </ComboBox.InputGroup>
-                    <ComboBox.Popover>
-                      <ListBox>
-                        <ListBox.Item id="seconds" textValue="秒">秒</ListBox.Item>
-                        <ListBox.Item id="minutes" textValue="分">分</ListBox.Item>
-                        <ListBox.Item id="hours" textValue="时">时</ListBox.Item>
-                      </ListBox>
-                    </ComboBox.Popover>
-                  </ComboBox>
-                </Row>
-              )}
-            </Section>
-            <Separator />
             <Section title="历史记录">
-              <Row label="自动保存历史壁纸副本"><Switch aria-label="自动保存历史壁纸副本" isSelected={settings.wallpaper.history_save_copy} onChange={(v) => update('wallpaper.history_save_copy', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="最多保留记录">
+                <Input aria-label="最多保留壁纸历史记录" type="number" min={10} max={2000} className="w-full sm:w-28" value={String(settings.wallpaper.history.max_items)} onChange={(event) => update('wallpaper.history.max_items', Math.max(10, Math.min(2000, Number(event.target.value) || 10)))} />
+              </Row>
+              <Row label="加载预览图数量">
+                <Input aria-label="壁纸历史预览图数量" type="number" min={0} max={settings.wallpaper.history.max_items} className="w-full sm:w-28" value={String(settings.wallpaper.history.preview_items)} onChange={(event) => update('wallpaper.history.preview_items', Math.max(0, Math.min(settings.wallpaper.history.max_items, Number(event.target.value) || 0)))} />
+              </Row>
             </Section>
             <Separator />
             <Section title="壁纸源">
@@ -233,17 +241,19 @@ export default function Settings() {
               <Row label="收藏时添加作品标签"><Switch aria-label="Pixiv 收藏时添加作品标签" isSelected={settings.wallpaper.pixiv?.include_artwork_tags_in_favorites ?? true} onChange={(v) => update('wallpaper.pixiv.include_artwork_tags_in_favorites', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             </Section>
             <Separator />
-            <Section title="商店源">
-              <Row label="使用自定义源"><Switch aria-label="使用自定义源" isSelected={settings.store.use_custom_source} onChange={(v) => update('store.use_custom_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              {settings.store.use_custom_source && (
-                <Row label="自定义源 URL">
-                  <Input
-                    fullWidth
-                    value={settings.store.custom_source_url}
-                    onChange={(e) => update('store.custom_source_url', e.target.value)}
-                  />
-                </Row>
-              )}
+            <Section title="IntelliMarkets">
+              <Row label="镜像偏好">
+                <ComboBox aria-label="IntelliMarkets 镜像偏好" className="w-full sm:w-40" selectedKey={settings.im?.mirror_preference || 'auto'} onSelectionChange={(key) => update('im.mirror_preference', String(key))}>
+                  <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+                  <ComboBox.Popover><ListBox>
+                    <ListBox.Item id="auto" textValue="自动">自动</ListBox.Item>
+                    <ListBox.Item id="github" textValue="GitHub">GitHub</ListBox.Item>
+                    <ListBox.Item id="jsdelivr" textValue="jsDelivr">jsDelivr</ListBox.Item>
+                    <ListBox.Item id="ghproxy" textValue="gh-proxy">gh-proxy</ListBox.Item>
+                  </ListBox></ComboBox.Popover>
+                </ComboBox>
+              </Row>
+              <Row label="自动检查源可用性"><Switch aria-label="自动检查 IntelliMarkets 源可用性" isSelected={settings.im?.auto_health_check !== false} onChange={(v) => update('im.auto_health_check', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
             </Section>
           </Card>
         </Tabs.Panel>
@@ -264,21 +274,27 @@ export default function Settings() {
 
         <Tabs.Panel id="sniff">
           <Card className="space-y-4 p-4">
-            <Row label="User-Agent">
-              <Input fullWidth value={settings.sniff.user_agent} onChange={(e) => update('sniff.user_agent', e.target.value)} />
-            </Row>
-            <Row label="默认 Referer">
-              <Input fullWidth value={settings.sniff.referer} onChange={(e) => update('sniff.referer', e.target.value)} />
-            </Row>
-            <Row label="自动使用输入链接作为 Referer"><Switch aria-label="自动使用输入链接作为 Referer" isSelected={settings.sniff.use_source_as_referer} onChange={(v) => update('sniff.use_source_as_referer', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-            <Row label="超时时间 (秒)">
-              <Input type="number" className="w-24" value={String(settings.sniff.timeout_seconds)} onChange={(e) => update('sniff.timeout_seconds', Number(e.target.value))} />
-            </Row>
+            <Section title="网页嗅探">
+              <Row label="User-Agent"><Input fullWidth value={settings.sniff.user_agent} onChange={(e) => update('sniff.user_agent', e.target.value)} /></Row>
+              <Row label="默认 Referer"><Input fullWidth value={settings.sniff.referer} onChange={(e) => update('sniff.referer', e.target.value)} /></Row>
+              <Row label="自动使用输入链接作为 Referer"><Switch aria-label="自动使用输入链接作为 Referer" isSelected={settings.sniff.use_source_as_referer} onChange={(v) => update('sniff.use_source_as_referer', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="请求超时 (秒)"><Input aria-label="嗅探请求超时秒数" type="number" min={5} max={120} className="w-full sm:w-28" value={String(settings.sniff.timeout_seconds)} onChange={(e) => update('sniff.timeout_seconds', Math.max(5, Math.min(120, Number(e.target.value) || 5)))} /></Row>
+              <Row label="单次最多提取"><Input aria-label="单次最多提取图片数" type="number" min={20} max={2000} className="w-full sm:w-28" value={String(settings.sniff.max_results)} onChange={(e) => update('sniff.max_results', Math.max(20, Math.min(2000, Number(e.target.value) || 20)))} /></Row>
+            </Section>
+            <Separator />
+            <Section title="图片下载">
+              <Row label="下载超时 (秒)"><Input aria-label="图片下载超时秒数" type="number" min={10} max={600} className="w-full sm:w-28" value={String(settings.download.timeout_seconds)} onChange={(e) => update('download.timeout_seconds', Math.max(10, Math.min(600, Number(e.target.value) || 10)))} /></Row>
+              <Row label="批量下载并发数"><Input aria-label="批量下载并发数" type="number" min={1} max={8} className="w-full sm:w-28" value={String(settings.download.concurrent_tasks)} onChange={(e) => update('download.concurrent_tasks', Math.max(1, Math.min(8, Number(e.target.value) || 1)))} /></Row>
+            </Section>
           </Card>
         </Tabs.Panel>
 
         <Tabs.Panel id="appearance">
-          <AppearanceSettingsPanel settings={settings} onUpdate={update} />
+          <ThemeSettingsPanel />
+        </Tabs.Panel>
+
+        <Tabs.Panel id="plugins">
+          <PluginSettingsPanel />
         </Tabs.Panel>
 
         <Tabs.Panel id="about">
@@ -430,6 +446,9 @@ function HomePagePanel({ settings, onUpdate, onReload }: {
       </Row>
       <Row label="显示作者"><Switch aria-label="显示作者" isSelected={hp.show_author} onChange={(v) => onUpdate('home_page.show_author', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
       <Row label="显示来源"><Switch aria-label="显示来源" isSelected={hp.show_source} onChange={(v) => onUpdate('home_page.show_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+      <Row label="当前壁纸刷新间隔 (秒)">
+        <Input aria-label="当前壁纸刷新间隔秒数" type="number" min={10} max={600} className="w-full sm:w-28" value={String(hp.wallpaper_refresh_seconds)} onChange={(event) => onUpdate('home_page.wallpaper_refresh_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 10)))} />
+      </Row>
 
       {hp.source === 'hitokoto' && (
         <>
@@ -594,7 +613,6 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
   const [customEndpoint, setCustomEndpoint] = useState('');
   const [customApiKey, setCustomApiKey] = useState('');
   const [customModel, setCustomModel] = useState('');
-  const [customFormat, setCustomFormat] = useState<ImageProviderConfig['format']>('openai-compatible');
 
   const providers: ImageProviderConfig[] = settings.generate?.providers || [];
   const activeId = settings.generate?.active_provider_id || '';
@@ -616,6 +634,7 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
   };
 
   const removeProvider = (id: string) => {
+    if (id === POLLINATIONS_PROVIDER_ID) return;
     const next = providers.filter((p) => p.id !== id);
     setProviders(next);
     if (activeId === id) {
@@ -659,7 +678,7 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
     const cfg: ImageProviderConfig = {
       id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: customName,
-      format: customFormat,
+      format: 'openai-compatible',
       endpoint: customEndpoint,
       apiKey: customApiKey,
       model: customModel,
@@ -676,6 +695,59 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
 
   return (
     <Card className="space-y-4 p-4">
+      <Section title="生成默认值">
+        <Row label="图片尺寸">
+          <ComboBox aria-label="默认生成图片尺寸" className="w-full sm:w-44" selectedKey={settings.generate.default_size} onSelectionChange={(key) => onUpdate('generate.default_size', String(key))}>
+            <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+            <ComboBox.Popover><ListBox>
+              {IMAGE_SIZE_OPTIONS.map((size) => <ListBox.Item key={size} id={size} textValue={size}>{size}</ListBox.Item>)}
+            </ListBox></ComboBox.Popover>
+          </ComboBox>
+        </Row>
+        <Row label="每批图片数量">
+          <Input aria-label="默认每批生成图片数量" type="number" min={1} max={MAX_IMAGES_PER_BATCH} className="w-full sm:w-28" value={String(settings.generate.default_n)} onChange={(event) => onUpdate('generate.default_n', Math.max(1, Math.min(MAX_IMAGES_PER_BATCH, Number(event.target.value) || 1)))} />
+        </Row>
+        <Row label="返回格式">
+          <ComboBox aria-label="默认图片返回格式" className="w-full sm:w-44" selectedKey={settings.generate.default_response_format} onSelectionChange={(key) => onUpdate('generate.default_response_format', String(key))}>
+            <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+            <ComboBox.Popover><ListBox>
+              <ListBox.Item id="url" textValue="图片 URL">图片 URL</ListBox.Item>
+              <ListBox.Item id="b64_json" textValue="Base64 数据">Base64 数据</ListBox.Item>
+            </ListBox></ComboBox.Popover>
+          </ComboBox>
+        </Row>
+        <Row label="图片质量">
+          <ComboBox aria-label="默认生成图片质量" className="w-full sm:w-44" selectedKey={settings.generate.default_quality} onSelectionChange={(key) => onUpdate('generate.default_quality', String(key))}>
+            <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+            <ComboBox.Popover><ListBox>
+              {IMAGE_QUALITY_OPTIONS.map((quality) => (
+                <ListBox.Item key={quality} id={quality} textValue={quality === 'auto' ? '自动' : quality === 'low' ? '低' : quality === 'medium' ? '中' : '高'}>
+                  {quality === 'auto' ? '自动' : quality === 'low' ? '低' : quality === 'medium' ? '中' : '高'}
+                </ListBox.Item>
+              ))}
+            </ListBox></ComboBox.Popover>
+          </ComboBox>
+        </Row>
+      </Section>
+
+      <Separator />
+
+      <Section title="记录与隐私">
+        <Row label="记住最近提示词"><Switch aria-label="记住最近提示词" isSelected={settings.generate.remember_prompts} onChange={(value) => onUpdate('generate.remember_prompts', value)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+        {settings.generate.remember_prompts && (
+          <Row label="提示词历史数量"><Input aria-label="提示词历史数量" type="number" min={1} max={50} className="w-full sm:w-28" value={String(settings.generate.prompt_history_limit)} onChange={(event) => onUpdate('generate.prompt_history_limit', Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /></Row>
+        )}
+        <Row label="生成记录保留数量"><Input aria-label="生成记录保留数量" type="number" min={10} max={500} className="w-full sm:w-28" value={String(settings.generate.history_max_items)} onChange={(event) => onUpdate('generate.history_max_items', Math.max(10, Math.min(500, Number(event.target.value) || 10)))} /></Row>
+        <Row label="本地提示词历史">
+          <Button size="sm" variant="secondary" onPress={() => {
+            window.localStorage.removeItem('ltw:generate:prompt-history');
+            toast.success('提示词历史已清除', { timeout: 2500 });
+          }}><Trash2 size={14} /> 清除</Button>
+        </Row>
+      </Section>
+
+      <Separator />
+
       <Section title="已配置的提供商">
         {providers.length === 0 && (
           <p className="text-sm text-muted">尚未配置任何图片生成提供商</p>
@@ -685,26 +757,38 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
           onChange={(v) => onUpdate('generate.active_provider_id', v)}
           className="space-y-2"
         >
-          {providers.map((p) => (
-            <Radio
-              key={p.id}
-              value={p.id}
-              className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}
-            >
-              <div className="flex flex-1 items-center gap-3">
-                <Radio.Control>
-                  <Radio.Indicator />
-                </Radio.Control>
-                <Radio.Content>
-                  <div className="text-sm font-medium">{p.name}</div>
-                  <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
-                </Radio.Content>
-              </div>
-              <Button isIconOnly variant="ghost" size="sm" onPress={() => removeProvider(p.id)}>
-                <Trash2 size={14} className="text-danger" />
-              </Button>
-            </Radio>
-          ))}
+          {providers.map((p) => {
+            const isBuiltin = p.id === POLLINATIONS_PROVIDER_ID;
+            return (
+              <Radio
+                key={p.id}
+                value={p.id}
+                className={`flex items-center justify-between rounded-lg border p-3 ${activeId === p.id ? 'border-primary bg-primary/5' : 'border-border'}`}
+              >
+                <div className="flex flex-1 items-center gap-3">
+                  <Radio.Control>
+                    <Radio.Indicator />
+                  </Radio.Control>
+                  <Radio.Content>
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      {p.name}
+                      {isBuiltin && (
+                        <Chip size="sm" variant="secondary">
+                          <Chip.Label>内置</Chip.Label>
+                        </Chip>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted">{p.endpoint} · {p.model}</div>
+                  </Radio.Content>
+                </div>
+                {!isBuiltin && (
+                  <Button isIconOnly variant="ghost" size="sm" aria-label={`删除 ${p.name}`} onPress={() => removeProvider(p.id)}>
+                    <Trash2 size={14} className="text-danger" />
+                  </Button>
+                )}
+              </Radio>
+            );
+          })}
         </RadioGroup>
       </Section>
 
@@ -791,27 +875,7 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
           <div className="mt-3 space-y-3 rounded-lg border border-border p-3">
             <div>
               <Label className="mb-1 block text-xs text-muted">名称</Label>
-              <Input fullWidth value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="例如：火山引擎" />
-            </div>
-            <div>
-              <Label className="mb-1 block text-xs text-muted">格式</Label>
-              <ComboBox
-                className="w-full"
-                selectedKey={customFormat}
-                onSelectionChange={(key) => setCustomFormat(String(key) as ImageProviderConfig['format'])}
-              >
-                <ComboBox.InputGroup>
-                  <Input />
-                  <ComboBox.Trigger />
-                </ComboBox.InputGroup>
-                <ComboBox.Popover>
-                  <ListBox>
-                    <ListBox.Item id="openai" textValue="OpenAI">OpenAI</ListBox.Item>
-                    <ListBox.Item id="volcano" textValue="火山引擎">火山引擎</ListBox.Item>
-                    <ListBox.Item id="openai-compatible" textValue="OpenAI 兼容">OpenAI 兼容</ListBox.Item>
-                  </ListBox>
-                </ComboBox.Popover>
-              </ComboBox>
+              <Input fullWidth value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="例如：GPT" />
             </div>
             <div>
               <Label className="mb-1 block text-xs text-muted">端点 (Base URL)</Label>
@@ -819,12 +883,12 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
                 fullWidth
                 value={customEndpoint}
                 onChange={(e) => setCustomEndpoint(e.target.value)}
-                placeholder={customFormat === 'volcano' ? VOLCANO_PRESET.endpoint : OPENAI_PRESET.endpoint}
+                placeholder={DEFAULT_ENDPOINT}
               />
             </div>
             <div>
               <Label className="mb-1 block text-xs text-muted">模型 ID</Label>
-              <Input fullWidth value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="例如：gpt-image-1" />
+              <Input fullWidth value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="例如：gpt-image-2" />
             </div>
             <div>
               <Label className="mb-1 block text-xs text-muted">API Key</Label>
@@ -834,40 +898,6 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
           </div>
         )}
       </Section>
-    </Card>
-  );
-}
-
-function AppearanceSettingsPanel({ settings, onUpdate }: { settings: AppSettings; onUpdate: (key: string, value: unknown) => void }) {
-  const { setTheme } = useThemeContext();
-
-  const handleThemeChange = (key: React.Key | null) => {
-    const next = String(key || 'system') as 'system' | 'light' | 'dark';
-    setTheme(next);
-    onUpdate('ui.theme', next);
-  };
-
-  return (
-    <Card className="space-y-4 p-4">
-      <Row label="界面主题">
-        <ComboBox
-          className="w-40"
-          selectedKey={settings.ui.theme}
-          onSelectionChange={handleThemeChange}
-        >
-          <ComboBox.InputGroup>
-            <Input />
-            <ComboBox.Trigger />
-          </ComboBox.InputGroup>
-          <ComboBox.Popover>
-            <ListBox>
-              <ListBox.Item id="system" textValue="跟随系统">跟随系统</ListBox.Item>
-              <ListBox.Item id="light" textValue="浅色">浅色</ListBox.Item>
-              <ListBox.Item id="dark" textValue="深色">深色</ListBox.Item>
-            </ListBox>
-          </ComboBox.Popover>
-        </ComboBox>
-      </Row>
     </Card>
   );
 }
@@ -1334,9 +1364,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm">{label}</span>
-      <div className="min-w-[200px] text-right">{children}</div>
+    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] sm:items-center">
+      <span className="text-sm text-wrap-pretty">{label}</span>
+      <div className="min-w-0 sm:text-right">{children}</div>
     </div>
   );
 }

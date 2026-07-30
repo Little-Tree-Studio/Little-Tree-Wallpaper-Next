@@ -18,6 +18,8 @@ import Help from '@/pages/Help';
 import History from '@/pages/History';
 import Tools from '@/pages/Tools';
 import ColorPalette from '@/pages/ColorPalette';
+import DynamicWallpaperDebug from '@/pages/DynamicWallpaperDebug';
+import Automation from '@/pages/Automation';
 import { ImageViewerProvider, ImageViewer } from '@/components/ImageViewer';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import BetaWarningModal from '@/components/BetaWarningModal';
@@ -25,6 +27,11 @@ import BetaWatermark from '@/components/BetaWatermark';
 import { getBuildInfo } from '@/api/backend';
 import { Toast } from '@heroui/react';
 import { logError } from '@/lib/log';
+import { PluginProvider } from '@/plugins/context';
+import PluginPage from '@/plugins/PluginPage';
+import PluginGlobalUI from '@/plugins/PluginGlobalUI';
+import StaticWallpaperGuardProvider from '@/components/StaticWallpaperGuardProvider';
+import TextContextMenu from '@/components/TextContextMenu';
 
 function App() {
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
@@ -48,43 +55,52 @@ function App() {
   }, []);
 
   return (
-    <ThemeProvider>
-      <ImageViewerProvider>
-        <HashRouter>
-        <Routes>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Home />} />
-             <Route path="resource" element={<Resource />} />
-             <Route path="resource/cnu/:workId" element={<CnuWorkDetail />} />
-             <Route path="resource/pixivel/:workId" element={<PixivelWorkDetail />} />
-            <Route path="resource/source-management" element={<WallpaperSourceManagement />} />
-             <Route path="generate" element={<Generate />} />
-             <Route path="create" element={<Create />} />
-            <Route path="search" element={<Search />} />
-            <Route path="sniff" element={<Sniff />} />
-            <Route path="favorite" element={<Favorite />} />
-            <Route path="tags" element={<Tags />} />
-            <Route path="store" element={<Store />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="settings/:tab" element={<Settings />} />
-            <Route path="help" element={<Help />} />
-            <Route path="history" element={<History />} />
-            <Route path="tools" element={<Tools />} />
-            <Route path="tools/color-palette" element={<ColorPalette />} />
-          </Route>
-        </Routes>
-      </HashRouter>
-      <ImageViewer />
-      {betaVersion !== null && (
-        <BetaWarningModal
-          version={betaVersion}
-          onDismiss={() => setBetaVersion(null)}
-        />
-      )}
-      <BetaWatermark />
-      <Toast.Provider placement="bottom end" />
-    </ImageViewerProvider>
-    </ThemeProvider>
+    <HashRouter>
+      <ThemeProvider>
+        <StaticWallpaperGuardProvider>
+          <PluginProvider>
+            <ImageViewerProvider>
+            <Routes>
+              <Route path="/" element={<Layout />}>
+                <Route index element={<Home />} />
+                <Route path="resource" element={<Resource />} />
+                <Route path="resource/cnu/:workId" element={<CnuWorkDetail />} />
+                <Route path="resource/pixivel/:workId" element={<PixivelWorkDetail />} />
+                <Route path="resource/source-management" element={<WallpaperSourceManagement />} />
+                <Route path="generate" element={<Generate />} />
+                <Route path="create" element={<Create />} />
+                <Route path="automation" element={<Automation />} />
+                <Route path="search" element={<Search />} />
+                <Route path="sniff" element={<Sniff />} />
+                <Route path="favorite" element={<Favorite />} />
+                <Route path="tags" element={<Tags />} />
+                <Route path="store" element={<Store />} />
+                <Route path="settings" element={<Settings />} />
+                <Route path="settings/:tab" element={<Settings />} />
+                <Route path="help" element={<Help />} />
+                <Route path="history" element={<History />} />
+                <Route path="tools" element={<Tools />} />
+                <Route path="tools/color-palette" element={<ColorPalette />} />
+                <Route path="tools/dynamic-wallpaper" element={<DynamicWallpaperDebug />} />
+                <Route path="*" element={<PluginPage />} />
+              </Route>
+            </Routes>
+            <ImageViewer />
+            {betaVersion !== null && (
+              <BetaWarningModal
+                version={betaVersion}
+                onDismiss={() => setBetaVersion(null)}
+              />
+            )}
+            <BetaWatermark />
+            <PluginGlobalUI />
+            <TextContextMenu />
+            <Toast.Provider placement="bottom end" />
+            </ImageViewerProvider>
+          </PluginProvider>
+        </StaticWallpaperGuardProvider>
+      </ThemeProvider>
+    </HashRouter>
   );
 }
 

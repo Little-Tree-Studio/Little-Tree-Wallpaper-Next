@@ -172,15 +172,21 @@ export default function IntelliMarketsPanel() {
   const [executing, setExecuting] = useState(false);
   const [mirror, setMirror] = useState('auto');
   const [showDisclaimer, setShowDisclaimer] = useState(true);
+  const [autoHealthCheck, setAutoHealthCheck] = useState(true);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const healthReqId = useRef(0);
   const { openViewer } = useImageViewer();
 
   useEffect(() => {
     getSettings().then((s) => {
+      const configuredMirror = String(s?.im?.mirror_preference || 'auto');
+      setMirror(MIRROR_OPTIONS.some((option) => option.id === configuredMirror) ? configuredMirror : 'auto');
       if (s?.im?.show_disclaimer === false) {
         setShowDisclaimer(false);
       }
-    }).catch((e) => logError('Failed to load settings', e));
+      setAutoHealthCheck(s?.im?.auto_health_check !== false);
+    }).catch((e) => logError('Failed to load settings', e))
+      .finally(() => setPreferencesLoaded(true));
   }, []);
 
   const selected = useMemo(
@@ -219,10 +225,10 @@ export default function IntelliMarketsPanel() {
   }, [sources]);
 
   useEffect(() => {
-    if (!loaded && !loading) {
+    if (preferencesLoaded && !loaded && !loading) {
       void load();
     }
-  }, [loaded, loading]);
+  }, [preferencesLoaded, loaded, loading]);
 
   useEffect(() => {
     if (!selected) return;
@@ -242,7 +248,7 @@ export default function IntelliMarketsPanel() {
       const list = await listIntelligentMarketSources(force);
       setSources(list);
       setLoaded(true);
-      void checkHealth(list, force);
+      if (autoHealthCheck || force) void checkHealth(list, force);
     } catch (e) {
       logError('IM load failed', e);
     } finally {
@@ -318,7 +324,7 @@ export default function IntelliMarketsPanel() {
   }
 
   return (
-    <div className="flex flex-col h-full gap-4">
+    <div className="intellimarkets-panel flex flex-col h-full gap-4">
       {showDisclaimer && (
         <Alert status="warning" className="shrink-0 items-center py-2.5">
           <Alert.Indicator />

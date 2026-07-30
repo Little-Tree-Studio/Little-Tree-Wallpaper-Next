@@ -15,6 +15,17 @@ from loguru import logger
 from .app_meta import VERSION
 from .paths import get_config_dir
 
+POLLINATIONS_PROVIDER_ID = "pollinations"
+POLLINATIONS_PROVIDER: dict[str, Any] = {
+    "id": POLLINATIONS_PROVIDER_ID,
+    "name": "Pollinations AI",
+    "format": "pollinations",
+    "endpoint": "https://image.pollinations.ai/prompt",
+    "apiKey": "",
+    "model": "flux",
+    "modelName": "Flux",
+}
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "metadata": {"version": VERSION},
     "ui": {
@@ -23,7 +34,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "theme_profile": "default",
         "window_background": "",
         "window_icon": "./assets/icons/icon.ico",
-        "hide_on_close": False,
+        "hide_on_close": True,
+        "minimize_to_tray": True,
+        "release_webview_on_close": False,
     },
     "updates": {
         "auto_check": True,
@@ -59,11 +72,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
         "allow_NSFW": False,
         "history_save_copy": False,
+        "history": {"max_items": 200, "preview_items": 20},
         "sources": {"merge_display": True},
         "pixiv": {"include_artwork_tags_in_favorites": True},
     },
     "download": {
         "segment_size_kb": 200,
+        "timeout_seconds": 120,
+        "concurrent_tasks": 3,
         "proxy": {"enabled": False, "type": "http", "server": ""},
     },
     "sniff": {
@@ -71,6 +87,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "referer": "",
         "use_source_as_referer": True,
         "timeout_seconds": 40,
+        "max_results": 300,
     },
     "startup": {
         "auto_start": False,
@@ -90,6 +107,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "source": "hitokoto",
         "show_author": True,
         "show_source": True,
+        "wallpaper_refresh_seconds": 30,
         "hitokoto": {
             "region": "domestic",
             "categories": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "k", "l"],
@@ -97,14 +115,28 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "zhaoyu": {"catalog": "all", "theme": "all", "author": "all"},
         "custom": {"items": []},
     },
-    "im": {"mirror_preference": "mirror_first", "show_disclaimer": True},
+    "create": {
+        "show_grid": False,
+        "snap_to_guides": True,
+        "export_format": "png",
+        "jpeg_quality": 92,
+    },
+    "im": {
+        "mirror_preference": "auto",
+        "show_disclaimer": True,
+        "auto_health_check": True,
+    },
     "store": {"use_custom_source": False, "custom_source_url": ""},
     "generate": {
-        "providers": [],
-        "active_provider_id": "",
+        "providers": [copy.deepcopy(POLLINATIONS_PROVIDER)],
+        "active_provider_id": POLLINATIONS_PROVIDER_ID,
         "default_size": "1024x1024",
         "default_n": 1,
         "default_response_format": "url",
+        "default_quality": "auto",
+        "remember_prompts": True,
+        "prompt_history_limit": 12,
+        "history_max_items": 100,
     },
 }
 
@@ -144,6 +176,20 @@ class SettingsStore:
                     else:
                         set_defaults(src[key], value)
         set_defaults(data, DEFAULT_SETTINGS)
+
+        if data["im"].get("mirror_preference") not in {"auto", "github", "jsdelivr", "ghproxy"}:
+            data["im"]["mirror_preference"] = "auto"
+
+        generate = data["generate"]
+        configured = generate.get("providers")
+        custom_providers = [
+            provider
+            for provider in configured if isinstance(provider, dict) and provider.get("id") != POLLINATIONS_PROVIDER_ID
+        ] if isinstance(configured, list) else []
+        generate["providers"] = [copy.deepcopy(POLLINATIONS_PROVIDER), *custom_providers]
+        provider_ids = {provider.get("id") for provider in generate["providers"]}
+        if generate.get("active_provider_id") not in provider_ids:
+            generate["active_provider_id"] = POLLINATIONS_PROVIDER_ID
 
     @contextmanager
     def _interprocess_lock(self) -> Iterator[None]:
@@ -259,6 +305,7 @@ class SettingsStore:
                                 current[part] = {}
                             current = current[part]
                         current[parts[-1]] = value
+                    self._apply_defaults(self._data)
                     self._write_unlocked()
             except Exception:
                 self._data = previous

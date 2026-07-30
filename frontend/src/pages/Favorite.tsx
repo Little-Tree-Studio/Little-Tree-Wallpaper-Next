@@ -13,17 +13,23 @@ import {
   Plus, Pencil, Trash2, ImageIcon, FolderPlus,
   RefreshCw, FolderOutput, Import, Globe, Settings2, Tag,
   AlertTriangle, FolderOpen, FolderInput, X, CheckSquare, FilePenLine,
+  Repeat2,
 } from 'lucide-react';
 import {
   getFavorites, removeFavorite, updateFavorite,
   createFavoriteFolder, updateFavoriteFolder, deleteFavoriteFolder, setWallpaper, downloadWithProgress,
   exportFavorites, pickAndImportFavorites, selectLocalImage, localPreviewUrl,
-  FAVORITES_CHANGED_EVENT,
+  FAVORITES_CHANGED_EVENT, saveAutomation,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer/context';
 import type { FavoriteFolder, FavoriteItem, FavoritesData } from '@/types';
 import { safeNameForFile } from '@/lib/download';
 import FavoriteTransferModal from '@/components/FavoriteTransferModal';
+import { createWallpaperRotationAutomation } from '@/components/AutomationEditor/types';
+
+const ROTATION_UNITS = { minutes: 60, hours: 3600, days: 86400 } as const;
+type RotationUnit = keyof typeof ROTATION_UNITS;
+type RotationTarget = { scope: 'selected' } | { scope: 'folder'; folder: FavoriteFolder };
 
 export default function Favorite() {
   const navigate = useNavigate();
@@ -55,6 +61,10 @@ export default function Favorite() {
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [rotationTarget, setRotationTarget] = useState<RotationTarget | null>(null);
+  const [rotationInterval, setRotationInterval] = useState(30);
+  const [rotationUnit, setRotationUnit] = useState<RotationUnit>('minutes');
+  const [creatingRotation, setCreatingRotation] = useState(false);
   const {contains} = useFilter({sensitivity: 'base'});
   const { openViewer } = useImageViewer();
 
@@ -169,6 +179,50 @@ export default function Favorite() {
   const handleBatchExport = async () => {
     if (selectedItems.length === 0) return;
     setShowExportModal(true);
+  };
+
+  const openRotationModal = (target: RotationTarget) => {
+    setRotationInterval(30);
+    setRotationUnit('minutes');
+    setRotationTarget(target);
+  };
+
+  const handleCreateRotation = async () => {
+    if (!rotationTarget) return;
+    const intervalSeconds = Math.max(60, rotationInterval * ROTATION_UNITS[rotationUnit]);
+    const itemIds = selectedItems.map((item) => item.id);
+    if (rotationTarget.scope === 'selected' && itemIds.length === 0) return;
+    const rotationDetails = rotationTarget.scope === 'folder'
+      ? {
+          name: `收藏轮换 · ${rotationTarget.folder.name}`,
+          description: `自动轮换收藏夹“${rotationTarget.folder.name}”中的全部壁纸`,
+          sourceConfig: { source: 'favorites', scope: 'folder', folder_id: rotationTarget.folder.id, folder_name: rotationTarget.folder.name, order: 'shuffle' },
+        }
+      : {
+          name: `收藏轮换 · ${itemIds.length} 张壁纸`,
+          description: '自动轮换创建时选中的收藏壁纸',
+          sourceConfig: { source: 'favorites', scope: 'selected', item_ids: itemIds, order: 'shuffle' },
+        };
+    setCreatingRotation(true);
+    try {
+      const document = createWallpaperRotationAutomation({
+        name: rotationDetails.name,
+        description: rotationDetails.description,
+        intervalSeconds,
+        enabled: true,
+        sourceConfig: rotationDetails.sourceConfig,
+      });
+      const saved = await saveAutomation(document);
+      setRotationTarget(null);
+      setSelectedIds(new Set());
+      setIsBatchMode(false);
+      toast.success('收藏轮换已创建并启用');
+      navigate(`/automation?automation=${saved.id}`);
+    } catch (error) {
+      toast.danger('创建收藏轮换失败', { description: error instanceof Error ? error.message : '请稍后重试' });
+    } finally {
+      setCreatingRotation(false);
+    }
   };
 
   const handleImport = async () => {
@@ -413,6 +467,9 @@ export default function Favorite() {
               )}
             </div>
             <div className="flex items-center gap-1">
+              <Button size="sm" variant="secondary" onPress={() => openRotationModal({ scope: 'folder', folder: activeFolderMeta })}>
+                <Repeat2 size={14} />轮换
+              </Button>
               <Button size="sm" variant="ghost" isIconOnly aria-label="编辑收藏夹" onPress={() => openEditFolderModal(activeFolderMeta)}>
                 <FilePenLine size={14} />
               </Button>
@@ -529,6 +586,9 @@ export default function Favorite() {
             <Button size="sm" variant="secondary" isDisabled={selectedItems.length === 0} onPress={handleBatchExport}>
               <FolderOutput size={14} /> 导出
             </Button>
+            <Button size="sm" variant="secondary" isDisabled={selectedItems.length === 0} onPress={() => openRotationModal({ scope: 'selected' })}>
+              <Repeat2 size={14} /> 轮换
+            </Button>
           </ButtonGroup>
           <Separator orientation="vertical" />
           <ButtonGroup variant="tertiary">
@@ -554,6 +614,43 @@ export default function Favorite() {
         selectedIds={selectedIds}
         onExport={exportFavorites}
       />
+
+      <Modal.Backdrop isOpen={!!rotationTarget} onOpenChange={(open) => { if (!open && !creatingRotation) setRotationTarget(null); }}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Icon className="bg-accent-soft text-accent-soft-foreground"><Repeat2 size={20} /></Modal.Icon>
+              <Modal.Heading>设置收藏轮换</Modal.Heading>
+              <p className="text-sm text-muted">
+                {rotationTarget?.scope === 'folder'
+                  ? `完整收藏夹“${rotationTarget.folder.name}”会保持动态同步，之后新增的收藏也会加入队列。`
+                  : `将当前选中的 ${selectedItems.length} 条收藏保存为固定轮换队列。`}
+              </p>
+            </Modal.Header>
+            <Modal.Body>
+              <div className="flex items-end gap-2">
+                <TextField className="flex-1" value={String(rotationInterval)} onChange={(value) => setRotationInterval(Math.max(1, Number(value) || 1))}>
+                  <Label>轮换周期</Label><Input type="number" min="1" />
+                </TextField>
+                <Select aria-label="周期单位" className="w-28" value={rotationUnit} onChange={(key) => setRotationUnit(String(key) as RotationUnit)}>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover><ListBox>
+                    <ListBox.Item id="minutes" textValue="分钟">分钟</ListBox.Item>
+                    <ListBox.Item id="hours" textValue="小时">小时</ListBox.Item>
+                    <ListBox.Item id="days" textValue="天">天</ListBox.Item>
+                  </ListBox></Select.Popover>
+                </Select>
+              </div>
+              <Description className="mt-3">创建后会立即启用并跳转到自动化页面；每轮内不会重复同一张壁纸。</Description>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="secondary" onPress={() => setRotationTarget(null)} isDisabled={creatingRotation}>取消</Button>
+              <Button onPress={handleCreateRotation} isPending={creatingRotation}><Repeat2 size={15} />创建并启用</Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
       <Drawer.Backdrop isOpen={!!editingItem} onOpenChange={(open) => { if (!open) closeEditDrawer(); }}>
         <Drawer.Content placement="right">

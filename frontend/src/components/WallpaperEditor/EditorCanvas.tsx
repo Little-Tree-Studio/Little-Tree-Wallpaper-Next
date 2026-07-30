@@ -30,6 +30,7 @@ export interface EditorCanvasHandle {
 interface EditorCanvasProps {
   document: WallpaperDocument;
   selectedId: string | null;
+  selectedIds: ReadonlySet<string>;
   zoom: number;
   showGrid: boolean;
   snapToGuides: boolean;
@@ -37,7 +38,7 @@ interface EditorCanvasProps {
   canvasTool: 'move' | 'hand' | 'brush';
   brushSettings: BrushSettings;
   cropEditingId: string | null;
-  onSelect: (id: string | null) => void;
+  onSelect: (id: string | null, modifiers: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void;
   onOpenProperties: (id: string) => void;
   onLayerClick: (id: string | null, bounds: { left: number; top: number; right: number; bottom: number } | null) => void;
   onLayerInteractionStart: () => void;
@@ -46,7 +47,10 @@ interface EditorCanvasProps {
   onLiveCropChange: (id: string, crop: NonNullable<ImageLayer['crop']>) => void;
   onCommitCrop: (id: string, original: NonNullable<ImageLayer['crop']>) => void;
   onLiveLayerChange: (layer: EditorLayer) => void;
+  onLiveLayersChange: (layers: EditorLayer[]) => void;
   onCommitInteraction: (original: EditorLayer, duplicated?: boolean) => void;
+  onCommitGroupInteraction: (originals: EditorLayer[]) => void;
+  onContextMenu: (detail: { clientX: number; clientY: number; point: Point; layerId: string | null }) => void;
 }
 
 function pointDistance(first: Point, second: Point): number {
@@ -79,6 +83,7 @@ function findHandle(layer: EditorLayer, point: Point, scale: number): CanvasHand
 const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function EditorCanvas({
   document,
   selectedId,
+  selectedIds,
   zoom,
   showGrid,
   snapToGuides,
@@ -95,12 +100,21 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
   onLiveCropChange,
   onCommitCrop,
   onLiveLayerChange,
+  onLiveLayersChange,
   onCommitInteraction,
+  onCommitGroupInteraction,
+  onContextMenu,
 }, forwardedRef) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
   const interactionRef = useRef<CanvasInteraction | null>(null);
+  const groupInteractionRef = useRef<{
+    pointerId: number;
+    start: Point;
+    originals: EditorLayer[];
+    moved: boolean;
+  } | null>(null);
   const latestInteractionLayerRef = useRef<EditorLayer | null>(null);
   const clickCandidateRef = useRef<{ layer: EditorLayer; clientX: number; clientY: number } | null>(null);
   const brushPointsRef = useRef<BrushPoint[] | null>(null);
@@ -116,6 +130,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
   const [snapGuides, setSnapGuides] = useState<{ x?: number; y?: number }>({});
   const displayScale = zoom / 100;
   const selectedLayer = document.layers.find((layer) => layer.id === selectedId) || null;
+  const selectedLayers = document.layers.filter((layer) => selectedIds.has(layer.id));
   const cropLayer = document.layers.find((layer): layer is ImageLayer => layer.id === cropEditingId && layer.type === 'image') || null;
 
   const renderOverlay = () => {
@@ -150,7 +165,12 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
     if (brushPointsRef.current?.length) drawBrushStroke(context, brushPointsRef.current, brushSettings, imageCacheRef.current);
     drawSnapGuides(context, document.width, document.height, snapGuides, displayScale);
     if (cropLayer) drawImageCropOverlay(context, cropLayer, imageCacheRef.current, displayScale);
-    else if (selectedLayer) drawSelection(context, selectedLayer, displayScale);
+    else {
+      selectedLayers.forEach((layer) => {
+        if (layer.id !== selectedId) drawSelection(context, layer, displayScale, false);
+      });
+      if (selectedLayer) drawSelection(context, selectedLayer, displayScale);
+    }
   };
 
   useEffect(() => {
@@ -186,7 +206,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
 
   useEffect(() => {
     renderOverlay();
-  }, [brushSettings, cropLayer, displayScale, document.height, document.width, imageRevision, selectedLayer, showGrid, snapGuides]);
+  }, [brushSettings, cropLayer, displayScale, document.height, document.layers, document.width, imageRevision, selectedId, selectedIds, selectedLayer, showGrid, snapGuides]);
 
   useEffect(() => () => {
     if (brushFrameRef.current !== null) window.cancelAnimationFrame(brushFrameRef.current);
@@ -253,6 +273,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     setSnapGuides({});
+    if (event.button !== 0) return;
     const point = toCanvasPoint(event);
     if (cropLayer && event.button === 0) {
       onLayerInteractionStart();
@@ -286,7 +307,9 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
-    if (selectedLayer && !selectedLayer.locked) {
+    const selectionModifiers = { ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey };
+    const isSelectionModifier = event.ctrlKey || event.metaKey || event.shiftKey;
+    if (selectedLayer && !selectedLayer.locked && !isSelectionModifier) {
       const handle = selectedLayer.visible ? findHandle(selectedLayer, point, displayScale) : null;
       if (handle && handle !== 'move') {
         onLayerInteractionStart();
@@ -298,15 +321,34 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
     }
 
     const target = [...document.layers].reverse().find((layer) => layer.visible && layerContainsPoint(layer, point));
-    if (!target) onLayerClick(null, null);
-    const dragTarget = target && !target.locked && (event.ctrlKey || event.metaKey)
+    if (!target) {
+      onSelect(null, selectionModifiers);
+      onLayerClick(null, null);
+      return;
+    }
+    if (isSelectionModifier) {
+      onSelect(target.id, selectionModifiers);
+      clickCandidateRef.current = null;
+      return;
+    }
+    const dragTarget = !target.locked && event.altKey
       ? onDuplicateForDrag(target)
       : target;
-    onSelect(dragTarget?.id || null);
-    if (dragTarget) {
-      clickCandidateRef.current = { layer: structuredClone(dragTarget), clientX: event.clientX, clientY: event.clientY };
+    onSelect(dragTarget.id, selectionModifiers);
+    const isGroupMove = dragTarget === target && selectedIds.size > 1 && selectedIds.has(target.id) && !target.locked;
+    if (isGroupMove) {
+      groupInteractionRef.current = {
+        pointerId: event.pointerId,
+        start: point,
+        originals: document.layers.filter((layer) => selectedIds.has(layer.id) && !layer.locked).map((layer) => structuredClone(layer)),
+        moved: false,
+      };
+      clickCandidateRef.current = null;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
     }
-    if (dragTarget && !dragTarget.locked) {
+    clickCandidateRef.current = { layer: structuredClone(dragTarget), clientX: event.clientX, clientY: event.clientY };
+    if (!dragTarget.locked) {
       interactionRef.current = {
         handle: 'move',
         start: point,
@@ -326,9 +368,21 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
     };
     const target = [...document.layers].reverse().find((layer) => layer.visible && layerContainsPoint(layer, point));
     if (target && (target.type === 'image' || target.type === 'shape' || target.type === 'text')) {
-      onSelect(target.id);
+      onSelect(target.id, { ctrlKey: false, metaKey: false, shiftKey: false });
       onOpenProperties(target.id);
     }
+  };
+
+  const handleContextMenu = (event: ReactMouseEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - bounds.left) * document.width / bounds.width,
+      y: (event.clientY - bounds.top) * document.height / bounds.height,
+    };
+    const target = [...document.layers].reverse().find((layer) => layer.visible && layerContainsPoint(layer, point));
+    onContextMenu({ clientX: event.clientX, clientY: event.clientY, point, layerId: target?.id || null });
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -377,6 +431,23 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
           renderOverlay();
         });
       }
+      return;
+    }
+    const groupInteraction = groupInteractionRef.current;
+    if (groupInteraction && groupInteraction.pointerId === event.pointerId) {
+      const point = toCanvasPoint(event);
+      const deltaX = point.x - groupInteraction.start.x;
+      const deltaY = point.y - groupInteraction.start.y;
+      if (!groupInteraction.moved && Math.hypot(deltaX, deltaY) < Math.max(0.5, 1 / displayScale)) return;
+      if (!groupInteraction.moved) {
+        groupInteraction.moved = true;
+        onLayerInteractionStart();
+      }
+      onLiveLayersChange(groupInteraction.originals.map((layer) => ({
+        ...layer,
+        x: Math.round(layer.x + deltaX),
+        y: Math.round(layer.y + deltaY),
+      })));
       return;
     }
     const interaction = interactionRef.current;
@@ -487,6 +558,13 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
       onCommitBrushStroke(brushPoints, brushSettings);
       return;
     }
+    const groupInteraction = groupInteractionRef.current;
+    if (groupInteraction && groupInteraction.pointerId === event.pointerId) {
+      groupInteractionRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      if (groupInteraction.moved) onCommitGroupInteraction(groupInteraction.originals);
+      return;
+    }
     const interaction = interactionRef.current;
     const clickCandidate = clickCandidateRef.current;
     clickCandidateRef.current = null;
@@ -519,6 +597,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(function 
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
       />
     </div>
   );

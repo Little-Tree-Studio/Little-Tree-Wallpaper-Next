@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import hashlib
 import io
 import json
 import mimetypes
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -12,9 +15,10 @@ import sys
 import threading
 import uuid
 import webbrowser
+from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -26,7 +30,10 @@ from backend.app_meta import (
     get_build_info,
     get_metadata,
 )
-from backend.paths import ensure_dirs, get_cache_dir, get_data_dir
+from backend.paths import ensure_dirs, get_cache_dir, get_config_dir, get_data_dir
+from backend.plugins import PluginManager
+from backend.plugins.validation import SAFE_IMAGE_SUFFIXES
+from backend.services.automation import AutomationService
 from backend.services.bing import BingService
 from backend.services.cnu import CNUService
 from backend.services.download import (
@@ -38,6 +45,7 @@ from backend.services.download import (
 from backend.services.download import (
     sanitize_filename as _shared_sanitize_filename,
 )
+from backend.services.dynamic_wallpaper import WindowsDynamicWallpaperService
 from backend.services.intelligent_market import IntelligentMarketService
 from backend.services.ltws import LTWSService
 from backend.services.pexels import PexelsService
@@ -47,8 +55,11 @@ from backend.services.spotlight import SpotlightService
 from backend.services.storage import StorageService
 from backend.services.sys_wallpaper import get_display_resolutions, get_sys_wallpaper
 from backend.services.sys_wallpaper import set_wallpaper as set_sys_wallpaper
+from backend.services.theme import DEFAULT_THEME_ID, ThemeService
 from backend.services.timeline import TimelineService
 from backend.settings_manager import get_settings_store
+
+AUTOMATION_IMAGE_SUFFIXES = SAFE_IMAGE_SUFFIXES | {".avif", ".bmp"}
 
 ensure_dirs()
 
@@ -74,6 +85,7 @@ def _storage_references_transaction(method: Any) -> Any:
 class BackendAPI:
     def __init__(self) -> None:
         self.store = get_settings_store()
+        self.plugin_manager = PluginManager()
         self.bing_service = BingService()
         self.cnu_service = CNUService()
         self.pexels_service = PexelsService()
@@ -81,6 +93,8 @@ class BackendAPI:
         self.spotlight_service = SpotlightService()
         self.sniff_service = SniffService()
         self.timeline_service = TimelineService()
+        self.dynamic_wallpaper_service = WindowsDynamicWallpaperService()
+        self.theme_service = ThemeService(get_config_dir() / "themes")
         self.im_service = IntelligentMarketService(
             cache_dir=get_cache_dir(),
             settings_store=self.store,
@@ -95,7 +109,11 @@ class BackendAPI:
         # Per-session secret token injected by the launcher (main.py). It is used
         # to build authenticated preview URLs and is never written to disk.
         self._api_token: str | None = None
+        self._pending_wallpaper_lock = threading.RLock()
+        self._pending_static_wallpaper: dict[str, Any] | None = None
+        self._desktop_notify: Callable[[str, str], None] | None = None
         self._favorites_lock = threading.RLock()
+        self._automation_rotation_lock = threading.RLock()
         self._storage_references_lock = threading.RLock()
         self._storage_task_lock = threading.Lock()
         self._storage_task_state: dict[str, Any] = {
@@ -122,10 +140,534 @@ class BackendAPI:
             self._protected_storage_paths,
         )
         self.storage_service.start_automatic_maintenance()
+        self.automation_service = AutomationService(
+            get_data_dir() / "automations.json",
+            self._request_background_wallpaper,
+            self._resolve_automation_resource,
+            self._normalize_automation_setting_input,
+            self.start_dynamic_wallpaper,
+            self.control_dynamic_wallpaper,
+            self.stop_dynamic_wallpaper,
+            data_root=get_data_dir() / "automation_data",
+            notify=lambda title, message: self._desktop_notify(title, message) if self._desktop_notify else None,
+        )
+
+    @staticmethod
+    def _automation_config_value(config: dict[str, Any], pointer: str) -> Any:
+        current: Any = config
+        for part in pointer.lstrip("/").split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        return current
+
+    def _normalize_automation_setting_input(
+        self,
+        node_type: str,
+        pointer: str,
+        value: Any,
+        config: dict[str, Any],
+    ) -> Any:
+        """Coerce connected values, including select IDs and 1-based indexes."""
+        static_options: dict[tuple[str, str], list[str]] = {
+            ("trigger", "/kind"): ["manual", "startup", "interval", "schedule"],
+            ("condition", "/expression/left/type"): ["system", "variable"],
+            ("condition", "/expression/operator"): ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "matches"],
+            ("function", "/name"): ["add", "multiply", "concat", "length", "lower", "upper", "random_int"],
+            ("match", "/operator"): ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "in", "starts_with", "ends_with", "matches"],
+            ("loop", "/mode"): ["count", "items", "while"],
+            ("calculate", "/operation"): ["add", "subtract", "multiply", "divide", "mod", "power", "min", "max"],
+            ("open_target", "/kind"): ["auto", "file", "folder", "url"],
+            ("system_action", "/action"): ["shutdown", "restart", "logout", "sleep"],
+            ("write_file", "/action"): ["create", "write", "append"],
+            ("datetime", "/timezone"): ["local", "utc"],
+            ("fetch_resource", "/source"): ["im", "bing", "spotlight", "cnu", "pixiv", "ltws", "folder", "favorites"],
+            ("fetch_resource", "/category"): ["daily", "recent"],
+            ("fetch_resource", "/market"): ["zh-CN", "en-US", "ja-JP", "de-DE", "fr-FR"],
+            ("fetch_resource", "/quality"): ["highDef", "ultraHighDef"],
+            ("fetch_resource", "/spotlight_source"): ["online", "local"],
+            ("fetch_resource", "/section"): ["selected", "inspiration", "discovery"],
+            ("fetch_resource", "/order"): ["recommend", "hot", "recent", "shuffle", "sequential"],
+            ("fetch_resource", "/mode"): [
+                "day", "week", "month", "day_male", "day_female", "week_original", "week_rookie",
+                "day_manga", "day_r18", "week_r18", "day_male_r18", "day_female_r18", "week_r18g",
+            ],
+            ("fetch_resource", "/selection"): ["random", "first", "index"],
+            ("fetch_resource", "/work_selection"): ["random", "first", "index"],
+            ("fetch_resource", "/image_selection"): ["random", "first", "index"],
+            ("dynamic_wallpaper", "/action"): ["start", "play", "pause", "reload", "stop"],
+        }
+        options = static_options.get((node_type, pointer))
+        if node_type == "fetch_resource" and pointer == "/source_id":
+            if config.get("source") == "im":
+                options = [str(item.get("id")) for item in self.list_intelligent_market_sources()]
+            elif config.get("source") == "ltws":
+                options = [str(item.get("identifier")) for item in self.get_wallpaper_sources() if item.get("enabled")]
+        elif node_type == "fetch_resource" and pointer == "/api_name":
+            source_id = str(config.get("source_id") or "")
+            source = next(
+                (item for item in self.get_wallpaper_sources() if str(item.get("identifier")) == source_id),
+                None,
+            )
+            options = [str(item.get("name")) for item in (source or {}).get("apis", [])]
+        elif node_type == "fetch_resource" and pointer.startswith("/parameters/"):
+            parameter_key = pointer.split("/", 2)[-1].replace("~1", "/").replace("~0", "~")
+            if config.get("source") == "im":
+                source = next(
+                    (item for item in self.list_intelligent_market_sources() if item.get("id") == config.get("source_id")),
+                    None,
+                )
+                parameter = next((item for item in (source or {}).get("parameters", []) if item.get("key") == parameter_key), None)
+                if parameter and isinstance(parameter.get("options"), list):
+                    options = [str(item) for item in parameter["options"]]
+            elif config.get("source") == "ltws":
+                source = next(
+                    (item for item in self.get_wallpaper_sources() if item.get("identifier") == config.get("source_id")),
+                    None,
+                )
+                api = next((item for item in (source or {}).get("apis", []) if item.get("name") == config.get("api_name")), None)
+                parameter = next((item for item in (api or {}).get("parameters", []) if item.get("key") == parameter_key), None)
+                if parameter and isinstance(parameter.get("choices"), list):
+                    options = [str(item) for item in parameter["choices"]]
+
+        if options is not None:
+            if isinstance(value, str):
+                if value in options:
+                    return value
+                raise ValueError(f"设置 {pointer} 不包含选项：{value}")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and float(value).is_integer():
+                index = int(value)
+                if 1 <= index <= len(options):
+                    return options[index - 1]
+                raise ValueError(f"设置 {pointer} 的选项序号应在 1 到 {len(options)} 之间")
+            raise ValueError(f"设置 {pointer} 需要选项字符串或从 1 开始的数字序号")
+
+        if node_type == "function" and pointer == "/args":
+            values = value if isinstance(value, list) else [value]
+            return [item if isinstance(item, dict) else {"type": "literal", "value": item} for item in values]
+
+        configured = self._automation_config_value(config, pointer)
+        if isinstance(configured, bool):
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+        if isinstance(configured, int) and not isinstance(configured, bool):
+            return int(float(value))
+        if isinstance(configured, float):
+            return float(value)
+        return value
+
+    @staticmethod
+    def _select_automation_item(items: list[dict[str, Any]], config: dict[str, Any], key: str = "selection") -> dict[str, Any]:
+        if not items:
+            raise RuntimeError("资源接口没有返回壁纸")
+        strategy = str(config.get(key) or "random")
+        if strategy == "first":
+            return items[0]
+        if strategy == "index":
+            index = max(0, min(len(items) - 1, int(config.get(f"{key}_index", 1)) - 1))
+            return items[index]
+        import random
+
+        return random.choice(items)
+
+    def _select_automation_rotation_item(
+        self,
+        items: list[dict[str, Any]],
+        config: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not items:
+            raise RuntimeError("轮换队列中没有可用壁纸")
+        identities = [str(item["rotation_id"]) for item in items]
+        item_by_id = {str(item["rotation_id"]): item for item in items}
+        fingerprint_payload = {
+            "source": config.get("source"),
+            "scope": config.get("scope"),
+            "folder_id": config.get("folder_id"),
+            "item_ids": config.get("item_ids"),
+            "path": config.get("path"),
+            "recursive": bool(config.get("recursive", False)),
+            "order": config.get("order", "shuffle"),
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        node_namespace = hashlib.sha256(str(context["node_id"]).encode("utf-8")).hexdigest()[:16]
+        state_path = Path(str(context["data_directory"])) / f"rotation-{node_namespace}.json"
+        with self._automation_rotation_lock:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+            if state.get("fingerprint") != fingerprint:
+                state = {"fingerprint": fingerprint, "cycle_ids": [], "remaining_ids": [], "last_id": ""}
+            current_ids = set(identities)
+            cycle_ids = [item_id for item_id in state.get("cycle_ids", []) if item_id in current_ids]
+            remaining = [item_id for item_id in state.get("remaining_ids", []) if item_id in current_ids]
+            additions = [item_id for item_id in identities if item_id not in set(cycle_ids)]
+            if str(config.get("order") or "shuffle") == "shuffle":
+                random.shuffle(additions)
+            cycle_ids.extend(additions)
+            remaining.extend(additions)
+            if not remaining:
+                cycle_ids = list(identities)
+                remaining = list(identities)
+                if str(config.get("order") or "shuffle") == "shuffle":
+                    random.shuffle(remaining)
+                last_id = str(state.get("last_id") or "")
+                if len(remaining) > 1 and remaining[0] == last_id:
+                    remaining[0], remaining[1] = remaining[1], remaining[0]
+            selected_id = remaining.pop(0)
+            self._write_json_atomic(state_path, {
+                "fingerprint": fingerprint,
+                "cycle_ids": cycle_ids,
+                "remaining_ids": remaining,
+                "last_id": selected_id,
+            })
+        return item_by_id[selected_id]
+
+    def _favorite_rotation_items(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+        data = self._load_favorites()
+        scope = str(config.get("scope") or "folder")
+        if scope == "selected":
+            selected_ids = {str(item_id) for item_id in config.get("item_ids", [])}
+            items = [item for item in data.get("items", []) if str(item.get("id")) in selected_ids]
+        else:
+            folder_id = str(config.get("folder_id") or "")
+            if not any(str(folder.get("id")) == folder_id for folder in data.get("folders", [])):
+                raise ValueError("轮换绑定的收藏夹已不存在")
+            items = [item for item in data.get("items", []) if str(item.get("folder_id")) == folder_id]
+        return [{**item, "rotation_id": str(item.get("id"))} for item in items if item.get("id")]
+
+    def _folder_rotation_items(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+        folder = Path(str(config.get("path") or "")).expanduser().resolve()
+        if not folder.is_dir():
+            raise NotADirectoryError(f"轮换文件夹不存在：{folder}")
+        iterator = folder.rglob("*") if bool(config.get("recursive", False)) else folder.glob("*")
+        paths = sorted(
+            (path for path in iterator if path.is_file() and not path.is_symlink() and path.suffix.lower() in AUTOMATION_IMAGE_SUFFIXES),
+            key=lambda path: str(path.relative_to(folder)).casefold(),
+        )
+        return [{"rotation_id": str(path), "path": str(path), "title": path.stem} for path in paths]
+
+    def _resolve_automation_resource(self, config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        """Resolve one configured source result into a verified local image path."""
+        try:
+            source = str(config.get("source") or "bing")
+            item: dict[str, Any]
+            if source == "folder":
+                item = self._select_automation_rotation_item(self._folder_rotation_items(config), config, context)
+                path = str(item["path"])
+                return {"success": True, "path": path, "item": item}
+            if source == "favorites":
+                item = self._select_automation_rotation_item(self._favorite_rotation_items(config), config, context)
+                local_path = Path(str(item.get("local_path") or "")).expanduser()
+                if local_path.is_file() and local_path.suffix.lower() in AUTOMATION_IMAGE_SUFFIXES:
+                    return {"success": True, "path": str(local_path.resolve()), "item": item}
+                image_url = str(item.get("source_url") or item.get("preview_url") or "")
+                if not image_url:
+                    raise RuntimeError(f"收藏「{item.get('title') or item.get('id')}」没有可用图片")
+                suffix = Path(urlparse(self._unwrap_session_url(image_url)).path).suffix.lower()
+                filename = f"favorite-{item['id']}{suffix if suffix in AUTOMATION_IMAGE_SUFFIXES else '.jpg'}"
+                headers = {"Referer": str(item["source_page_url"])} if item.get("source_page_url") else {}
+                path = self._download_file_sync(image_url, self._downloads_dir() / "automation" / "favorites", filename=filename, headers=headers)
+                if not path:
+                    raise RuntimeError(f"收藏「{item.get('title') or item.get('id')}」下载失败")
+                stable_item = {key: value for key, value in item.items() if key != "rotation_id"}
+                self.update_favorite({**stable_item, "local_path": path})
+                return {"success": True, "path": path, "item": item}
+            if source == "bing":
+                items = self.query_bing(
+                    str(config.get("category") or "daily"),
+                    str(config.get("market") or "zh-CN"),
+                    max(1, min(20, int(config.get("count", 8)))),
+                    str(config.get("quality") or "highDef"),
+                    bool(config.get("force_refresh", False)),
+                )
+                item = self._select_automation_item(items, config)
+            elif source == "spotlight":
+                items = self.query_spotlight(
+                    str(config.get("spotlight_source") or "online"),
+                    max(1, min(100, int(config.get("limit", 20)))),
+                    str(config.get("market") or "zh-CN"),
+                    bool(config.get("force_refresh", False)),
+                )
+                item = self._select_automation_item(items, config)
+            elif source == "cnu":
+                section = str(config.get("section") or "selected")
+                if section == "selected":
+                    works = self.query_cnu_selected(int(config.get("page", 1)), int(config.get("limit", 20)), bool(config.get("force_refresh", False)))
+                else:
+                    works = self.query_cnu_works(
+                        section,
+                        str(config.get("order") or ("recent" if section == "inspiration" else "recommend")),
+                        str(config.get("category_id") or "0"),
+                        int(config.get("page", 1)),
+                        int(config.get("limit", 20)),
+                        bool(config.get("force_refresh", False)),
+                    )
+                work = self._select_automation_item(works, config, "work_selection")
+                item = self._select_automation_item(self.get_cnu_work(str(work["id"])), config, "image_selection")
+            elif source == "pixiv":
+                mode = str(config.get("mode") or "day")
+                if "r18" in mode and not bool(self.store.get("wallpaper.allow_NSFW", False)):
+                    raise ValueError("Pixiv R18 排行榜需要先在设置中启用 NSFW 内容")
+                works = self.query_pixivel_ranking(
+                    mode,
+                    int(config.get("page", 1)),
+                    int(config.get("limit", 30)),
+                    bool(config.get("force_refresh", False)),
+                    str(config.get("ranking_date") or "") or None,
+                )
+                work = self._select_automation_item(works, config, "work_selection")
+                item = self._select_automation_item(self.get_pixivel_work(str(work["id"])), config, "image_selection")
+            elif source == "im":
+                items = self.execute_intelligent_market_source(
+                    str(config.get("source_id") or ""),
+                    config.get("parameters") if isinstance(config.get("parameters"), dict) else {},
+                )
+                item = self._select_automation_item(items, config)
+            elif source == "ltws":
+                source_id = str(config.get("source_id") or "")
+                api_name = str(config.get("api_name") or "")
+                sources = self.get_wallpaper_sources()
+                source_document = next((entry for entry in sources if str(entry.get("identifier")) == source_id), None)
+                api_document = next(
+                    (entry for entry in (source_document or {}).get("apis", []) if str(entry.get("name")) == api_name),
+                    None,
+                )
+                parameters = {
+                    str(param.get("key")): param.get("default", "")
+                    for param in (api_document or {}).get("parameters", [])
+                    if isinstance(param, dict) and param.get("key")
+                }
+                if isinstance(config.get("parameters"), dict):
+                    parameters.update(config["parameters"])
+                items = self.execute_wallpaper_source(source_id, api_name, parameters)
+                item = self._select_automation_item(items, config)
+            else:
+                raise ValueError("不支持的自动化资源类型")
+
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            image_url = str(metadata.get("original_image_url") or item.get("image_url") or "")
+            if source == "spotlight" and str(config.get("spotlight_source") or "online") == "local":
+                path = image_url
+            else:
+                headers: dict[str, str] = {}
+                if source == "cnu":
+                    headers = {
+                        "Referer": str(metadata.get("referer") or "http://www.cnu.cc/"),
+                        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    }
+                elif source == "im" and metadata.get("referer"):
+                    headers["Referer"] = str(metadata["referer"])
+                path = self._download_file_sync(image_url, self._downloads_dir() / "automation", headers=headers)
+            if not path or not Path(path).is_file():
+                raise RuntimeError("资源图片下载或校验失败")
+            return {"success": True, "path": str(path), "item": item}
+        except Exception as exc:
+            logger.error("Automation resource resolution failed: {}", exc)
+            return {"success": False, "path": "", "item": None, "error": str(exc)}
+
+    def get_automation_resource_catalog(self) -> dict[str, Any]:
+        return {
+            "intelligent_market": self.list_intelligent_market_sources(),
+            "wallpaper_sources": self.get_wallpaper_sources(),
+            "favorite_folders": self._load_favorites().get("folders", []),
+        }
+
+    def select_automation_local_image(self) -> str | None:
+        return self._show_file_dialog(
+            "open",
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.avif")],
+        )
+
+    @staticmethod
+    def select_automation_directory() -> str | None:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            path = filedialog.askdirectory()
+            return path if path else None
+        finally:
+            root.destroy()
 
     def set_api_token(self, token: str) -> None:
         """Inject the per-session token used to authorize preview URLs."""
         self._api_token = token
+
+    def configure_dynamic_wallpaper_runtime(self, base_url: str, token: str, host_window: Any | None = None) -> None:
+        self.dynamic_wallpaper_service.configure(base_url, token, host_window)
+
+    def _configure_desktop_notifications(
+        self,
+        notify: Callable[[str, str], None],
+    ) -> None:
+        self._desktop_notify = notify
+
+    def start_automation_runtime(self) -> None:
+        self.automation_service.start()
+
+    def shutdown_dynamic_wallpaper(self) -> None:
+        self.dynamic_wallpaper_service.shutdown()
+
+    def shutdown_automation(self) -> None:
+        self.automation_service.shutdown()
+
+    @staticmethod
+    def _sanitize_plugin_result(result: dict[str, Any]) -> dict[str, Any]:
+        sanitized = dict(result)
+        plugins = sanitized.get("plugins")
+        if isinstance(plugins, list):
+            sanitized["plugins"] = [
+                BackendAPI._sanitize_plugin_result(plugin) if isinstance(plugin, dict) else plugin for plugin in plugins
+            ]
+        source = sanitized.get("source")
+        if isinstance(source, str) and source and source != "installed":
+            sanitized["source"] = Path(source).name or "installed"
+        return sanitized
+
+    def list_plugins(self) -> dict[str, Any]:
+        return self._sanitize_plugin_result(self.plugin_manager.list_plugins())
+
+    def install_plugin_package(self, path: str | None = None, allow_downgrade: bool = False) -> dict[str, Any]:
+        package_path = path or self._show_file_dialog(
+            "open",
+            filetypes=[("Little Tree Plugin", "*.ltp")],
+        )
+        if not package_path:
+            return {
+                "state": "cancelled",
+                "status": "cancelled",
+                "error": None,
+                "manifest": None,
+                "contributions": {},
+                "package_hash": None,
+                "source": None,
+            }
+        return self._sanitize_plugin_result(
+            self.plugin_manager.install_package(package_path, allow_downgrade=allow_downgrade)
+        )
+
+    def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
+        return self._sanitize_plugin_result(self.plugin_manager.set_enabled(plugin_id, enabled))
+
+    def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
+        return self._sanitize_plugin_result(self.plugin_manager.reload(plugin_id))
+
+    def remove_plugin(self, plugin_id: str) -> dict[str, Any]:
+        return self._sanitize_plugin_result(self.plugin_manager.remove(plugin_id))
+
+    def invoke_plugin_action(self, plugin_id: str, action: str, payload: Any = None) -> dict[str, Any]:
+        return self._sanitize_plugin_result(self.plugin_manager.invoke(plugin_id, action, payload))
+
+    @staticmethod
+    def _plugin_contribution_assets(contributions: Any) -> set[str]:
+        assets: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                if value.get("type") == "image" and isinstance(value.get("src"), str):
+                    assets.add(value["src"])
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(contributions)
+        return assets
+
+    @staticmethod
+    def _resolve_plugin_asset(
+        plugin_manager: PluginManager, plugin_id: str, asset_path: str
+    ) -> tuple[bytes, str] | None:
+        """Resolve a contribution image for an enabled, started plugin."""
+        if (
+            not isinstance(asset_path, str)
+            or not asset_path
+            or len(asset_path) > 240
+            or "\\" in asset_path
+            or "%" in asset_path
+            or "\x00" in asset_path
+            or ":" in asset_path
+        ):
+            return None
+        parts = asset_path.split("/")
+        if any(not part or part in {".", ".."} or part.endswith((" ", ".")) for part in parts):
+            return None
+        relative = PurePosixPath(asset_path)
+        if relative.is_absolute() or relative.as_posix() != asset_path:
+            return None
+        suffix = Path(asset_path).suffix.lower()
+        if suffix not in SAFE_IMAGE_SUFFIXES:
+            return None
+
+        listed = plugin_manager.list_plugins().get("plugins", [])
+        plugin = next(
+            (
+                item
+                for item in listed
+                if isinstance(item, dict)
+                and item.get("id") == plugin_id
+                and item.get("state") == "enabled"
+                and item.get("status") == "started"
+                and item.get("error") is None
+            ),
+            None,
+        )
+        if plugin is None or asset_path not in BackendAPI._plugin_contribution_assets(plugin.get("contributions")):
+            return None
+
+        plugins_dir = Path(plugin_manager.plugins_dir)
+        root = plugins_dir / plugin_id
+        target = root.joinpath(*relative.parts)
+        try:
+            if plugins_dir.is_symlink() or root.is_symlink() or not root.is_dir():
+                return None
+            current = root
+            for part in relative.parts:
+                current /= part
+                if current.is_symlink():
+                    return None
+            resolved_root = root.resolve(strict=True)
+            resolved = target.resolve(strict=True)
+            resolved.relative_to(resolved_root)
+            if not resolved.is_file():
+                return None
+            with resolved.open("rb") as file:
+                data = file.read()
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+        header = data[:12]
+        signatures = {
+            ".gif": (b"GIF87a", b"GIF89a"),
+            ".jpeg": (b"\xff\xd8\xff",),
+            ".jpg": (b"\xff\xd8\xff",),
+            ".png": (b"\x89PNG\r\n\x1a\n",),
+            ".webp": (b"RIFF",),
+        }
+        if not any(header.startswith(signature) for signature in signatures[suffix]):
+            return None
+        if suffix == ".webp" and header[8:12] != b"WEBP":
+            return None
+        content_types = {
+            ".gif": "image/gif",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }
+        return data, content_types[suffix]
+
+    def resolve_plugin_asset(self, plugin_id: str, asset_path: str) -> tuple[bytes, str] | None:
+        return self._resolve_plugin_asset(self.plugin_manager, plugin_id, asset_path)
 
     def _favorites_path(self) -> Path:
         raw = self.store.get("storage.favorites_directory")
@@ -135,6 +677,12 @@ class BackendAPI:
 
     def _history_path(self) -> Path:
         return get_data_dir() / "wallpaper_history.json"
+
+    def _generated_images_path(self) -> Path:
+        return get_data_dir() / "generated_images.json"
+
+    def _generated_images_dir(self) -> Path:
+        return self._downloads_dir() / "generated"
 
     @staticmethod
     def _show_file_dialog(
@@ -196,6 +744,16 @@ class BackendAPI:
             path = item.get("path")
             if path:
                 protected.add(Path(str(path)))
+        # Generated-image records are protected best-effort: an unreadable
+        # registry must never block storage maintenance.
+        try:
+            generated = json.loads(self._generated_images_path().read_text(encoding="utf-8"))
+        except Exception:
+            generated = []
+        if isinstance(generated, list):
+            for item in generated:
+                if isinstance(item, dict) and item.get("path"):
+                    protected.add(Path(str(item["path"])))
         for key in (
             "wallpaper.auto_change.interval.fixed_image",
             "startup.wallpaper_change.fixed_image",
@@ -203,15 +761,14 @@ class BackendAPI:
             path = self.store.get(key)
             if path:
                 protected.add(Path(str(path)))
+        with self._pending_wallpaper_lock:
+            pending = self._pending_static_wallpaper
+            if pending and pending.get("path"):
+                protected.add(Path(str(pending["path"])))
         return protected
 
-    def _rebase_download_references(
-        self, copied: list[tuple[Path, Path]]
-    ) -> tuple[dict[str, Any], set[Path]]:
-        mapping = {
-            os.path.normcase(os.path.abspath(str(source))): str(destination)
-            for source, destination in copied
-        }
+    def _rebase_download_references(self, copied: list[tuple[Path, Path]]) -> tuple[dict[str, Any], set[Path]]:
+        mapping = {os.path.normcase(os.path.abspath(str(source))): str(destination) for source, destination in copied}
         favorites_path = self._favorites_path()
         history_path = self._history_path()
         favorites = json.loads(favorites_path.read_text(encoding="utf-8"))
@@ -222,6 +779,13 @@ class BackendAPI:
             raise RuntimeError("历史记录格式异常，无法安全迁移下载")
         original_favorites = json.loads(json.dumps(favorites, ensure_ascii=False))
         original_history = json.loads(json.dumps(history, ensure_ascii=False))
+        generated_path = self._generated_images_path()
+        try:
+            raw_generated = json.loads(generated_path.read_text(encoding="utf-8"))
+            generated = raw_generated if isinstance(raw_generated, list) else []
+        except Exception:
+            generated = []
+        original_generated = json.loads(json.dumps(generated, ensure_ascii=False))
         setting_keys = (
             "wallpaper.auto_change.interval.fixed_image",
             "startup.wallpaper_change.fixed_image",
@@ -243,10 +807,18 @@ class BackendAPI:
             replacement = mapping.get(os.path.normcase(os.path.abspath(str(path)))) if path else None
             if replacement:
                 item["path"] = replacement
+        for item in generated:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            replacement = mapping.get(os.path.normcase(os.path.abspath(str(path)))) if path else None
+            if replacement:
+                item["path"] = replacement
 
         try:
             self._write_json_atomic(favorites_path, favorites)
             self._write_json_atomic(history_path, history)
+            self._write_json_atomic(generated_path, generated)
             changed_settings: dict[str, str] = {}
             for key, old_value in original_settings.items():
                 replacement = mapping.get(os.path.normcase(os.path.abspath(str(old_value)))) if old_value else None
@@ -257,6 +829,7 @@ class BackendAPI:
         except Exception:
             self._write_json_atomic(favorites_path, original_favorites)
             self._write_json_atomic(history_path, original_history)
+            self._write_json_atomic(generated_path, original_generated)
             self.store.set_many(original_settings)
             raise
 
@@ -271,6 +844,7 @@ class BackendAPI:
         state = {
             "favorites": original_favorites,
             "history": original_history,
+            "generated": original_generated,
             "settings": original_settings,
             "current_wallpaper": current_wallpaper,
         }
@@ -279,6 +853,8 @@ class BackendAPI:
     def _restore_download_references(self, state: dict[str, Any]) -> None:
         self._write_json_atomic(self._favorites_path(), state["favorites"])
         self._write_json_atomic(self._history_path(), state["history"])
+        if "generated" in state:
+            self._write_json_atomic(self._generated_images_path(), state["generated"])
         self.store.set_many(state["settings"])
         current_wallpaper = state.get("current_wallpaper")
         if current_wallpaper:
@@ -647,7 +1223,10 @@ class BackendAPI:
         # Windows Spotlight assets live in a system directory; allowing them
         # lets the local Spotlight proxy serve and copy those files.
         if os.name == "nt":
-            spotlight_path = Path.home() / "AppData/Local/Packages/Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy/LocalState/Assets"
+            spotlight_path = (
+                Path.home()
+                / "AppData/Local/Packages/Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy/LocalState/Assets"
+            )
             with contextlib.suppress(Exception):
                 roots.add(spotlight_path.resolve())
         return roots
@@ -711,12 +1290,14 @@ class BackendAPI:
 
     @staticmethod
     def _is_cnu_cdn_url(url: str) -> bool:
-        return url.startswith((
-            "http://imgoss.cnu.cc",
-            "https://imgoss.cnu.cc",
-            "http://img.cnu.cc",
-            "https://img.cnu.cc",
-        ))
+        return url.startswith(
+            (
+                "http://imgoss.cnu.cc",
+                "https://imgoss.cnu.cc",
+                "http://img.cnu.cc",
+                "https://img.cnu.cc",
+            )
+        )
 
     def _proxy_cnu_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Rewrite CNU CDN image URLs to same-origin proxy URLs.
@@ -845,9 +1426,20 @@ class BackendAPI:
             return None
 
     @_storage_references_transaction
-    def set_wallpaper(self, path: str) -> dict[str, Any]:
+    def set_wallpaper(self, path: str, confirm_stop_dynamic_wallpaper: bool = False) -> dict[str, Any]:
         try:
             real_path = self._unwrap_session_url(path)
+            if self.dynamic_wallpaper_service.requires_static_wallpaper_confirmation():
+                if not confirm_stop_dynamic_wallpaper:
+                    return {
+                        "success": False,
+                        "requires_confirmation": True,
+                        "code": "dynamic_wallpaper_running",
+                        "error": "动态壁纸正在运行，设置静态壁纸将停止动态壁纸",
+                    }
+                if not self.dynamic_wallpaper_service.wait_until_idle():
+                    raise TimeoutError("动态壁纸操作尚未完成，请稍后重试")
+                self.dynamic_wallpaper_service.stop()
             set_sys_wallpaper(real_path)
             self.add_to_history(real_path, Path(real_path).name, "set")
             logger.info("Wallpaper set to {}", real_path)
@@ -855,6 +1447,50 @@ class BackendAPI:
         except Exception as e:
             logger.error("Failed to set wallpaper {}: {}", path, e)
             return {"success": False, "error": str(e)}
+
+    def _request_background_wallpaper(self, path: str) -> dict[str, Any]:
+        """Apply immediately or queue a latest-wins confirmation for the UI."""
+        real_path = self._unwrap_session_url(path)
+        if not self.dynamic_wallpaper_service.requires_static_wallpaper_confirmation():
+            return self.set_wallpaper(real_path)
+
+        task = {
+            "id": uuid.uuid4().hex,
+            "path": real_path,
+            "name": Path(real_path).name,
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        with self._pending_wallpaper_lock:
+            self._pending_static_wallpaper = task
+
+        notify = self._desktop_notify
+        if notify is not None:
+            with contextlib.suppress(Exception):
+                notify(
+                    "静态壁纸等待确认",
+                    "动态壁纸正在运行。点击通知打开小树壁纸并确认是否停止动态壁纸。",
+                )
+        logger.info("Queued background static wallpaper confirmation for {}", real_path)
+        return {"success": True, "queued": True, "requires_confirmation": True, "task_id": task["id"]}
+
+    def get_pending_static_wallpaper(self) -> dict[str, Any] | None:
+        with self._pending_wallpaper_lock:
+            return dict(self._pending_static_wallpaper) if self._pending_static_wallpaper else None
+
+    def resolve_pending_static_wallpaper(self, task_id: str, confirmed: bool) -> dict[str, Any]:
+        with self._pending_wallpaper_lock:
+            task = self._pending_static_wallpaper
+            if task is None or task.get("id") != task_id:
+                return {"success": False, "code": "pending_task_not_found", "error": "待确认壁纸请求已失效"}
+            self._pending_static_wallpaper = None
+        if not confirmed:
+            return {"success": True, "cancelled": True}
+        result = self.set_wallpaper(str(task["path"]), True)
+        if not result.get("success"):
+            with self._pending_wallpaper_lock:
+                if self._pending_static_wallpaper is None:
+                    self._pending_static_wallpaper = task
+        return result
 
     def get_bing_wallpaper(self) -> dict[str, Any] | None:
         logger.debug("Fetching Bing wallpaper")
@@ -1038,6 +1674,15 @@ class BackendAPI:
         except Exception as e:
             logger.error(f"Clipboard error: {e}")
 
+    def get_clipboard_text(self) -> str:
+        try:
+            import pyperclip
+
+            return pyperclip.paste()
+        except Exception as e:
+            logger.error(f"Clipboard read error: {e}")
+            return ""
+
     def copy_image_to_clipboard(self, data: bytes) -> bool:
         """Copy image bytes to the system clipboard.
 
@@ -1059,7 +1704,6 @@ class BackendAPI:
                 # Prefer pywin32 when available; it handles window/thread
                 # clipboard ownership correctly inside pywebview.
                 try:
-
                     return self._copy_image_to_clipboard_win32_pywin32(image)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("pywin32 clipboard unavailable ({}), falling back to ctypes", exc)
@@ -1106,8 +1750,8 @@ class BackendAPI:
         dib_data = output.getvalue()[14:]
         output.close()
 
-        CF_DIB = 8
-        GMEM_MOVEABLE = 0x0002
+        cf_dib = 8
+        gmem_moveable = 0x0002
 
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
@@ -1118,7 +1762,7 @@ class BackendAPI:
             return False
         try:
             user32.EmptyClipboard()
-            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+            h_mem = kernel32.GlobalAlloc(gmem_moveable, len(dib_data))
             if not h_mem:
                 err = ctypes.get_last_error()
                 logger.error("GlobalAlloc failed: error={}", err)
@@ -1133,7 +1777,7 @@ class BackendAPI:
                 ctypes.memmove(ptr, dib_data, len(dib_data))
             finally:
                 kernel32.GlobalUnlock(h_mem)
-            if not user32.SetClipboardData(CF_DIB, h_mem):
+            if not user32.SetClipboardData(cf_dib, h_mem):
                 err = ctypes.get_last_error()
                 logger.error("SetClipboardData failed: error={}", err)
                 kernel32.GlobalFree(h_mem)
@@ -1257,6 +1901,20 @@ class BackendAPI:
             logger.error(f"Save blob as error: {e}")
             return None
 
+    def save_blob_to_path(self, data: bytes, filepath: str) -> str | None:
+        """Atomically overwrite a file previously selected by the user."""
+        try:
+            dest = Path(filepath).expanduser()
+            if not dest.is_absolute():
+                logger.warning("Rejected non-absolute save path: {}", filepath)
+                return None
+            write_blob_atomic(dest, data)
+            logger.info("Saved file to {} ({} bytes)", dest, dest.stat().st_size)
+            return str(dest)
+        except Exception as e:
+            logger.error(f"Save blob to path error: {e}")
+            return None
+
     def sniff_images(self, url: str) -> list[dict[str, Any]]:
         try:
             ua = self.store.get("sniff.user_agent", "Mozilla/5.0")
@@ -1270,9 +1928,10 @@ class BackendAPI:
                 referer=configured_referer,
                 use_source_as_referer=use_source_as_referer,
             )
+            max_results = max(20, min(2000, int(self.store.get("sniff.max_results", 300))))
 
             result: list[dict[str, Any]] = []
-            for item in items:
+            for item in items[:max_results]:
                 source_url = str(item.get("image_url") or "")
                 metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
                 page_url = str(metadata.get("page_url") or url)
@@ -1490,9 +2149,7 @@ class BackendAPI:
             stable_item[field] = self._unwrap_session_url(str(stable_item.get(field) or ""))
         stable_tags = list(stable_item.get("tags", []))
         source_tag = self._favorite_source_tag(stable_item)
-        if source_tag == "Pixiv" and not self.store.get(
-            "wallpaper.pixiv.include_artwork_tags_in_favorites", True
-        ):
+        if source_tag == "Pixiv" and not self.store.get("wallpaper.pixiv.include_artwork_tags_in_favorites", True):
             stable_tags = ["Pixiv"]
         elif source_tag and source_tag not in stable_tags:
             stable_tags.append(source_tag)
@@ -1513,7 +2170,7 @@ class BackendAPI:
             system_tags.add(source_tag)
         data["system_tags"] = sorted(system_tags)
         self._save_favorites(data)
-        return self._hydrate_favorite_urls({"items": [new_item]} )["items"][0]
+        return self._hydrate_favorite_urls({"items": [new_item]})["items"][0]
 
     @_favorites_transaction
     def ensure_tag(self, name: str) -> None:
@@ -1559,9 +2216,7 @@ class BackendAPI:
             stable_item[field] = self._unwrap_session_url(str(stable_item.get(field) or ""))
         stable_tags = list(stable_item.get("tags", []))
         source_tag = self._favorite_source_tag(stable_item)
-        if source_tag == "Pixiv" and not self.store.get(
-            "wallpaper.pixiv.include_artwork_tags_in_favorites", True
-        ):
+        if source_tag == "Pixiv" and not self.store.get("wallpaper.pixiv.include_artwork_tags_in_favorites", True):
             stable_tags = ["Pixiv"]
         elif source_tag and source_tag not in stable_tags:
             stable_tags.append(source_tag)
@@ -1682,6 +2337,80 @@ class BackendAPI:
     def get_settings(self) -> dict[str, Any]:
         return self.store.as_dict()
 
+    def list_themes(self) -> list[dict[str, Any]]:
+        return self.theme_service.list_themes()
+
+    def get_theme(self, theme_id: str) -> dict[str, Any]:
+        return self.theme_service.get_theme(theme_id)
+
+    def list_system_fonts(self) -> list[str]:
+        return self.theme_service.list_system_fonts()
+
+    def get_active_theme(self) -> dict[str, Any]:
+        mode = str(self.store.get("ui.theme", "system"))
+        if mode not in {"system", "light", "dark"}:
+            mode = "system"
+        theme_id = str(self.store.get("ui.theme_profile", DEFAULT_THEME_ID))
+        try:
+            theme = self.theme_service.get_theme(theme_id)
+        except ValueError:
+            theme_id = DEFAULT_THEME_ID
+            theme = self.theme_service.get_theme(theme_id)
+            self.store.set("ui.theme_profile", theme_id)
+        return {"mode": mode, "theme": theme}
+
+    def save_theme(self, theme: dict[str, Any]) -> dict[str, Any]:
+        return self.theme_service.save_theme(theme)
+
+    def activate_theme(self, theme_id: str) -> dict[str, Any]:
+        theme = self.theme_service.get_theme(theme_id)
+        self.store.set("ui.theme_profile", theme["id"])
+        return theme
+
+    def duplicate_theme(self, theme_id: str, name: str | None = None) -> dict[str, Any]:
+        return self.theme_service.duplicate_theme(theme_id, name)
+
+    def delete_theme(self, theme_id: str) -> None:
+        self.theme_service.delete_theme(theme_id)
+        if self.store.get("ui.theme_profile", DEFAULT_THEME_ID) == theme_id:
+            self.store.set("ui.theme_profile", DEFAULT_THEME_ID)
+
+    def pick_theme_asset(self, theme_id: str, role: str, mode: str) -> dict[str, Any] | None:
+        filters = {
+            "image": ("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.avif"),
+            "video": ("Videos", "*.mp4 *.webm *.mov *.m4v"),
+            "font": ("Fonts", "*.woff2 *.woff *.ttf *.otf"),
+        }
+        normalized_role = str(role).strip().lower()
+        if normalized_role not in filters:
+            raise ValueError("资源类型无效")
+        path = self._show_file_dialog("open", filetypes=[filters[normalized_role]])
+        if not path:
+            return None
+        return self.theme_service.pick_asset(theme_id, normalized_role, mode, Path(path))
+
+    def pick_and_import_theme(self) -> dict[str, Any] | None:
+        path = self._show_file_dialog(
+            "open",
+            filetypes=[("Little Tree Theme", "*.lttheme"), ("Theme JSON", "*.json")],
+        )
+        if not path:
+            return None
+        return self.theme_service.import_theme(Path(path))
+
+    def export_theme(self, theme_id: str) -> str | None:
+        theme = self.theme_service.get_theme(theme_id)
+        safe_name = re.sub(r'[\\/:*?"<>|]+', "-", theme["name"]).strip().strip(".") or "theme"
+        path = self._show_file_dialog(
+            "save",
+            filetypes=[("Little Tree Theme", "*.lttheme")],
+            defaultextension=".lttheme",
+            initialfile=f"{safe_name}.lttheme",
+        )
+        if not path:
+            return None
+        return str(self.theme_service.export_theme(theme_id, Path(path)))
+
     @_storage_references_transaction
     def set_settings(self, settings: dict[str, Any]) -> None:
         current_storage = self.store.get("storage", {})
@@ -1700,12 +2429,18 @@ class BackendAPI:
             raise ValueError("存储位置必须通过专用迁移接口修改")
         self.store.set(key, value)
 
-    def get_history(self, max_preview_items: int = 20) -> list[dict[str, Any]]:
-        history = self._load_history()
+    def get_history(self, max_preview_items: int | None = None) -> list[dict[str, Any]]:
+        stored_history = self._load_history()
+        configured_max = max(10, min(2000, int(self.store.get("wallpaper.history.max_items", 200))))
+        history = stored_history[:configured_max]
+        preview_limit = max_preview_items
+        if preview_limit is None:
+            preview_limit = int(self.store.get("wallpaper.history.preview_items", 20))
+        preview_limit = max(0, min(configured_max, int(preview_limit)))
         for i, item in enumerate(history):
             # Preview URLs are built live (token-scoped) and never persisted, so
             # old base64 entries are replaced with fresh HTTP URLs each call.
-            if i < max_preview_items:
+            if i < preview_limit:
                 item["preview_url"] = self._build_preview_url(item.get("path", ""), max_size=320)
             else:
                 item.pop("preview_url", None)
@@ -1724,8 +2459,89 @@ class BackendAPI:
                 "time": datetime.now().isoformat(),
             },
         )
-        history = history[:200]
+        max_items = max(10, min(2000, int(self.store.get("wallpaper.history.max_items", 200))))
+        history = history[:max_items]
         self._save_history(history)
+
+    def _load_generated_images(self) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self._generated_images_path().read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        return data if isinstance(data, list) else []
+
+    def _save_generated_images(self, data: list[dict[str, Any]]) -> None:
+        self._write_json_atomic(self._generated_images_path(), data)
+
+    def get_generated_images(self) -> list[dict[str, Any]]:
+        """Return persisted generation records, pruning entries whose image
+        file no longer exists on disk."""
+        records = self._load_generated_images()
+        max_items = max(10, min(500, int(self.store.get("generate.history_max_items", 100))))
+        kept = [
+            record
+            for record in records
+            if isinstance(record, dict) and record.get("path") and Path(str(record["path"])).is_file()
+        ][:max_items]
+        if len(kept) != len(records):
+            self._save_generated_images(kept)
+        for record in kept:
+            record["preview_url"] = self._build_preview_url(str(record.get("path", "")), max_size=640)
+        return kept
+
+    def save_generated_image(
+        self, data: bytes, filename: str, meta: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Persist a generated image into ``downloads/generated`` and register
+        a record so the generation history survives restarts."""
+        try:
+            save_dir = self._generated_images_dir()
+            save_dir.mkdir(parents=True, exist_ok=True)
+            filepath = save_dir / self._sanitize_filename(filename)
+            with self.storage_service.download_operation():
+                result = write_blob_atomic(filepath, data)
+            record = dict(meta or {})
+            record.setdefault("id", uuid.uuid4().hex)
+            record["path"] = str(result.path)
+            records = [
+                item
+                for item in self._load_generated_images()
+                if isinstance(item, dict) and item.get("id") != record["id"]
+            ]
+            records.insert(0, record)
+            max_items = max(10, min(500, int(self.store.get("generate.history_max_items", 100))))
+            self._save_generated_images(records[:max_items])
+            logger.info("Saved generated image to {} ({} bytes)", result.path, result.size)
+            return record
+        except Exception as e:
+            logger.error("Save generated image error: {}", e)
+            return None
+
+    def delete_generated_image(self, image_id: str) -> None:
+        records = self._load_generated_images()
+        remaining = []
+        for record in records:
+            if isinstance(record, dict) and str(record.get("id")) == str(image_id):
+                path = record.get("path")
+                if path:
+                    try:
+                        Path(str(path)).unlink(missing_ok=True)
+                    except Exception as exc:
+                        logger.warning("Failed to delete generated image file {}: {}", path, exc)
+                continue
+            remaining.append(record)
+        self._save_generated_images(remaining)
+
+    def clear_generated_images(self, delete_files: bool = True) -> None:
+        if delete_files:
+            for record in self._load_generated_images():
+                path = record.get("path") if isinstance(record, dict) else None
+                if path:
+                    try:
+                        Path(str(path)).unlink(missing_ok=True)
+                    except Exception as exc:
+                        logger.warning("Failed to delete generated image file {}: {}", path, exc)
+        self._save_generated_images([])
 
     def check_for_updates(self) -> dict[str, Any] | None:
         return None
@@ -1893,6 +2709,36 @@ class BackendAPI:
         except Exception:
             return None
 
+    def select_dynamic_wallpaper_media(self) -> str | None:
+        return self._show_file_dialog(
+            "open",
+            filetypes=[("Video", "*.mp4 *.webm *.mov *.m4v")],
+        )
+
+    def get_dynamic_wallpaper_status(self) -> dict[str, Any]:
+        return self.dynamic_wallpaper_service.diagnose()
+
+    def start_dynamic_wallpaper(
+        self,
+        path: str,
+        muted: bool = True,
+        loop: bool = True,
+        playback_rate: float = 1.0,
+    ) -> dict[str, Any]:
+        return self.dynamic_wallpaper_service.start(path, muted, loop, playback_rate)
+
+    def stop_dynamic_wallpaper(self) -> dict[str, Any]:
+        return self.dynamic_wallpaper_service.stop()
+
+    def control_dynamic_wallpaper(self, action: str) -> dict[str, Any]:
+        return self.dynamic_wallpaper_service.control(action)
+
+    def update_dynamic_wallpaper_telemetry(self, payload: dict[str, Any]) -> None:
+        self.dynamic_wallpaper_service.update_telemetry(payload)
+
+    def resolve_dynamic_wallpaper_media(self, revision: int = 0) -> tuple[Path, str] | None:
+        return self.dynamic_wallpaper_service.media_file(revision)
+
     @staticmethod
     def _favorite_export_options(options: dict[str, Any] | str | None) -> dict[str, Any]:
         """Normalize the favorite archive options while keeping old callers working."""
@@ -1983,7 +2829,9 @@ class BackendAPI:
                     missing_local_count += 1
             data["items"].append(item)
 
-        export_path = get_data_dir() / f"export_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}.ltfav"
+        export_path = (
+            get_data_dir() / f"export_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}.ltfav"
+        )
         compression = zipfile.ZIP_DEFLATED if normalized["compression"] else zipfile.ZIP_STORED
         zip_kwargs: dict[str, Any] = {"compression": compression}
         if compression == zipfile.ZIP_DEFLATED:
@@ -2031,10 +2879,18 @@ class BackendAPI:
                 data = json.loads(zf.read(manifest_info))
             except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise RuntimeError("收藏包缺少有效的 manifest.json") from exc
-            if not isinstance(data, dict) or not isinstance(data.get("items"), list) or not isinstance(data.get("folders"), list):
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("items"), list)
+                or not isinstance(data.get("folders"), list)
+            ):
                 raise RuntimeError("收藏包格式无效")
             archive_version = data.get("archive_version", 1)
-            if isinstance(archive_version, bool) or not isinstance(archive_version, int) or archive_version not in {1, 2}:
+            if (
+                isinstance(archive_version, bool)
+                or not isinstance(archive_version, int)
+                or archive_version not in {1, 2}
+            ):
                 raise RuntimeError("不支持的收藏包版本")
             members = {
                 safe_name: info
@@ -2332,6 +3188,7 @@ class BackendAPI:
         logger.info("Bootstrapping application")
         home_bing = self.bing_service.query_daily(market="zh-CN", count=1)
         quote = self.get_sentence()
+        plugins = self.list_plugins()["plugins"]
         try:
             sources = self.ltws_service.list_sources()
         except Exception as e:
@@ -2343,7 +3200,7 @@ class BackendAPI:
             "favorites": self._load_favorites(strict=False),
             "history": self._load_history(),
             "sources": sources,
-            "plugins": [],
+            "plugins": plugins,
             "build_info": get_build_info(),
             "app": get_metadata(),
             "runtime": {
@@ -2352,13 +3209,14 @@ class BackendAPI:
                     "hide_on_close": self.store.get("ui.hide_on_close", True),
                     "minimize_to_tray": self.store.get("ui.minimize_to_tray", True),
                 },
+                "plugins": {"count": len(plugins)},
             },
             "home": {
                 "bing": home_bing[:1],
                 "spotlight": [
-                self._proxy_local_spotlight_item(item)
-                for item in self.spotlight_service.list_local_candidates(limit=4)
-            ],
+                    self._proxy_local_spotlight_item(item)
+                    for item in self.spotlight_service.list_local_candidates(limit=4)
+                ],
                 "quote": {
                     "text": quote.get("hitokoto", ""),
                     "author": quote.get("from_who", ""),
@@ -2379,13 +3237,21 @@ class BackendAPI:
         return info
 
     def runtime_snapshot(self) -> dict[str, Any]:
+        plugins = self.list_plugins()["plugins"]
+        automation = self.automation_service.snapshot()
         return {
-            "auto_change": {"enabled": False, "mode": "off", "running": False},
+            "auto_change": {
+                "enabled": automation["enabled_count"] > 0,
+                "mode": "automation",
+                "running": automation["run"]["running"],
+            },
+            "automation": automation,
             "debug": {"enabled": False, "session_enabled": False, "open_devtools_on_start": True},
             "window": {
                 "hide_on_close": self.store.get("ui.hide_on_close", True),
                 "minimize_to_tray": self.store.get("ui.minimize_to_tray", True),
             },
+            "plugins": {"count": len(plugins)},
         }
 
     def get_storage_overview(self) -> dict[str, Any]:
@@ -2546,9 +3412,7 @@ class BackendAPI:
             previous_setting = self.store.get("storage.download_directory", "")
             copied: list[tuple[Path, Path]] = []
             if migrate:
-                copied = self.storage_service.prepare_download_migration(
-                    target, self._update_storage_operation
-                )
+                copied = self.storage_service.prepare_download_migration(target, self._update_storage_operation)
             else:
                 self._update_storage_operation(0, 2, "正在切换下载位置")
             file_steps = max(1, len(copied))
@@ -2612,9 +3476,7 @@ class BackendAPI:
     ) -> dict[str, Any]:
         self._update_storage_operation(0, 4, "正在检查收藏数据")
         source = self._favorites_path()
-        target_dir = self.storage_service.validate_favorites_directory(
-            Path(directory) if directory else get_data_dir()
-        )
+        target_dir = self.storage_service.validate_favorites_directory(Path(directory) if directory else get_data_dir())
         info = self.inspect_storage_directory(str(target_dir), "favorites")
         if not info["is_empty"] and not info["same_as_current"] and not allow_non_empty:
             raise RuntimeError("目标收藏目录不为空，需要确认后才能继续")
@@ -2714,7 +3576,80 @@ class BackendAPI:
         return self.store.as_dict()
 
     def trigger_auto_change_now(self, plan_id: str | None = None) -> dict[str, Any]:
-        return {"enabled": False, "mode": "off", "running": False, "last_result": None}
+        if not plan_id:
+            items = self.automation_service.list()
+            enabled = next((item for item in items if item["enabled"]), None)
+            if enabled is None:
+                raise ValueError("没有已启用的自动化")
+            plan_id = enabled["id"]
+        return self.automation_service.run(plan_id)
+
+    def list_automations(self) -> list[dict[str, Any]]:
+        return self.automation_service.list()
+
+    def get_automation(self, automation_id: str) -> dict[str, Any]:
+        return self.automation_service.get(automation_id)
+
+    def pick_and_import_automation(self) -> dict[str, Any] | None:
+        path = self._show_file_dialog(
+            "open",
+            filetypes=[("小树自动化", "*.ltauto"), ("JSON", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return None
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        document = payload.get("document") if isinstance(payload, dict) and payload.get("format") == "little-tree-automation" else payload
+        if not isinstance(document, dict):
+            raise ValueError("自动化文件格式无效")
+        imported = copy.deepcopy(document)
+        imported["id"] = uuid.uuid4().hex
+        imported["enabled"] = False
+        imported.pop("created_at", None)
+        imported.pop("updated_at", None)
+        validation = self.automation_service.validate(imported)
+        if not validation["valid"]:
+            raise ValueError("；".join(validation["errors"]))
+        return imported
+
+    def export_automation(self, automation_id: str, export_format: str = "ltauto") -> str | None:
+        document = self.automation_service.get(automation_id)
+        normalized_format = str(export_format or "ltauto").strip().lower()
+        if normalized_format not in {"ltauto", "json"}:
+            raise ValueError("自动化导出格式仅支持 ltauto 或 json")
+        suffix = f".{normalized_format}"
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(document.get("name") or "automation")).strip(" .") or "automation"
+        path = self._show_file_dialog(
+            "save",
+            filetypes=[("小树自动化", "*.ltauto"), ("JSON", "*.json")],
+            defaultextension=suffix,
+            initialfile=f"{safe_name}{suffix}",
+        )
+        if not path:
+            return None
+        output = {"format": "little-tree-automation", "version": 1, "document": document} if normalized_format == "ltauto" else document
+        Path(path).write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def save_automation(self, document: dict[str, Any]) -> dict[str, Any]:
+        return self.automation_service.save(document)
+
+    def delete_automation(self, automation_id: str) -> None:
+        self.automation_service.delete(automation_id)
+
+    def set_automation_enabled(self, automation_id: str, enabled: bool) -> dict[str, Any]:
+        return self.automation_service.set_enabled(automation_id, enabled)
+
+    def validate_automation(self, document: dict[str, Any]) -> dict[str, Any]:
+        return self.automation_service.validate(document)
+
+    def run_automation(self, automation_id: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.automation_service.run(automation_id, variables)
+
+    def cancel_automation(self) -> dict[str, Any]:
+        return self.automation_service.cancel()
+
+    def get_automation_runtime(self) -> dict[str, Any]:
+        return self.automation_service.snapshot()
 
     def get_log_stats(self) -> dict[str, Any]:
         """Return log file counts, total size, entry/error counts and the active file level."""

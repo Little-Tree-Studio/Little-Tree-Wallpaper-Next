@@ -965,7 +965,7 @@ export function drawImageCropOverlay(
   context.restore();
 }
 
-export function drawSelection(context: CanvasRenderingContext2D, layer: EditorLayer, displayScale: number) {
+export function drawSelection(context: CanvasRenderingContext2D, layer: EditorLayer, displayScale: number, showHandles = true) {
   if (!layer.visible) return;
   const lineWidth = Math.max(0.25, 1.5 / displayScale);
   const radius = Math.max(1, 6 / displayScale);
@@ -978,6 +978,10 @@ export function drawSelection(context: CanvasRenderingContext2D, layer: EditorLa
   context.setLineDash([6 / displayScale, 4 / displayScale]);
   context.strokeRect(-layer.width / 2, -layer.height / 2, layer.width, layer.height);
   context.setLineDash([]);
+  if (!showHandles) {
+    context.restore();
+    return;
+  }
   const points: Point[] = [
     { x: -layer.width / 2, y: -layer.height / 2 },
     { x: layer.width / 2, y: -layer.height / 2 },

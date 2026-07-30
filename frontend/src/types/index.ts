@@ -155,6 +155,7 @@ export interface HomePageSettings {
   source: HomePageSource;
   show_author: boolean;
   show_source: boolean;
+  wallpaper_refresh_seconds: number;
   hitokoto: { region: 'domestic' | 'international'; categories: string[] };
   zhaoyu?: { catalog: string; theme: string; author: string };
   custom: { items: CustomSentence[] };
@@ -227,6 +228,8 @@ export interface AppSettings {
     theme: 'system' | 'light' | 'dark';
     theme_profile: string;
     hide_on_close: boolean;
+    minimize_to_tray: boolean;
+    release_webview_on_close: boolean;
   };
   wallpaper: {
     auto_change: {
@@ -236,6 +239,7 @@ export interface AppSettings {
     };
     allow_NSFW: boolean;
     history_save_copy: boolean;
+    history: { max_items: number; preview_items: number };
     sources: { merge_display: boolean };
     pixiv?: { include_artwork_tags_in_favorites: boolean };
   };
@@ -249,6 +253,7 @@ export interface AppSettings {
     referer: string;
     use_source_as_referer: boolean;
     timeout_seconds: number;
+    max_results: number;
   };
   store: {
     use_custom_source: boolean;
@@ -261,16 +266,31 @@ export interface AppSettings {
     auto_clear_logs: { enabled: boolean; max_files: number };
     auto_compress: { enabled: boolean; format: string; quality: number };
   };
+  download: {
+    timeout_seconds: number;
+    concurrent_tasks: number;
+  };
+  create: {
+    show_grid: boolean;
+    snap_to_guides: boolean;
+    export_format: 'png' | 'jpeg';
+    jpeg_quality: number;
+  };
   generate: {
     providers: ImageProviderConfig[];
     active_provider_id: string;
     default_size: string;
     default_n: number;
     default_response_format: 'url' | 'b64_json';
+    default_quality: string;
+    remember_prompts: boolean;
+    prompt_history_limit: number;
+    history_max_items: number;
   };
   im?: {
     mirror_preference?: string;
     show_disclaimer?: boolean;
+    auto_health_check?: boolean;
   };
 }
 
@@ -326,7 +346,7 @@ export interface StorageOverview {
 export interface ImageProviderConfig {
   id: string;
   name: string;
-  format: 'openai' | 'volcano' | 'openai-compatible';
+  format: 'openai-compatible' | 'pollinations';
   endpoint: string;
   apiKey: string;
   model: string;
@@ -378,4 +398,186 @@ export interface IntelligentMarketHealthUpdate {
   health_checked_at?: string | null;
   health_status_code?: number | null;
   health_probe_url?: string | null;
+}
+
+export type PluginState = 'enabled' | 'disabled' | 'error';
+export type PluginStatus = 'started' | 'installed' | 'disabled' | 'error';
+export type PluginPermission =
+  | 'ui.buttons'
+  | 'ui.global_style'
+  | 'ui.navigation'
+  | 'ui.overlay'
+  | 'ui.pages'
+  | 'ui.resource_pages'
+  | 'ui.theme';
+
+export interface PluginHeadingBlock {
+  type: 'heading';
+  text: string;
+  level?: 1 | 2 | 3 | 4 | 5 | 6;
+  className?: string;
+}
+
+export interface PluginTextBlock {
+  type: 'text';
+  text: string;
+  className?: string;
+}
+
+export interface PluginImageBlock {
+  type: 'image';
+  src: string;
+  alt?: string;
+  className?: string;
+}
+
+export interface PluginCardBlock {
+  type: 'card';
+  title?: string;
+  blocks: PluginBlock[];
+  className?: string;
+}
+
+export interface PluginButtonBlock {
+  type: 'button';
+  label: string;
+  action: string;
+  payload?: unknown;
+  className?: string;
+}
+
+export interface PluginDividerBlock {
+  type: 'divider';
+  className?: string;
+}
+
+export type PluginBlock =
+  | PluginHeadingBlock
+  | PluginTextBlock
+  | PluginImageBlock
+  | PluginCardBlock
+  | PluginButtonBlock
+  | PluginDividerBlock;
+
+export interface PluginPageContribution {
+  id: string;
+  label: string;
+  route: string;
+  blocks: PluginBlock[];
+  className?: string;
+}
+
+export interface PluginNavigationContribution {
+  id: string;
+  label: string;
+  route?: string;
+  page?: string;
+  location?: 'sidebar' | string;
+}
+
+export interface PluginButtonContribution {
+  id: string;
+  label: string;
+  action: string;
+  payload?: unknown;
+  location?: 'global' | string;
+}
+
+export type PluginOverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+export interface PluginOverlayContribution {
+  id: string;
+  label: string;
+  blocks: PluginBlock[];
+  position?: PluginOverlayPosition;
+  fixed?: boolean;
+  className?: string;
+}
+
+export interface PluginStyleContribution {
+  id: string;
+  scope: 'plugin' | 'global';
+  css: string;
+}
+
+export interface PluginThemeContribution {
+  id: string;
+  label: string;
+  variables: Record<string, string | number>;
+}
+
+export interface PluginContributionMap {
+  pages?: PluginPageContribution[];
+  navigation?: PluginNavigationContribution[];
+  resource_pages?: PluginPageContribution[];
+  buttons?: PluginButtonContribution[];
+  overlays?: PluginOverlayContribution[];
+  styles?: PluginStyleContribution[];
+  theme?: PluginThemeContribution[];
+}
+
+export interface PluginManifest {
+  schema_version: 1;
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  entrypoint: string;
+  permissions: PluginPermission[];
+  contributes: PluginContributionMap;
+}
+
+export interface Plugin {
+  id: string;
+  enabled: boolean;
+  state: PluginState;
+  status: PluginStatus;
+  error: string | null;
+  manifest: PluginManifest | null;
+  contributions: PluginContributionMap;
+  package_hash: string | null;
+  source: string | null;
+}
+
+export interface PluginListResult {
+  state: string;
+  status: string;
+  error: string | null;
+  plugins: Plugin[];
+}
+
+export interface PluginOperationResult {
+  id?: string;
+  state: string;
+  status: string;
+  error: string | null;
+  manifest: PluginManifest | null;
+  contributions: PluginContributionMap;
+  package_hash: string | null;
+  source: string | null;
+  result?: unknown;
+}
+
+export interface PluginContributionMetadata {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+}
+
+export type BoundPluginContribution<T> = T & {
+  pluginId: string;
+  packageHash: string | null;
+  plugin: PluginContributionMetadata;
+};
+
+export interface BoundPluginContributions {
+  pages: BoundPluginContribution<PluginPageContribution>[];
+  navigation: BoundPluginContribution<PluginNavigationContribution>[];
+  resource_pages: BoundPluginContribution<PluginPageContribution>[];
+  buttons: BoundPluginContribution<PluginButtonContribution>[];
+  overlays: BoundPluginContribution<PluginOverlayContribution>[];
+  styles: BoundPluginContribution<PluginStyleContribution>[];
+  theme: BoundPluginContribution<PluginThemeContribution>[];
 }

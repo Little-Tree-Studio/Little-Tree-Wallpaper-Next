@@ -7,31 +7,13 @@ export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const getActiveNav = () => {
-    const p = location.pathname;
-    if (p === '/') return 'home';
-    if (p.startsWith('/resource')) return 'resource';
-    if (p.startsWith('/generate')) return 'generate';
-    if (p.startsWith('/create')) return 'create';
-    if (p.startsWith('/search')) return 'search';
-    if (p.startsWith('/sniff')) return 'sniff';
-    if (p.startsWith('/favorite')) return 'favorite';
-    if (p.startsWith('/store')) return 'store';
-    if (p.startsWith('/settings')) return 'settings';
-    if (p.startsWith('/help')) return 'help';
-    if (p.startsWith('/tools')) return 'tools';
-    return 'home';
-  };
-
-  const handleNavChange = (id: string) => {
-    navigate('/' + (id === 'home' ? '' : id));
-  };
+  const handleNavChange = (route: string) => navigate(route);
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      <Navigation className="relative z-40" activeId={getActiveNav()} onChange={handleNavChange} />
-      <main className="relative z-10 flex flex-1 flex-col overflow-hidden p-6">
-        <ScrollShadow className="relative flex-1" hideScrollBar>
+    <div className="theme-shell relative z-0 flex h-screen w-screen overflow-hidden text-foreground">
+      <Navigation className="relative z-40" activeRoute={location.pathname} onChange={handleNavChange} />
+      <main className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-6">
+        <ScrollShadow className="relative min-h-0 min-w-0 flex-1 overflow-x-auto">
           <Outlet />
         </ScrollShadow>
       </main>

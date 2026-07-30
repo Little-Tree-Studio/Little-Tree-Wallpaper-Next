@@ -4,7 +4,7 @@ import {
   Copy, ChevronLeft, ChevronRight, Save, PanelsTopLeft, ExternalLink,
   ClipboardCopy,
 } from 'lucide-react';
-import { Button, Spinner, Tooltip, toast } from '@heroui/react';
+import { Button, Kbd, Label, ListBox, Separator, Spinner, Tooltip, toast } from '@heroui/react';
 import { useImageViewer } from './context';
 import {
   copyToClipboard, addFavorite, getFavorites, removeFavorite, saveAsWithProgress,
@@ -20,6 +20,14 @@ interface TooltipIconButtonProps {
   className?: string;
   children: React.ReactNode;
 }
+
+interface ImageViewerContextMenuState {
+  x: number;
+  y: number;
+}
+
+const CONTEXT_MENU_WIDTH = 252;
+const CONTEXT_MENU_MARGIN = 8;
 
 function stableResourceUrl(value?: string | null): string {
   if (!value) return '';
@@ -74,7 +82,9 @@ export default function ImageViewer() {
   const [isImageLoading, setIsImageLoading] = useState(true);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [favoriteId, setFavoriteId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ImageViewerContextMenuState | null>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
 
   const currentItem = items[currentIndex];
 
@@ -89,6 +99,7 @@ export default function ImageViewer() {
       resetTransform();
       setIsImageLoading(true);
       setImageLoadError(false);
+      setContextMenu(null);
     }
   }, [isOpen, currentIndex, currentItem?.src, resetTransform]);
 
@@ -121,6 +132,13 @@ export default function ImageViewer() {
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (contextMenu) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setContextMenu(null);
+        }
+        return;
+      }
       switch (e.key) {
         case 'Escape':
           closeViewer();
@@ -154,7 +172,21 @@ export default function ImageViewer() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, closeViewer, goNext, goPrev, resetTransform]);
+  }, [isOpen, closeViewer, contextMenu, goNext, goPrev, resetTransform]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const frame = window.requestAnimationFrame(() => {
+      const menu = contextMenuRef.current;
+      if (!menu) return;
+      const bounds = menu.getBoundingClientRect();
+      const x = Math.max(CONTEXT_MENU_MARGIN, Math.min(contextMenu.x, window.innerWidth - bounds.width - CONTEXT_MENU_MARGIN));
+      const y = Math.max(CONTEXT_MENU_MARGIN, Math.min(contextMenu.y, window.innerHeight - bounds.height - CONTEXT_MENU_MARGIN));
+      if (x !== contextMenu.x || y !== contextMenu.y) setContextMenu({ x, y });
+      menu.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])')?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [contextMenu]);
 
   useEffect(() => {
     if (isOpen) {
@@ -193,10 +225,23 @@ export default function ImageViewer() {
   }, []);
 
   const handleBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (contextMenu) {
+      setContextMenu(null);
+      return;
+    }
     if (e.target === e.currentTarget) {
       closeViewer();
     }
-  }, [closeViewer]);
+  }, [closeViewer, contextMenu]);
+
+  const handleContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: Math.max(CONTEXT_MENU_MARGIN, Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN)),
+      y: Math.max(CONTEXT_MENU_MARGIN, event.clientY),
+    });
+  };
 
   const handleRotate = () => {
     setRotation((r) => (r + 90) % 360);
@@ -302,6 +347,23 @@ export default function ImageViewer() {
     if (url) await copyToClipboard(url);
   };
 
+  const runContextMenuAction = (key: React.Key) => {
+    const action = String(key);
+    setContextMenu(null);
+    if (action === 'copy-image') void handleCopyImage();
+    else if (action === 'save-as') void handleSaveAs();
+    else if (action === 'favorite') void handleFavorite();
+    else if (action === 'set-wallpaper') void handleSetWallpaper();
+    else if (action === 'open-system') void handleOpenWithSystem();
+    else if (action === 'copy-link') void handleCopyUrl();
+    else if (action === 'zoom-in') handleZoomIn();
+    else if (action === 'zoom-out') handleZoomOut();
+    else if (action === 'rotate') handleRotate();
+    else if (action === 'reset') handleReset();
+    else if (action === 'previous') goPrev();
+    else if (action === 'next') goNext();
+  };
+
   if (!isOpen || !currentItem) return null;
 
   const transformStyle: React.CSSProperties = {
@@ -320,6 +382,7 @@ export default function ImageViewer() {
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      onPointerDown={() => contextMenu && setContextMenu(null)}
     >
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-2 text-white/80"
@@ -357,6 +420,7 @@ export default function ImageViewer() {
         className="relative flex flex-1 items-center justify-center overflow-hidden"
         onWheel={handleWheel}
         onClick={handleBackdropClick}
+        onContextMenu={handleContextMenu}
       >
         {items.length > 1 && (
           <>
@@ -415,6 +479,47 @@ export default function ImageViewer() {
           draggable={false}
         />
       </div>
+
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu-enter fixed z-[60] max-h-[calc(100vh-1rem)] w-[252px] overflow-y-auto rounded-xl border border-border bg-background/98 p-1.5 text-foreground shadow-xl backdrop-blur"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <ListBox aria-label={`${currentItem.title || '当前图片'} 操作`} selectionMode="none" onAction={runContextMenuAction}>
+            <ListBox.Section>
+              <ListBox.Item id="copy-image" textValue="复制图片"><ClipboardCopy size={16} className="text-muted" /><Label>复制图片</Label></ListBox.Item>
+              <ListBox.Item id="save-as" textValue="另存为"><Save size={16} className="text-muted" /><Label>另存为</Label></ListBox.Item>
+              <ListBox.Item id="favorite" textValue={favoriteId ? '取消收藏' : '收藏图片'}><Heart size={16} className={favoriteId ? 'text-danger' : 'text-muted'} fill={favoriteId ? 'currentColor' : 'none'} /><Label>{favoriteId ? '取消收藏' : '收藏图片'}</Label></ListBox.Item>
+            </ListBox.Section>
+            <Separator />
+            <ListBox.Section>
+              {!options.disableSetWallpaper && <ListBox.Item id="set-wallpaper" textValue="设为壁纸"><ImageIcon size={16} className="text-muted" /><Label>设为壁纸</Label></ListBox.Item>}
+              <ListBox.Item id="open-system" textValue="使用系统默认打开"><ExternalLink size={16} className="text-muted" /><Label>使用系统默认打开</Label></ListBox.Item>
+              <ListBox.Item id="copy-link" textValue="复制链接"><Copy size={16} className="text-muted" /><Label>复制链接</Label></ListBox.Item>
+            </ListBox.Section>
+            <Separator />
+            <ListBox.Section>
+              <ListBox.Item id="zoom-in" textValue="放大"><ZoomIn size={16} className="text-muted" /><Label>放大</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>+</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="zoom-out" textValue="缩小"><ZoomOut size={16} className="text-muted" /><Label>缩小</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>-</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="rotate" textValue="顺时针旋转"><RotateCw size={16} className="text-muted" /><Label>顺时针旋转</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>R</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="reset" textValue="重置视图"><Maximize size={16} className="text-muted" /><Label>重置视图</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>0</Kbd.Content></Kbd></ListBox.Item>
+            </ListBox.Section>
+            {items.length > 1 && (
+              <>
+                <Separator />
+                <ListBox.Section>
+                  <ListBox.Item id="previous" textValue="上一张"><ChevronLeft size={16} className="text-muted" /><Label>上一张</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>←</Kbd.Content></Kbd></ListBox.Item>
+                  <ListBox.Item id="next" textValue="下一张"><ChevronRight size={16} className="text-muted" /><Label>下一张</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>→</Kbd.Content></Kbd></ListBox.Item>
+                </ListBox.Section>
+              </>
+            )}
+          </ListBox>
+        </div>
+      )}
 
       {/* Bottom toolbar */}
       <div

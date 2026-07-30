@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  AlertDialog,
   Button,
   Card,
   Chip,
@@ -7,7 +8,7 @@ import {
   Input,
   ListBox,
   NumberField,
-  Spinner,
+  Select,
   TextArea,
   Tooltip,
   toast,
@@ -31,21 +32,35 @@ import {
 } from 'lucide-react';
 import {
   addToHistory,
+  clearGeneratedImages,
   copyImageToClipboardWithProgress,
   copyToClipboard,
+  deleteGeneratedImage,
   downloadWithProgress,
+  getGeneratedImages,
   getSetting,
+  localFileUrl,
+  localPreviewUrl,
   saveAsWithProgress,
+  saveGeneratedImage,
   setSetting,
   setWallpaperWithProgress,
 } from '@/api/backend';
-import { generateImage, SIZE_OPTIONS } from '@/api/generate';
+import type { GeneratedImageRecord } from '@/api/backend';
+import {
+  generateImage,
+  IMAGE_QUALITY_OPTIONS,
+  IMAGE_SIZE_OPTIONS,
+  MAX_IMAGES_PER_BATCH,
+} from '@/api/generate';
 import { useImageViewer } from '@/components/ImageViewer';
 import { safeNameForFile } from '@/lib/download';
 import type { ImageProviderConfig } from '@/types';
 
 interface GeneratedImage {
   id: string;
+  /** Local file path for persisted records. */
+  path?: string;
   url?: string;
   b64_json?: string;
   prompt: string;
@@ -66,38 +81,30 @@ interface GenerationOptions {
   size: string;
   n: number;
   responseFormat: 'url' | 'b64_json';
+  quality: string;
   negativePrompt?: string;
   seed?: number;
 }
 
 const PROMPT_HISTORY_KEY = 'ltw:generate:prompt-history';
-const MAX_PROMPT_HISTORY = 12;
-const MAX_SESSION_IMAGES = 24;
+const DEFAULT_PROMPT_HISTORY_LIMIT = 12;
 
-// Keep generated results while the user moves between app pages. Full image
-// persistence belongs in the download/history layer because provider URLs can expire.
-let sessionImages: GeneratedImage[] = [];
-
-function getInitialImages(): GeneratedImage[] {
-  return sessionImages.filter((image) => image.status !== 'generating');
-}
-
-function readPromptHistory(): string[] {
+function readPromptHistory(limit = DEFAULT_PROMPT_HISTORY_LIMIT): string[] {
   if (typeof window === 'undefined') return [];
   try {
     const value = JSON.parse(window.localStorage.getItem(PROMPT_HISTORY_KEY) || '[]');
     if (!Array.isArray(value)) return [];
     return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-      .slice(0, MAX_PROMPT_HISTORY);
+      .slice(0, Math.max(1, limit));
   } catch {
     return [];
   }
 }
 
-function rememberPrompt(value: string): string[] {
-  const next = [value.trim(), ...readPromptHistory().filter((item) => item !== value.trim())]
+function rememberPrompt(value: string, limit: number): string[] {
+  const next = [value.trim(), ...readPromptHistory(limit).filter((item) => item !== value.trim())]
     .filter(Boolean)
-    .slice(0, MAX_PROMPT_HISTORY);
+    .slice(0, Math.max(1, limit));
   try {
     window.localStorage.setItem(PROMPT_HISTORY_KEY, JSON.stringify(next));
   } catch {
@@ -111,11 +118,35 @@ function createImageId(): string {
 }
 
 function imageSource(image: GeneratedImage): string {
+  if (image.path) return localPreviewUrl(image.path, 960);
   if (image.url) return image.url;
   if (!image.b64_json) return '';
   return image.b64_json.startsWith('data:')
     ? image.b64_json
     : `data:image/png;base64,${image.b64_json}`;
+}
+
+/** Original-quality source for downloads, clipboard and wallpaper actions. */
+function imageRawSource(image: GeneratedImage): string {
+  if (image.path) return localFileUrl(image.path);
+  return imageSource(image);
+}
+
+function recordToImage(record: GeneratedImageRecord): GeneratedImage {
+  return {
+    id: record.id,
+    path: record.path,
+    prompt: record.prompt || '',
+    negativePrompt: record.negativePrompt,
+    seed: typeof record.seed === 'number' ? record.seed : undefined,
+    size: record.size || '',
+    responseFormat: 'url',
+    providerName: record.providerName,
+    modelName: record.modelName,
+    revisedPrompt: record.revisedPrompt,
+    createdAt: record.createdAt || Date.now(),
+    status: 'done',
+  };
 }
 
 function isAbortError(error: unknown): boolean {
@@ -171,11 +202,15 @@ export default function Generate() {
   const [size, setSize] = useState('1024x1024');
   const [n, setN] = useState(1);
   const [responseFormat, setResponseFormat] = useState<'url' | 'b64_json'>('url');
-  const [images, setImages] = useState<GeneratedImage[]>(getInitialImages);
+  const [quality, setQuality] = useState('auto');
+  const [images, setImages] = useState<GeneratedImage[]>([]);
   const [promptHistory, setPromptHistory] = useState<string[]>(readPromptHistory);
+  const [rememberPrompts, setRememberPrompts] = useState(true);
+  const [promptHistoryLimit, setPromptHistoryLimit] = useState(DEFAULT_PROMPT_HISTORY_LIMIT);
   const [loading, setLoading] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -186,32 +221,55 @@ export default function Generate() {
       getSetting('generate.default_size'),
       getSetting('generate.default_n'),
       getSetting('generate.default_response_format'),
-    ]).then(([savedProviders, savedActiveId, savedSize, savedN, savedFormat]) => {
+      getSetting('generate.default_quality'),
+      getSetting('generate.remember_prompts'),
+      getSetting('generate.prompt_history_limit'),
+    ]).then(([
+      savedProviders,
+      savedActiveId,
+      savedSize,
+      savedN,
+      savedFormat,
+      savedQuality,
+      savedRememberPrompts,
+      savedPromptHistoryLimit,
+    ]) => {
       if (cancelled) return;
-      const nextProviders = Array.isArray(savedProviders) ? savedProviders : [];
+      const nextProviders: ImageProviderConfig[] = (Array.isArray(savedProviders) ? savedProviders : [])
+        .map((provider: ImageProviderConfig) => ({
+          ...provider,
+          format: provider.format === 'pollinations' ? 'pollinations' : 'openai-compatible',
+        }));
       setProviders(nextProviders);
       const nextActiveId = String(savedActiveId || '');
       setActiveProviderId(nextProviders.some((provider) => provider.id === nextActiveId)
         ? nextActiveId
         : nextProviders[0]?.id || '');
       if (savedSize) setSize(String(savedSize));
-      if (Number.isFinite(Number(savedN))) setN(Math.min(4, Math.max(1, Number(savedN))));
+      if (Number.isFinite(Number(savedN))) setN(Math.min(MAX_IMAGES_PER_BATCH, Math.max(1, Number(savedN))));
       if (savedFormat === 'url' || savedFormat === 'b64_json') setResponseFormat(savedFormat);
+      if (IMAGE_QUALITY_OPTIONS.includes(String(savedQuality))) setQuality(String(savedQuality));
+      const nextHistoryLimit = Math.max(1, Math.min(50, Number(savedPromptHistoryLimit) || DEFAULT_PROMPT_HISTORY_LIMIT));
+      setRememberPrompts(savedRememberPrompts !== false);
+      setPromptHistoryLimit(nextHistoryLimit);
+      setPromptHistory(readPromptHistory(nextHistoryLimit));
     }).catch(() => {
       if (!cancelled) toast.danger('加载生图设置失败', { timeout: 0 });
+    });
+
+    getGeneratedImages().then((records) => {
+      if (cancelled) return;
+      setImages(records.map(recordToImage));
+    }).catch(() => {
+      if (!cancelled) toast.danger('加载生成记录失败', { timeout: 0 });
     });
 
     return () => {
       cancelled = true;
       mountedRef.current = false;
       generationController.current?.abort();
-      sessionImages = sessionImages.filter((image) => image.status !== 'generating');
     };
   }, []);
-
-  useEffect(() => {
-    sessionImages = images.slice(-MAX_SESSION_IMAGES);
-  }, [images]);
 
   useEffect(() => {
     if (!loading) {
@@ -224,36 +282,33 @@ export default function Generate() {
   }, [loading]);
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
-  const sizeOptions = activeProvider
-    ? (SIZE_OPTIONS[activeProvider.format] || SIZE_OPTIONS['openai-compatible'])
-    : SIZE_OPTIONS['openai-compatible'];
+  const isPollinations = activeProvider?.format === 'pollinations';
 
   useEffect(() => {
-    if (sizeOptions.length > 0 && !sizeOptions.includes(size)) {
-      const nextSize = sizeOptions[0];
+    if (!isPollinations && !IMAGE_SIZE_OPTIONS.includes(size)) {
+      const nextSize = IMAGE_SIZE_OPTIONS[0];
       setSize(nextSize);
       void setSetting('generate.default_size', nextSize);
     }
-  }, [activeProviderId, size, sizeOptions]);
+  }, [isPollinations, size]);
 
   const updateImages = (updater: (previous: GeneratedImage[]) => GeneratedImage[]) => {
     if (!mountedRef.current) return;
-    setImages((previous) => {
-      const next = updater(previous).slice(-MAX_SESSION_IMAGES);
-      sessionImages = next;
-      return next;
-    });
+    setImages(updater);
   };
 
   const runGeneration = async (options: GenerationOptions) => {
     if (!activeProvider || !options.prompt.trim() || loading) return;
 
     const promptValue = options.prompt.trim();
+    const effectiveNegativePrompt = activeProvider.format === 'pollinations'
+      ? undefined
+      : options.negativePrompt?.trim() || undefined;
     const batchIds = Array.from({ length: options.n }, () => createImageId());
     const batchImages: GeneratedImage[] = batchIds.map((id) => ({
       id,
       prompt: promptValue,
-      negativePrompt: options.negativePrompt?.trim() || undefined,
+      negativePrompt: effectiveNegativePrompt,
       seed: options.seed,
       size: options.size,
       responseFormat: options.responseFormat,
@@ -268,14 +323,15 @@ export default function Generate() {
     setElapsedMs(0);
     setLoading(true);
     updateImages((previous) => [...previous, ...batchImages]);
-    setPromptHistory(rememberPrompt(promptValue));
+    if (rememberPrompts) setPromptHistory(rememberPrompt(promptValue, promptHistoryLimit));
 
     try {
       const response = await generateImage(activeProvider, promptValue, {
         size: options.size,
         n: options.n,
         responseFormat: options.responseFormat,
-        negativePrompt: options.negativePrompt,
+        quality: options.quality,
+        negativePrompt: effectiveNegativePrompt,
         seed: options.seed,
         signal: controller.signal,
       });
@@ -306,6 +362,50 @@ export default function Generate() {
       } else {
         toast.danger('模型未返回可用图片', { timeout: 0 });
       }
+
+      if (successCount > 0) {
+        const failedSaves = await Promise.all(results.map(async (result, index) => {
+          if (!result?.url && !result?.b64_json) return false;
+          const id = batchIds[index];
+          const source = result.url || (result.b64_json!.startsWith('data:')
+            ? result.b64_json!
+            : `data:image/png;base64,${result.b64_json!}`);
+          try {
+            const res = await fetch(source);
+            const blob = await res.blob();
+            const record = await saveGeneratedImage(
+              blob,
+              `${safeNameForFile(`generated-${id}`, 'generated')}.png`,
+              {
+                id,
+                prompt: promptValue,
+                negativePrompt: effectiveNegativePrompt,
+                seed: options.seed,
+                size: options.size,
+                providerName: activeProvider.name,
+                modelName: activeProvider.modelName || activeProvider.model,
+                revisedPrompt: result.revised_prompt,
+                createdAt: Date.now(),
+              },
+            );
+            if (record) {
+              updateImages((previous) => previous.map((image) => (
+                image.id === id
+                  ? { ...image, path: record.path, url: undefined, b64_json: undefined }
+                  : image
+              )));
+              return false;
+            }
+          } catch {
+            // fall through to the failure toast
+          }
+          return true;
+        }));
+        const failedCount = failedSaves.filter(Boolean).length;
+        if (failedCount > 0 && mountedRef.current) {
+          toast.warning(`${failedCount} 张图片保存失败，刷新后将无法保留`, { timeout: 0 });
+        }
+      }
     } catch (error: unknown) {
       if (isAbortError(error)) {
         updateImages((previous) => previous.filter((image) => !batchIds.includes(image.id)));
@@ -331,7 +431,15 @@ export default function Generate() {
   const handleGenerate = () => {
     const parsedSeed = seedText.trim() ? Number(seedText) : undefined;
     const seed = parsedSeed !== undefined && Number.isFinite(parsedSeed) ? parsedSeed : undefined;
-    void runGeneration({ prompt, size, n, responseFormat, negativePrompt, seed });
+    void runGeneration({
+      prompt,
+      size: isPollinations ? '' : size,
+      n: isPollinations ? 1 : n,
+      responseFormat: isPollinations ? 'b64_json' : responseFormat,
+      quality,
+      negativePrompt: isPollinations ? undefined : negativePrompt,
+      seed,
+    });
   };
 
   const handleCancel = () => {
@@ -340,7 +448,9 @@ export default function Generate() {
 
   const handleRegenerate = (image: GeneratedImage) => {
     setPrompt(image.prompt);
-    setSize(image.size);
+    if (!isPollinations) {
+      setSize(image.size);
+    }
     setNegativePrompt(image.negativePrompt || '');
     setSeedText(image.seed === undefined ? '' : String(image.seed));
     void runGeneration({
@@ -348,6 +458,7 @@ export default function Generate() {
       size: image.size,
       n: 1,
       responseFormat: image.responseFormat,
+      quality,
       negativePrompt: image.negativePrompt,
       seed: image.seed,
     });
@@ -357,35 +468,35 @@ export default function Generate() {
     const completed = images.filter((item) => item.status === 'done' && imageSource(item));
     const startIndex = Math.max(0, completed.findIndex((item) => item.id === image.id));
     openViewer(completed.map((item) => ({
-      src: imageSource(item),
+      src: imageRawSource(item),
       title: item.prompt.slice(0, 80),
       description: [item.providerName, item.modelName, item.size].filter(Boolean).join(' · '),
       source_type: 'generated',
       source_name: item.providerName || 'AI 生图',
-      source_url: imageSource(item),
+      source_url: imageRawSource(item),
     })), startIndex);
   };
 
   const handleDownload = async (image: GeneratedImage) => {
-    const source = imageSource(image);
+    const source = imageRawSource(image);
     if (!source) return;
     await downloadWithProgress(source, `${safeNameForFile(`generated-${image.id}`, 'generated')}.png`);
   };
 
   const handleSaveAs = async (image: GeneratedImage) => {
-    const source = imageSource(image);
+    const source = imageRawSource(image);
     if (!source) return;
     await saveAsWithProgress(source, `${safeNameForFile(`generated-${image.id}`, 'generated')}.png`);
   };
 
   const handleCopyImage = async (image: GeneratedImage) => {
-    const source = imageSource(image);
+    const source = imageRawSource(image);
     if (!source) return;
     await copyImageToClipboardWithProgress(source);
   };
 
   const handleSetWallpaper = async (image: GeneratedImage) => {
-    const source = imageSource(image);
+    const source = imageRawSource(image);
     if (!source) return;
     const path = await setWallpaperWithProgress(
       source,
@@ -411,11 +522,21 @@ export default function Generate() {
   };
 
   const handleRemove = (id: string) => {
+    const target = images.find((image) => image.id === id);
     updateImages((previous) => previous.filter((image) => image.id !== id));
+    if (target?.path) {
+      deleteGeneratedImage(id).catch(() => toast.danger('删除生成记录失败', { timeout: 0 }));
+    }
   };
 
   const handleClear = () => {
+    setClearDialogOpen(true);
+  };
+
+  const confirmClear = (deleteFiles: boolean) => {
+    setClearDialogOpen(false);
     updateImages(() => []);
+    clearGeneratedImages(deleteFiles).catch(() => toast.danger('清空生成记录失败', { timeout: 0 }));
   };
 
   const handleSizeChange = (key: React.Key | null) => {
@@ -426,7 +547,7 @@ export default function Generate() {
   };
 
   const handleCountChange = (value: number | null) => {
-    const nextCount = Math.min(4, Math.max(1, value ?? 1));
+    const nextCount = Math.min(MAX_IMAGES_PER_BATCH, Math.max(1, value ?? 1));
     setN(nextCount);
     void setSetting('generate.default_n', nextCount);
   };
@@ -438,6 +559,13 @@ export default function Generate() {
     void setSetting('generate.default_response_format', nextFormat);
   };
 
+  const handleQualityChange = (key: React.Key | null) => {
+    const nextQuality = String(key || 'auto');
+    if (!IMAGE_QUALITY_OPTIONS.includes(nextQuality)) return;
+    setQuality(nextQuality);
+    void setSetting('generate.default_quality', nextQuality);
+  };
+
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -446,9 +574,14 @@ export default function Generate() {
           <p className="mt-1 text-sm text-muted">把想法变成桌面壁纸或可下载图片</p>
         </div>
         {images.length > 0 && (
-          <Button variant="ghost" size="sm" onPress={handleClear} isDisabled={loading}>
-            <Trash2 size={14} /> 清空结果
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onPress={handleClear} isDisabled={loading}>
+              <Trash2 size={14} /> 清空结果
+            </Button>
+            <Button variant="ghost" size="sm" onPress={() => { window.location.hash = '#/settings/generate'; }}>
+              <Settings size={14} /> 生成设置
+            </Button>
+          </div>
         )}
       </div>
 
@@ -536,51 +669,57 @@ export default function Generate() {
         )}
 
         <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted">尺寸</span>
-            <ComboBox
-              className="w-36"
-              selectedKey={size}
-              onSelectionChange={handleSizeChange}
-              aria-label="图片尺寸"
+          {!isPollinations && (
+            <>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted">尺寸</span>
+                <Select
+                  className="w-36"
+                  value={size}
+                  onChange={(value) => handleSizeChange(value as React.Key | null)}
+                  aria-label="图片尺寸"
+                >
+                  <Select.Trigger>
+                    <Select.Value />
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {IMAGE_SIZE_OPTIONS.map((option) => (
+                        <ListBox.Item key={option} id={option} textValue={option}>{option}</ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted">数量</span>
+                <NumberField
+                  minValue={1}
+                  maxValue={MAX_IMAGES_PER_BATCH}
+                  value={n}
+                  onChange={handleCountChange}
+                  aria-label="生成数量"
+                >
+                  <NumberField.Group>
+                    <NumberField.DecrementButton />
+                    <NumberField.Input className="w-16" />
+                    <NumberField.IncrementButton />
+                  </NumberField.Group>
+                </NumberField>
+              </div>
+            </>
+          )}
+          {!isPollinations && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onPress={() => setShowAdvanced((value) => !value)}
+              aria-expanded={showAdvanced}
             >
-              <ComboBox.InputGroup>
-                <Input />
-                <ComboBox.Trigger />
-              </ComboBox.InputGroup>
-              <ComboBox.Popover>
-                <ListBox>
-                  {sizeOptions.map((option) => (
-                    <ListBox.Item key={option} id={option} textValue={option}>{option}</ListBox.Item>
-                  ))}
-                </ListBox>
-              </ComboBox.Popover>
-            </ComboBox>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted">数量</span>
-            <NumberField
-              minValue={1}
-              maxValue={4}
-              value={n}
-              onChange={handleCountChange}
-              aria-label="生成数量"
-            >
-              <NumberField.Group>
-                <NumberField.DecrementButton />
-                <NumberField.Input className="w-16" />
-                <NumberField.IncrementButton />
-              </NumberField.Group>
-            </NumberField>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onPress={() => setShowAdvanced((value) => !value)}
-            aria-expanded={showAdvanced}
-          >
-            <SlidersHorizontal size={15} /> 高级参数
-          </Button>
+              <SlidersHorizontal size={15} /> 高级参数
+            </Button>
+          )}
           <div className="ml-auto flex items-center gap-2">
             {loading && <span className="text-xs tabular-nums text-muted">已用时 {formatElapsed(elapsedMs)}</span>}
             {loading ? (
@@ -598,7 +737,7 @@ export default function Generate() {
           </div>
         </div>
 
-        {showAdvanced && (
+        {showAdvanced && !isPollinations && (
           <div className="grid gap-3 border-t border-border pt-4 sm:grid-cols-3">
             <div className="flex flex-col gap-1 sm:col-span-2">
               <span className="text-xs text-muted">反向提示词</span>
@@ -621,25 +760,45 @@ export default function Generate() {
                 aria-label="随机种子"
               />
             </div>
-            <div className="flex flex-col gap-1 sm:col-span-3">
+            <div className="flex flex-col gap-1 sm:col-span-2">
               <span className="text-xs text-muted">响应格式</span>
-              <ComboBox
-                className="w-full sm:w-56"
-                selectedKey={responseFormat}
-                onSelectionChange={handleFormatChange}
+              <Select
+                value={responseFormat}
+                onChange={(value) => handleFormatChange(value as React.Key | null)}
                 aria-label="图片响应格式"
               >
-                <ComboBox.InputGroup>
-                  <Input />
-                  <ComboBox.Trigger />
-                </ComboBox.InputGroup>
-                <ComboBox.Popover>
+                <Select.Trigger>
+                  <Select.Value />
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover>
                   <ListBox>
                     <ListBox.Item id="url" textValue="图片 URL">图片 URL</ListBox.Item>
                     <ListBox.Item id="b64_json" textValue="Base64 图片">Base64 图片</ListBox.Item>
                   </ListBox>
-                </ComboBox.Popover>
-              </ComboBox>
+                </Select.Popover>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted">质量</span>
+              <Select
+                value={quality}
+                onChange={(value) => handleQualityChange(value as React.Key | null)}
+                aria-label="图片质量"
+              >
+                <Select.Trigger>
+                  <Select.Value />
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover>
+                  <ListBox>
+                    <ListBox.Item id="auto" textValue="自动">自动</ListBox.Item>
+                    <ListBox.Item id="low" textValue="低（快速预览）">低（快速预览）</ListBox.Item>
+                    <ListBox.Item id="medium" textValue="中（标准）">中（标准）</ListBox.Item>
+                    <ListBox.Item id="high" textValue="高（精细）">高（精细）</ListBox.Item>
+                  </ListBox>
+                </Select.Popover>
+              </Select>
             </div>
           </div>
         )}
@@ -653,16 +812,22 @@ export default function Generate() {
       )}
 
       {images.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {images.map((image) => {
             const source = imageSource(image);
             return (
               <Card key={image.id} className="overflow-hidden p-0">
                 <div className="relative aspect-square bg-muted">
                   {image.status === 'generating' && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted">
-                      <Spinner size="lg" />
-                      <span className="text-sm">正在生成...</span>
+                    <div className="generate-haze">
+                      <div className="generate-haze__blob generate-haze__blob--1" />
+                      <div className="generate-haze__blob generate-haze__blob--2" />
+                      <div className="generate-haze__blob generate-haze__blob--3" />
+                      <div className="generate-haze__veil" />
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
+                        <Sparkles size={20} className="generate-haze__icon" />
+                        <span className="generate-haze__text text-sm">正在生成...</span>
+                      </div>
                     </div>
                   )}
                   {image.status === 'error' && (
@@ -738,6 +903,27 @@ export default function Generate() {
           })}
         </div>
       )}
+
+      <AlertDialog.Backdrop isOpen={clearDialogOpen} onOpenChange={setClearDialogOpen}>
+        <AlertDialog.Container size="sm">
+          <AlertDialog.Dialog>
+            <AlertDialog.CloseTrigger />
+            <AlertDialog.Header>
+              <AlertDialog.Icon status="warning"><Trash2 size={20} /></AlertDialog.Icon>
+              <AlertDialog.Heading>清空生成结果？</AlertDialog.Heading>
+              <p className="text-sm text-muted">是否同时删除已生成的图片文件？</p>
+            </AlertDialog.Header>
+            <AlertDialog.Body>
+              <p className="text-sm text-muted">仅清空记录会保留图片文件；删除文件后图片将无法恢复。</p>
+            </AlertDialog.Body>
+            <AlertDialog.Footer>
+              <Button variant="ghost" onPress={() => setClearDialogOpen(false)}>取消</Button>
+              <Button variant="secondary" onPress={() => confirmClear(false)}>仅清空记录</Button>
+              <Button variant="danger" onPress={() => confirmClear(true)}>删除文件</Button>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
     </div>
   );
 }

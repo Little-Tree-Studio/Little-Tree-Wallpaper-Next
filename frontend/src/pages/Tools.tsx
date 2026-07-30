@@ -1,5 +1,5 @@
 import { Card } from '@heroui/react';
-import { Palette, ArrowRight } from 'lucide-react';
+import { Palette, ArrowRight, MonitorPlay } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 interface ToolItem {
@@ -17,6 +17,13 @@ const tools: ToolItem[] = [
     description: '使用 ColorArea 组件选择颜色，支持 RGB、HSL、HSB 等多种颜色空间',
     icon: Palette,
     path: '/tools/color-palette',
+  },
+  {
+    id: 'dynamic-wallpaper',
+    title: '动态壁纸调试台',
+    description: '探测 Windows WorkerW，加载本地视频并观察桌面宿主状态',
+    icon: MonitorPlay,
+    path: '/tools/dynamic-wallpaper',
   },
 ];
 

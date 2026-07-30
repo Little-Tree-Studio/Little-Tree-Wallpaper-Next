@@ -38,7 +38,7 @@ class FavoriteItem:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_wallpaper(cls, wallpaper: WallpaperItem, folder_id: str = "default") -> "FavoriteItem":
+    def from_wallpaper(cls, wallpaper: WallpaperItem, folder_id: str = "default") -> FavoriteItem:
         return cls(
             id=wallpaper.id,
             folder_id=folder_id,
@@ -72,12 +72,15 @@ class HistoryItem:
 
 @dataclass(slots=True)
 class PluginRuntimeInfo:
-    identifier: str
-    name: str
-    version: str
-    description: str
+    id: str
     enabled: bool
-    permissions: list[str] = field(default_factory=list)
+    state: str
+    status: str
+    error: str | None = None
+    manifest: dict[str, Any] | None = None
+    contributions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    package_hash: str | None = None
+    source: str = "installed"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

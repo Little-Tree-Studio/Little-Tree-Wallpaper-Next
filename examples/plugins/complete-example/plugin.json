@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "id": "com.littletree.complete-example",
+  "name": "完整示例插件",
+  "version": "1.0.0",
+  "description": "演示小树壁纸插件的生命周期、持久设置、动作和全部 UI 扩展点。",
+  "author": "Little Tree Wallpaper Contributors",
+  "entrypoint": "module.py:setup",
+  "permissions": [
+    "ui.buttons",
+    "ui.global_style",
+    "ui.navigation",
+    "ui.overlay",
+    "ui.pages",
+    "ui.resource_pages",
+    "ui.theme"
+  ],
+  "contributes": {
+    "pages": [
+      {
+        "id": "example-home",
+        "label": "插件示例",
+        "route": "/plugins/com.littletree.complete-example",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "完整示例插件",
+            "level": 1
+          },
+          {
+            "type": "text",
+            "text": "此页面由 plugin.json 中的受限 UI block 描述，不执行前端 JavaScript。"
+          },
+          {
+            "type": "card",
+            "title": "持久计数器",
+            "className": "complete-example-card",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "点击按钮会调用 Python 动作，并把计数写入插件 settings.json。"
+              },
+              {
+                "type": "button",
+                "label": "增加计数",
+                "action": "increment",
+                "payload": {
+                  "step": 1,
+                  "source": "page"
+                }
+              },
+              {
+                "type": "button",
+                "label": "读取状态",
+                "action": "get-status"
+              }
+            ]
+          },
+          {
+            "type": "divider"
+          },
+          {
+            "type": "text",
+            "text": "侧栏导航和全局按钮也由同一个插件提供。"
+          }
+        ]
+      }
+    ],
+    "resource_pages": [
+      {
+        "id": "example-resources",
+        "label": "示例资源页",
+        "route": "/plugins/com.littletree.complete-example/resources",
+        "blocks": [
+          {
+            "type": "heading",
+            "text": "资源页扩展",
+            "level": 2
+          },
+          {
+            "type": "text",
+            "text": "resource_pages 与普通 pages 使用相同的安全 block 格式，由宿主决定资源区域中的呈现位置。"
+          },
+          {
+            "type": "button",
+            "label": "从资源页增加 5",
+            "action": "increment",
+            "payload": {
+              "step": 5,
+              "source": "resource-page"
+            }
+          }
+        ]
+      }
+    ],
+    "navigation": [
+      {
+        "id": "example-sidebar-entry",
+        "label": "插件示例",
+        "page": "example-home",
+        "location": "sidebar"
+      },
+      {
+        "id": "example-resource-entry",
+        "label": "示例资源",
+        "page": "example-resources",
+        "location": "sidebar"
+      }
+    ],
+    "buttons": [
+      {
+        "id": "example-global-button",
+        "label": "示例 +1",
+        "action": "increment",
+        "payload": {
+          "step": 1,
+          "source": "global-button"
+        },
+        "location": "global"
+      }
+    ],
+    "overlays": [
+      {
+        "id": "example-fixed-overlay",
+        "label": "示例悬浮层",
+        "className": "complete-example-overlay",
+        "position": "top-right",
+        "blocks": [
+          {
+            "type": "card",
+            "title": "插件已启用",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "该 overlay 由插件作用域样式固定在页面之上。"
+              },
+              {
+                "type": "button",
+                "label": "读取启动状态",
+                "action": "get-status"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "styles": [
+      {
+        "id": "example-scoped-style",
+        "scope": "plugin",
+        "css": ".complete-example-card { border-inline-start: 3px solid var(--complete-example-accent); }\n.complete-example-overlay { width: 100%; }"
+      },
+      {
+        "id": "example-global-style",
+        "scope": "global",
+        "css": ":root { --complete-example-global-style-enabled: 1; }"
+      }
+    ],
+    "theme": [
+      {
+        "id": "example-theme-variables",
+        "label": "示例主题变量",
+        "variables": {
+          "--complete-example-accent": "oklch(0.68 0.16 155)",
+          "--complete-example-radius": "14px"
+        }
+      }
+    ]
+  }
+}

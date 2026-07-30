@@ -36,12 +36,6 @@ VALID_LEVELS: tuple[str, ...] = (
 DEFAULT_FILE_LEVEL = "DEBUG"
 SETTINGS_KEY = "logging.file_level"
 
-# How many files to keep per kind (newest first). Retention is enforced manually
-# because loguru's built-in retention does not cross-clean session files when the
-# sink path is a concrete (non-templated) filename.
-FULL_RETENTION = 5
-ERROR_RETENTION = 10
-
 # Handler ids returned by ``logger.add()``; ``None`` until configured.
 _full_handler: int | None = None
 _error_handler: int | None = None
@@ -83,19 +77,19 @@ def _session_paths() -> tuple[Path, Path]:
     return LOG_DIR / f"app_{stamp}.log", LOG_DIR / f"error_{stamp}.log"
 
 
-def _enforce_retention() -> None:
-    """Keep only the newest N historical files per kind, deleting older ones.
+def _enforce_retention(max_files: int) -> None:
+    """Keep only the configured number of newest historical log files.
 
     Files that belong to the current application run (the active full/error
     sinks) are never deleted or truncated by retention.
     """
     active = {_full_path, _error_path}
-    for pattern, keep in (("app_*.log", FULL_RETENTION), ("error_*.log", ERROR_RETENTION)):
-        for f in _iter_log_files(pattern)[keep:]:
-            if f in active or _is_current_run_file(f):
-                continue
-            with contextlib.suppress(OSError):
-                f.unlink()
+    keep = max(2, int(max_files))
+    for f in _iter_log_files("*.log")[keep:]:
+        if f in active or _is_current_run_file(f):
+            continue
+        with contextlib.suppress(OSError):
+            f.unlink()
 
 
 def configure(settings_store: SettingsStore | None = None, level: str | None = None) -> None:
@@ -139,7 +133,8 @@ def configure(settings_store: SettingsStore | None = None, level: str | None = N
         encoding="utf-8",
     )
     _current_level = resolved
-    _enforce_retention()
+    if store.get("storage.auto_clear_logs.enabled", True):
+        _enforce_retention(store.get("storage.auto_clear_logs.max_files", 20))
 
 
 def write_raw(text: str) -> None:
