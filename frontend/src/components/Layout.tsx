@@ -8,6 +8,9 @@ export default function Layout() {
   const navigate = useNavigate();
 
   const handleNavChange = (route: string) => navigate(route);
+  const isStandalone = location.pathname === '/dynamic/editor' || location.pathname === '/dynamic/runtime';
+
+  if (isStandalone) return <Outlet />;
 
   return (
     <div className="theme-shell relative z-0 flex h-screen w-screen overflow-hidden text-foreground">

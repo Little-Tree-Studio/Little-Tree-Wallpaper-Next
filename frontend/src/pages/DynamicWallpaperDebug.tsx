@@ -66,6 +66,8 @@ const EMPTY_STATUS: DynamicWallpaperStatus = {
   workerw_handle: '',
   desktop_host_kind: '',
   window_handle: '',
+  dynamic_type: '',
+  runtime_mode: '',
   window: {
     valid: false,
     visible: false,

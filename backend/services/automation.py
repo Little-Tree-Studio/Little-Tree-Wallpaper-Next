@@ -53,6 +53,7 @@ class AutomationService:
         stop_dynamic_wallpaper: Callable[[], dict[str, Any]],
         data_root: Path | None = None,
         notify: Callable[[str, str], None] | None = None,
+        manage_dynamic_wallpaper: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self._path = path
         self._set_wallpaper = set_wallpaper
@@ -63,6 +64,7 @@ class AutomationService:
         self._stop_dynamic_wallpaper = stop_dynamic_wallpaper
         self._data_root = data_root or path.parent / "automation_data"
         self._notify = notify
+        self._manage_dynamic_wallpaper = manage_dynamic_wallpaper
         self._lock = threading.RLock()
         self._execution_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -70,6 +72,8 @@ class AutomationService:
         self._cancel_event = threading.Event()
         self._automations: list[dict[str, Any]] = []
         self._schedule_state: dict[str, float] = {}
+        self._pending_runs: deque[tuple[str, str, str]] = deque()
+        self._pending_run_keys: set[str] = set()
         self._run: dict[str, Any] = self._empty_run()
         self._events: deque[dict[str, Any]] = deque(maxlen=300)
         self._load()
@@ -132,6 +136,11 @@ class AutomationService:
         normalized["description"] = str(normalized.get("description") or "")[:500]
         normalized["enabled"] = bool(normalized.get("enabled", False))
         normalized["version"] = 1
+        normalized["automation_type"] = (
+            normalized.get("automation_type")
+            if normalized.get("automation_type") in {"simple", "blocks", "advanced"}
+            else "advanced"
+        )
         normalized["nodes"] = normalized.get("nodes") if isinstance(normalized.get("nodes"), list) else []
         normalized["edges"] = normalized.get("edges") if isinstance(normalized.get("edges"), list) else []
         normalized["created_at"] = str(normalized.get("created_at") or now)
@@ -145,6 +154,7 @@ class AutomationService:
             "name": document["name"],
             "description": document.get("description", ""),
             "enabled": bool(document.get("enabled")),
+            "automation_type": document.get("automation_type", "advanced"),
             "node_count": len(document.get("nodes", [])),
             "updated_at": document.get("updated_at", ""),
         }
@@ -186,6 +196,7 @@ class AutomationService:
             self._automations = [item for item in self._automations if item["id"] != automation_id]
             if len(self._automations) == before:
                 raise ValueError("自动化不存在")
+            self._remove_pending_locked(automation_id)
             self._save_locked()
         if self._run.get("automation_id") == automation_id:
             self._cancel_event.set()
@@ -194,7 +205,15 @@ class AutomationService:
     def set_enabled(self, automation_id: str, enabled: bool) -> dict[str, Any]:
         document = self.get(automation_id)
         document["enabled"] = bool(enabled)
-        return self.save(document)
+        saved = self.save(document)
+        if not enabled:
+            with self._lock:
+                self._remove_pending_locked(automation_id)
+        return saved
+
+    def _remove_pending_locked(self, automation_id: str) -> None:
+        self._pending_runs = deque(item for item in self._pending_runs if item[0] != automation_id)
+        self._pending_run_keys = {item[2] for item in self._pending_runs}
 
     def validate(self, document: dict[str, Any]) -> dict[str, Any]:
         errors: list[str] = []
@@ -246,6 +265,7 @@ class AutomationService:
                 "events": list(self._events),
                 "enabled_count": sum(1 for item in self._automations if item.get("enabled")),
                 "total_count": len(self._automations),
+                "queued_count": len(self._pending_runs),
             }
 
     def run(self, automation_id: str, variables: dict[str, Any] | None = None, trigger: str = "manual") -> dict[str, Any]:
@@ -804,7 +824,13 @@ class AutomationService:
                     current_value = selected_path
                 elif node_type == "dynamic_wallpaper":
                     action = str(config.get("action") or "play")
-                    if action == "start":
+                    if self._manage_dynamic_wallpaper is not None:
+                        result = self._manage_dynamic_wallpaper(config)
+                        current_value = result.get("type") if action == "get_type" else result
+                        result_variable = str(config.get("result_variable") or "")
+                        if result_variable:
+                            variables[result_variable] = current_value
+                    elif action == "start":
                         path = str(self._evaluate(config.get("path", ""), variables) or "")
                         self._start_dynamic_wallpaper(
                             path,
@@ -864,6 +890,7 @@ class AutomationService:
                     variables=copy.deepcopy(variables),
                 )
             self._execution_lock.release()
+            self._wake_event.set()
 
     def _scheduler_loop(self) -> None:
         startup_pending = True
@@ -873,7 +900,7 @@ class AutomationService:
                 documents = copy.deepcopy(self._automations)
             for document in documents:
                 try:
-                    if not document.get("enabled") or self._execution_lock.locked():
+                    if not document.get("enabled"):
                         continue
                     for node in document.get("nodes", []):
                         if node.get("type") != "trigger":
@@ -897,12 +924,34 @@ class AutomationService:
                             if due:
                                 self._schedule_state[key] = stamp
                         if due:
-                            with contextlib.suppress(RuntimeError):
-                                self.run(document["id"], trigger=kind)
+                            pending_key = f"{key}:{kind}"
+                            with self._lock:
+                                if pending_key not in self._pending_run_keys:
+                                    self._pending_runs.append((document["id"], kind, pending_key))
+                                    self._pending_run_keys.add(pending_key)
                             break
                 except Exception as exc:
                     self._event("error", f"自动化调度配置无效：{document.get('name', document.get('id', '?'))}：{exc}")
             startup_pending = False
+            if not self._execution_lock.locked():
+                with self._lock:
+                    pending = self._pending_runs[0] if self._pending_runs else None
+                if pending is not None:
+                    try:
+                        self.run(pending[0], trigger=pending[1])
+                    except RuntimeError:
+                        pass
+                    except Exception as exc:
+                        self._event("error", f"自动化排队执行失败：{pending[0]}：{exc}")
+                        with self._lock:
+                            if self._pending_runs and self._pending_runs[0] == pending:
+                                self._pending_runs.popleft()
+                                self._pending_run_keys.discard(pending[2])
+                    else:
+                        with self._lock:
+                            if self._pending_runs and self._pending_runs[0] == pending:
+                                self._pending_runs.popleft()
+                                self._pending_run_keys.discard(pending[2])
             self._wake_event.wait(1.0)
             self._wake_event.clear()
 

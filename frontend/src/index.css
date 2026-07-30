@@ -56,6 +56,41 @@ select {
   font-family: inherit;
 }
 
+.dynamic-scene-media {
+  will-change: opacity, transform, filter, clip-path;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dynamic-desktop--editing {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.08) 1px, transparent 1px);
+  background-size: 5% 5%;
+}
+
+.dynamic-transition-fade { animation-name: dynamic-fade; }
+.dynamic-transition-slide-left { animation-name: dynamic-slide-left; }
+.dynamic-transition-slide-up { animation-name: dynamic-slide-up; }
+.dynamic-transition-zoom { animation-name: dynamic-zoom; }
+.dynamic-transition-blur { animation-name: dynamic-blur; }
+.dynamic-transition-wipe { animation-name: dynamic-wipe; }
+.dynamic-transition-flip { animation-name: dynamic-flip; transform-origin: center; }
+.dynamic-transition-ken-burns { animation-name: dynamic-ken-burns; animation-timing-function: ease-out; }
+
+@keyframes dynamic-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes dynamic-slide-left { from { opacity: 0; transform: translateX(8%); } to { opacity: 1; transform: translateX(0); } }
+@keyframes dynamic-slide-up { from { opacity: 0; transform: translateY(8%); } to { opacity: 1; transform: translateY(0); } }
+@keyframes dynamic-zoom { from { opacity: 0; transform: scale(1.08); } to { opacity: 1; transform: scale(1); } }
+@keyframes dynamic-blur { from { opacity: 0; filter: blur(24px); transform: scale(1.04); } to { opacity: 1; filter: blur(0); transform: scale(1); } }
+@keyframes dynamic-wipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+@keyframes dynamic-flip { from { opacity: 0; transform: perspective(1200px) rotateY(10deg) scale(1.02); } to { opacity: 1; transform: perspective(1200px) rotateY(0); } }
+@keyframes dynamic-ken-burns { from { opacity: 0; transform: scale(1); } 20% { opacity: 1; } to { opacity: 1; transform: scale(1.08) translate(-1%, -1%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .dynamic-scene-media { animation: none !important; }
+}
+
 .context-menu-enter {
   transform-origin: top left;
   animation: context-menu-in 140ms cubic-bezier(0.16, 1, 0.3, 1) both;

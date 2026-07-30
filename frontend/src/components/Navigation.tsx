@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe, LifeBuoy, Frame, Puzzle, Workflow,
+  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe, LifeBuoy, Frame, Puzzle, Workflow, MonitorPlay,
 } from 'lucide-react';
 import { Button, ScrollShadow } from '@heroui/react';
 import { requestNavigation } from '@/lib/navigationGuard';
@@ -19,6 +19,7 @@ const items: NavItem[] = [
   { id: 'resource', label: '资源', icon: Image, route: '/resource' },
   { id: 'generate', label: '生成', icon: Wand2, route: '/generate' },
   { id: 'create', label: '制作', icon: Frame, route: '/create' },
+  { id: 'dynamic', label: '动态', icon: MonitorPlay, route: '/dynamic' },
   { id: 'automation', label: '自动化', icon: Workflow, route: '/automation' },
   { id: 'search', label: '搜索', icon: Search, route: '/search' },
   { id: 'sniff', label: '嗅探', icon: Globe, route: '/sniff' },
@@ -40,7 +41,7 @@ function coreRouteActive(activeRoute: string, route: string): boolean {
 
 function coreRouteOwns(route: string): boolean {
   const exactRoutes = new Set([
-    '/', '/resource', '/resource/source-management', '/generate', '/create', '/automation', '/search', '/sniff',
+    '/', '/resource', '/resource/source-management', '/generate', '/create', '/dynamic', '/dynamic/editor', '/dynamic/runtime', '/automation', '/search', '/sniff',
     '/favorite', '/tags', '/store', '/settings', '/help', '/history', '/tools', '/tools/color-palette',
     '/tools/dynamic-wallpaper',
   ]);

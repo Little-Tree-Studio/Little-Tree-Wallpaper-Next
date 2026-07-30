@@ -64,6 +64,7 @@ _BLOCKED_MEMBERS = frozenset(
         "plugin_manager",
         "set_api_token",
         "configure_dynamic_wallpaper_runtime",
+        "configure_dynamic_editor_runtime",
         "shutdown_dynamic_wallpaper",
         "shutdown_automation",
         "start_automation_runtime",
@@ -73,6 +74,7 @@ _BLOCKED_MEMBERS = frozenset(
         "serve_image_bytes",
         "resolve_plugin_asset",
         "resolve_dynamic_wallpaper_media",
+        "resolve_dynamic_scene_asset",
     }
 )
 
@@ -442,7 +444,7 @@ video.addEventListener('timeupdate', () => report('timeupdate'));
 video.addEventListener('progress', () => report('progress'));
 document.addEventListener('visibilitychange', () => report('visibilitychange', true));
 window.__ltwPlayer={{
-  play:()=>video.play(), pause:()=>video.pause(),
+  play:()=>video.play(), pause:()=>video.pause(), auto:()=>video.paused?video.play():(video.pause(),true),
   reload:()=>{{video.load();return video.play();}}, snapshot:()=>{{report('snapshot',true);return true;}}
 }};
 if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {{
@@ -494,6 +496,19 @@ report('player-ready',true);
                 "X-Content-Type-Options": "nosniff",
                 "X-Wallpaper-Revision": str(revision),
             },
+        )
+
+    @app.get("/api/dynamic-wallpaper/asset")
+    async def dynamic_wallpaper_asset(path: str, _: None = Depends(verify_token)) -> FileResponse:
+        resolved = await run_in_threadpool(api.resolve_dynamic_scene_asset, path)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="dynamic wallpaper asset not available")
+        asset_path, content_type = resolved
+        return FileResponse(
+            asset_path,
+            media_type=content_type,
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
     @app.post("/api/dynamic-wallpaper/telemetry")

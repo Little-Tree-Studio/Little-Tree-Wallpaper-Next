@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { HashRouter, Routes, Route } from 'react-router-dom';
+import { HashRouter, Routes, Route, useLocation } from 'react-router-dom';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Resource from '@/pages/Resource';
@@ -19,6 +19,9 @@ import History from '@/pages/History';
 import Tools from '@/pages/Tools';
 import ColorPalette from '@/pages/ColorPalette';
 import DynamicWallpaperDebug from '@/pages/DynamicWallpaperDebug';
+import DynamicWallpaper from '@/pages/DynamicWallpaper';
+import DynamicWidgetEditor from '@/pages/DynamicWidgetEditor';
+import DynamicWallpaperRuntime from '@/pages/DynamicWallpaperRuntime';
 import Automation from '@/pages/Automation';
 import { ImageViewerProvider, ImageViewer } from '@/components/ImageViewer';
 import { ThemeProvider } from '@/components/ThemeProvider';
@@ -33,11 +36,17 @@ import PluginGlobalUI from '@/plugins/PluginGlobalUI';
 import StaticWallpaperGuardProvider from '@/components/StaticWallpaperGuardProvider';
 import TextContextMenu from '@/components/TextContextMenu';
 
-function App() {
+function AppContent() {
+  const location = useLocation();
+  const isWallpaperRuntime = location.pathname === '/dynamic/runtime';
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    if (isWallpaperRuntime) {
+      setBetaVersion(null);
+      return undefined;
+    }
     (async () => {
       try {
         const info = await getBuildInfo();
@@ -52,11 +61,20 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isWallpaperRuntime]);
+
+  if (isWallpaperRuntime) {
+    return (
+      <PluginProvider>
+        <Routes>
+          <Route path="/dynamic/runtime" element={<DynamicWallpaperRuntime />} />
+        </Routes>
+      </PluginProvider>
+    );
+  }
 
   return (
-    <HashRouter>
-      <ThemeProvider>
+    <ThemeProvider>
         <StaticWallpaperGuardProvider>
           <PluginProvider>
             <ImageViewerProvider>
@@ -69,6 +87,9 @@ function App() {
                 <Route path="resource/source-management" element={<WallpaperSourceManagement />} />
                 <Route path="generate" element={<Generate />} />
                 <Route path="create" element={<Create />} />
+                <Route path="dynamic" element={<DynamicWallpaper />} />
+                <Route path="dynamic/editor" element={<DynamicWidgetEditor />} />
+                <Route path="dynamic/runtime" element={<DynamicWallpaperRuntime />} />
                 <Route path="automation" element={<Automation />} />
                 <Route path="search" element={<Search />} />
                 <Route path="sniff" element={<Sniff />} />
@@ -99,9 +120,12 @@ function App() {
             </ImageViewerProvider>
           </PluginProvider>
         </StaticWallpaperGuardProvider>
-      </ThemeProvider>
-    </HashRouter>
+    </ThemeProvider>
   );
+}
+
+function App() {
+  return <HashRouter><AppContent /></HashRouter>;
 }
 
 export default App;

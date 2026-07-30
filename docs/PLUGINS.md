@@ -145,6 +145,7 @@
 | `ui.pages` | `pages` |
 | `ui.resource_pages` | `resource_pages` |
 | `ui.theme` | `theme` |
+| `ui.widgets` | `widgets` |
 
 `styles` 的默认 `scope` 是 `plugin`，不要求权限。权限必须由清单显式声明；运行时 `context.contribute()` 也使用同一权限集合校验。权限不会限制 Python 代码访问主机，因此用户信任确认不能省略。
 
@@ -195,6 +196,25 @@
 ## 7. 页面 block
 
 页面和 overlay 使用同一组声明式 block。它们是 JSON 数据，不是 HTML，也不能携带 JavaScript。每个 descriptor 最多 64 个 block，计数包含嵌套 block，嵌套深度最多 3。
+
+### `widgets`
+
+`widgets` 允许插件向动态壁纸的小组件抽屉注册桌面组件。它需要 `ui.widgets` 权限，并继续使用宿主支持的声明式 block，不允许注入 HTML 或前端 JavaScript。
+
+```json
+{
+  "id": "weather-card",
+  "label": "天气卡片",
+  "description": "显示插件提供的天气摘要",
+  "default_size": {"width": 28, "height": 20},
+  "blocks": [
+    {"type": "heading", "text": "今日天气", "level": 3},
+    {"type": "text", "text": "晴，24°C"}
+  ]
+}
+```
+
+`default_size.width` 和 `default_size.height` 使用桌面百分比，范围均为 8 到 100。桌面背景层不接收鼠标交互，因此小组件不能包含 `button` block；所有可见内容必须在贡献声明或宿主编辑器中预先确定。
 
 | `type` | 字段与规则 |
 | --- | --- |

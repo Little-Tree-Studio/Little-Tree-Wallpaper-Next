@@ -260,6 +260,52 @@ def setup(context):
         self.assertEqual(self.manager.invoke("com.example.sample", "bad")["status"], "error")
         self.assertEqual(self.manager.invoke("com.example.sample", "bad", object())["status"], "error")
 
+    def test_widget_contributions_require_permission_and_normalize_size(self) -> None:
+        descriptor = {
+            "id": "weather",
+            "label": "Weather",
+            "description": "Current conditions",
+            "default_size": {"width": 32, "height": 20},
+            "blocks": [{"type": "text", "text": "Sunny"}],
+        }
+        rejected = self.install(
+            plugin_manifest=manifest(contributes={"widgets": [descriptor]}),
+            name="widget-rejected.ltp",
+        )
+        self.assertEqual(rejected["status"], "error")
+
+        accepted_package = make_package(
+            self.packages_dir,
+            manifest(
+                id="com.example.widgets",
+                permissions=["ui.widgets"],
+                contributes={"widgets": [descriptor]},
+            ),
+            name="widget-accepted.ltp",
+        )
+        accepted = self.manager.install_package(accepted_package)
+        self.assertEqual(accepted["manifest"]["contributes"]["widgets"][0]["default_size"], {"width": 32, "height": 20})
+
+    def test_widget_contributions_reject_interactive_buttons(self) -> None:
+        package = make_package(
+            self.packages_dir,
+            manifest(
+                id="com.example.interactive-widget",
+                permissions=["ui.widgets"],
+                contributes={
+                    "widgets": [{
+                        "id": "interactive",
+                        "label": "Interactive",
+                        "default_size": {"width": 24, "height": 20},
+                        "blocks": [{"type": "button", "label": "Run", "action": "run"}],
+                    }],
+                },
+            ),
+            name="interactive-widget.ltp",
+        )
+
+        self.assertEqual(self.manager.install_package(package)["status"], "error")
+
     def test_upgrade_rules_and_removal(self) -> None:
         self.install()
         lower = make_package(

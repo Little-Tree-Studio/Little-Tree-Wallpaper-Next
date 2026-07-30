@@ -75,6 +75,7 @@ const MEDIA_API_PATHS = [
   '/api/theme-media/',
   '/api/theme-preview/',
   '/api/plugin-assets/',
+  '/api/dynamic-wallpaper/asset',
 ] as const;
 
 /**
@@ -1038,6 +1039,8 @@ export interface DynamicWallpaperStatus {
     error?: string;
   };
   running: boolean;
+  dynamic_type: DynamicBackgroundType | '';
+  runtime_mode: 'raw-video' | 'scene' | '';
   media_path: string;
   media_name: string;
   media_exists: boolean;
@@ -1104,8 +1107,86 @@ export async function stopDynamicWallpaper(): Promise<DynamicWallpaperStatus> {
   return call('stop_dynamic_wallpaper');
 }
 
-export async function controlDynamicWallpaper(action: 'play' | 'pause' | 'reload'): Promise<DynamicWallpaperStatus> {
+export async function controlDynamicWallpaper(action: 'play' | 'pause' | 'auto' | 'reload' | 'next' | 'previous'): Promise<DynamicWallpaperStatus> {
   return call('control_dynamic_wallpaper', action);
+}
+
+export type DynamicBackgroundType = 'video' | 'image' | 'slideshow';
+export type DynamicSlideshowSource = 'folder' | 'favorites';
+export type DynamicTransition = 'fade' | 'slide-left' | 'slide-up' | 'zoom' | 'blur' | 'wipe' | 'flip' | 'ken-burns';
+
+export interface DynamicBackgroundConfig {
+  type: DynamicBackgroundType;
+  path: string;
+  source: DynamicSlideshowSource;
+  folder_id: string;
+  items: string[];
+  interval_seconds: number;
+  transition: DynamicTransition;
+  transition_duration: number;
+  shuffle: boolean;
+  muted: boolean;
+  loop: boolean;
+  playback_rate: number;
+  autoplay: boolean;
+}
+
+export interface DynamicWidgetInstance {
+  id: string;
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  settings: Record<string, unknown>;
+}
+
+export interface DynamicWallpaperScene {
+  background: DynamicBackgroundConfig;
+  widgets: DynamicWidgetInstance[];
+  revision: number;
+}
+
+export async function selectDynamicWallpaperImage(): Promise<string | null> {
+  return call('select_dynamic_wallpaper_image');
+}
+
+export async function getDynamicWallpaperScene(resolveItems = false): Promise<DynamicWallpaperScene> {
+  return call('get_dynamic_wallpaper_scene', resolveItems);
+}
+
+export async function getDynamicWallpaperCatalog(): Promise<{ favorite_folders: FavoriteFolder[] }> {
+  return call('get_dynamic_wallpaper_catalog');
+}
+
+export async function saveDynamicWallpaperScene(scene: DynamicWallpaperScene): Promise<DynamicWallpaperScene> {
+  return call('save_dynamic_wallpaper_scene', scene);
+}
+
+export async function startDynamicWallpaperScene(scene: DynamicWallpaperScene): Promise<DynamicWallpaperStatus> {
+  return call('start_dynamic_wallpaper_scene', scene);
+}
+
+export async function applyDynamicWallpaperScene(scene: DynamicWallpaperScene): Promise<{
+  scene: DynamicWallpaperScene;
+  status: DynamicWallpaperStatus;
+}> {
+  return call('apply_dynamic_wallpaper_scene', scene);
+}
+
+export async function openDynamicWidgetEditor(): Promise<boolean> {
+  return call('open_dynamic_widget_editor');
+}
+
+export async function closeDynamicWidgetEditor(): Promise<boolean> {
+  return call('close_dynamic_widget_editor');
+}
+
+export function dynamicWallpaperAssetUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const token = readToken();
+  const query = `path=${encodeURIComponent(path)}${token ? `&token=${token}` : ''}`;
+  return mediaApiUrl(`/api/dynamic-wallpaper/asset?${query}`);
 }
 
 export type FavoriteExportScope = 'selected' | 'folder' | 'all';

@@ -19,6 +19,7 @@ class AutomationServiceTests(unittest.TestCase):
         self.notifications: list[tuple[str, str]] = []
         self.resource_configs: list[dict[str, Any]] = []
         self.resource_contexts: list[dict[str, Any]] = []
+        self.dynamic_configs: list[dict[str, Any]] = []
         self.service = AutomationService(
             Path(self.directory.name) / "automations.json",
             lambda path: self._set_wallpaper(path),
@@ -33,6 +34,7 @@ class AutomationServiceTests(unittest.TestCase):
             lambda: {},
             data_root=Path(self.directory.name) / "automation_data",
             notify=lambda title, message: self.notifications.append((title, message)),
+            manage_dynamic_wallpaper=self._manage_dynamic_wallpaper,
         )
 
     def tearDown(self) -> None:
@@ -47,6 +49,10 @@ class AutomationServiceTests(unittest.TestCase):
         self.resource_configs.append(config)
         self.resource_contexts.append(context)
         return {"success": True, "path": "resource.jpg", "item": {"title": "resource"}}
+
+    def _manage_dynamic_wallpaper(self, config: dict[str, Any]) -> dict[str, Any]:
+        self.dynamic_configs.append(config)
+        return {"type": "slideshow", "status": {"running": True}}
 
     @staticmethod
     def document() -> dict[str, Any]:
@@ -100,6 +106,29 @@ class AutomationServiceTests(unittest.TestCase):
         snapshot = self._run_document(document)
         self.assertEqual(snapshot["run"]["status"], "completed")
         self.assertEqual(self.wallpapers, ["resource.jpg"])
+
+    def test_multiple_startup_automations_are_queued(self) -> None:
+        for index, automation_type in enumerate(("simple", "blocks", "advanced")):
+            document = self.document()
+            document["id"] = f"startup-{index}"
+            document["name"] = automation_type
+            document["automation_type"] = automation_type
+            document["enabled"] = True
+            document["nodes"][0]["config"] = {"kind": "startup"}
+            self.service.save(document)
+
+        self.service.start()
+        deadline = time.monotonic() + 3
+        while len(self.wallpapers) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertEqual(self.wallpapers, ["resource.jpg"] * 3)
+        self.assertEqual(self.service.snapshot()["queued_count"], 0)
+
+    def test_automation_type_defaults_to_advanced_and_is_summarized(self) -> None:
+        saved = self.service.save(self.document())
+        self.assertEqual(saved["automation_type"], "advanced")
+        self.assertEqual(self.service.list()[0]["automation_type"], "advanced")
 
     def test_rejects_unknown_node_type(self) -> None:
         document = self.document()
@@ -186,6 +215,20 @@ class AutomationServiceTests(unittest.TestCase):
         while self.service.snapshot()["run"]["running"] and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertEqual(self.wallpapers, ["fallback.jpg"])
+
+    def test_dynamic_wallpaper_type_is_saved_to_variable(self) -> None:
+        document = {
+            "id": "dynamic-type",
+            "name": "动态类型",
+            "nodes": [
+                {"id": "start", "type": "trigger", "config": {"kind": "manual"}},
+                {"id": "dynamic", "type": "dynamic_wallpaper", "config": {"action": "get_type", "result_variable": "kind"}},
+            ],
+            "edges": [{"source": "start", "target": "dynamic"}],
+        }
+        snapshot = self._run_document(document)
+        self.assertEqual(snapshot["run"]["variables"]["kind"], "slideshow")
+        self.assertEqual(self.dynamic_configs[0]["action"], "get_type")
 
     def _run_document(self, document: dict[str, Any]) -> dict[str, Any]:
         self.service.save(document)

@@ -409,7 +409,8 @@ export type PluginPermission =
   | 'ui.overlay'
   | 'ui.pages'
   | 'ui.resource_pages'
-  | 'ui.theme';
+  | 'ui.theme'
+  | 'ui.widgets';
 
 export interface PluginHeadingBlock {
   type: 'heading';
@@ -506,6 +507,15 @@ export interface PluginThemeContribution {
   variables: Record<string, string | number>;
 }
 
+export interface PluginWidgetContribution {
+  id: string;
+  label: string;
+  description?: string;
+  default_size: { width: number; height: number };
+  blocks: PluginBlock[];
+  className?: string;
+}
+
 export interface PluginContributionMap {
   pages?: PluginPageContribution[];
   navigation?: PluginNavigationContribution[];
@@ -514,6 +524,7 @@ export interface PluginContributionMap {
   overlays?: PluginOverlayContribution[];
   styles?: PluginStyleContribution[];
   theme?: PluginThemeContribution[];
+  widgets?: PluginWidgetContribution[];
 }
 
 export interface PluginManifest {
@@ -580,4 +591,5 @@ export interface BoundPluginContributions {
   overlays: BoundPluginContribution<PluginOverlayContribution>[];
   styles: BoundPluginContribution<PluginStyleContribution>[];
   theme: BoundPluginContribution<PluginThemeContribution>[];
+  widgets: BoundPluginContribution<PluginWidgetContribution>[];
 }

@@ -48,6 +48,10 @@ class ApplicationTray:
         with self._lock:
             if self._allow_close or self._quitting:
                 return None
+        # Closing the visible application window must never leave an invisible
+        # wallpaper session running, even when the app itself stays in the tray.
+        with contextlib.suppress(Exception):
+            self._api.stop_dynamic_wallpaper()
         if not bool(self._api.store.get("ui.hide_on_close", True)) or not bool(
             self._api.store.get("ui.minimize_to_tray", True)
         ):
@@ -194,6 +198,11 @@ class ApplicationTray:
         if icon is not None:
             with contextlib.suppress(Exception):
                 icon.stop()
+        # Stop and detach the WorkerW child before destroying any WebView. If a
+        # scene is still starting, shutdown requests cancellation and waits for
+        # the worker to leave its critical section.
+        with contextlib.suppress(Exception):
+            self._api.shutdown_dynamic_wallpaper()
         if window is not None:
             with contextlib.suppress(Exception):
                 window.destroy()

@@ -24,6 +24,8 @@ class SettingsStoreMigrationTests(unittest.TestCase):
             self.assertTrue(store.get("ui.hide_on_close"))
             self.assertTrue(store.get("ui.minimize_to_tray"))
             self.assertFalse(store.get("ui.release_webview_on_close"))
+            self.assertEqual(store.get("wallpaper.dynamic.background.type"), "image")
+            self.assertEqual(store.get("wallpaper.dynamic.widgets"), [])
 
     def test_invalid_legacy_mirror_is_migrated_without_losing_custom_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

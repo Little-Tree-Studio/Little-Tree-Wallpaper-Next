@@ -69,6 +69,7 @@ SUPPORTED_PERMISSIONS = {
     "ui.pages",
     "ui.resource_pages",
     "ui.theme",
+    "ui.widgets",
 }
 CONTRIBUTION_PERMISSIONS = {
     "buttons": "ui.buttons",
@@ -77,6 +78,7 @@ CONTRIBUTION_PERMISSIONS = {
     "pages": "ui.pages",
     "resource_pages": "ui.resource_pages",
     "theme": "ui.theme",
+    "widgets": "ui.widgets",
 }
 SUPPORTED_CONTRIBUTIONS = {
     "buttons",
@@ -86,6 +88,7 @@ SUPPORTED_CONTRIBUTIONS = {
     "resource_pages",
     "styles",
     "theme",
+    "widgets",
 }
 
 
@@ -258,7 +261,7 @@ def validate_contribution(
         raise PluginValidationError(f"{kind} contribution must be an object")
     value["id"] = validate_identifier(value.get("id"), f"{kind} contribution ID", max_length=80)
 
-    if kind in {"buttons", "navigation", "overlays", "pages", "resource_pages", "theme"}:
+    if kind in {"buttons", "navigation", "overlays", "pages", "resource_pages", "theme", "widgets"}:
         _validate_label(value.get("label"), kind)
     if kind in {"pages", "resource_pages"}:
         value["route"] = _validate_route(value.get("route"))
@@ -301,6 +304,25 @@ def validate_contribution(
                 raise PluginValidationError("Theme variable values must be strings or numbers")
             if isinstance(item, str) and any(token in item for token in ("\\", "/*", "*/", "@", "<", ">")):
                 raise PluginValidationError("Theme variable value contains unsafe CSS syntax")
+    elif kind == "widgets":
+        value["blocks"] = _validate_blocks(value.get("blocks", []), source_path, available_files)
+        if _block_actions(value["blocks"]):
+            raise PluginValidationError("Widget blocks cannot contain buttons because desktop widgets are non-interactive")
+        description = value.get("description", "")
+        if not isinstance(description, str) or len(description) > 500:
+            raise PluginValidationError("Widget description must be a bounded string")
+        default_size = value.get("default_size", {})
+        if not isinstance(default_size, dict):
+            raise PluginValidationError("Widget default_size must be an object")
+        try:
+            width = int(default_size.get("width", 28))
+            height = int(default_size.get("height", 20))
+        except (TypeError, ValueError) as exc:
+            raise PluginValidationError("Widget dimensions must be integers") from exc
+        if not 8 <= width <= 100 or not 8 <= height <= 100:
+            raise PluginValidationError("Widget dimensions must be between 8 and 100 percent")
+        value["description"] = description
+        value["default_size"] = {"width": width, "height": height}
     _validate_optional_class_name(value.get("className"))
     if kind == "navigation" and "location" in value and value["location"] != "sidebar":
         raise PluginValidationError("Navigation location must be sidebar")
@@ -334,7 +356,7 @@ def validate_contribution_set(contributions: dict[str, list[dict[str, Any]]], ac
         raise PluginValidationError("Plugin page routes must be unique")
     if actions is not None:
         referenced = {item["action"] for item in contributions.get("buttons", [])}
-        for kind in ("pages", "resource_pages", "overlays"):
+        for kind in ("pages", "resource_pages", "overlays", "widgets"):
             for item in contributions.get(kind, []):
                 referenced.update(_block_actions(item.get("blocks", [])))
         missing = referenced - actions

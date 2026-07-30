@@ -31,6 +31,7 @@ const emptyContributions = (): BoundPluginContributions => ({
   overlays: [],
   styles: [],
   theme: [],
+  widgets: [],
 });
 
 const PluginContext = createContext<PluginContextValue | null>(null);
@@ -42,6 +43,7 @@ const contributionKinds = [
   'overlays',
   'styles',
   'theme',
+  'widgets',
 ] as const satisfies readonly (keyof PluginContributionMap)[];
 
 function aggregatePlugins(plugins: Plugin[]): BoundPluginContributions {

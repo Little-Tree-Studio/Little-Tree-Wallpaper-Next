@@ -27,6 +27,7 @@ const permissionLabels: Record<PluginPermission, string> = {
   'ui.pages': '添加插件页面',
   'ui.resource_pages': '添加资源页签',
   'ui.theme': '覆盖界面主题变量',
+  'ui.widgets': '添加桌面小组件',
 };
 
 const elevatedPermissions = new Set<PluginPermission>([

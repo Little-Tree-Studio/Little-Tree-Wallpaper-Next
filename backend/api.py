@@ -45,7 +45,11 @@ from backend.services.download import (
 from backend.services.download import (
     sanitize_filename as _shared_sanitize_filename,
 )
-from backend.services.dynamic_wallpaper import WindowsDynamicWallpaperService
+from backend.services.dynamic_wallpaper import (
+    SUPPORTED_IMAGE_SUFFIXES,
+    SUPPORTED_VIDEO_SUFFIXES,
+    WindowsDynamicWallpaperService,
+)
 from backend.services.intelligent_market import IntelligentMarketService
 from backend.services.ltws import LTWSService
 from backend.services.pexels import PexelsService
@@ -109,6 +113,9 @@ class BackendAPI:
         # Per-session secret token injected by the launcher (main.py). It is used
         # to build authenticated preview URLs and is never written to disk.
         self._api_token: str | None = None
+        self._dynamic_editor_window: Any | None = None
+        self._dynamic_editor_url = ""
+        self._dynamic_editor_allow_close = False
         self._pending_wallpaper_lock = threading.RLock()
         self._pending_static_wallpaper: dict[str, Any] | None = None
         self._desktop_notify: Callable[[str, str], None] | None = None
@@ -150,6 +157,7 @@ class BackendAPI:
             self.stop_dynamic_wallpaper,
             data_root=get_data_dir() / "automation_data",
             notify=lambda title, message: self._desktop_notify(title, message) if self._desktop_notify else None,
+            manage_dynamic_wallpaper=self.automation_dynamic_wallpaper,
         )
 
     @staticmethod
@@ -196,7 +204,11 @@ class BackendAPI:
             ("fetch_resource", "/selection"): ["random", "first", "index"],
             ("fetch_resource", "/work_selection"): ["random", "first", "index"],
             ("fetch_resource", "/image_selection"): ["random", "first", "index"],
-            ("dynamic_wallpaper", "/action"): ["start", "play", "pause", "reload", "stop"],
+            ("dynamic_wallpaper", "/action"): ["start", "get_type", "video_control", "replace_video", "slideshow_control", "slideshow_transition", "slideshow_source", "slideshow_settings", "play", "pause", "reload", "stop"],
+            ("dynamic_wallpaper", "/video_action"): ["auto", "play", "pause"],
+            ("dynamic_wallpaper", "/slideshow_action"): ["next", "previous"],
+            ("dynamic_wallpaper", "/source"): ["folder", "favorites"],
+            ("dynamic_wallpaper", "/transition"): ["fade", "slide-left", "slide-up", "zoom", "blur", "wipe", "flip", "ken-burns"],
         }
         options = static_options.get((node_type, pointer))
         if node_type == "fetch_resource" and pointer == "/source_id":
@@ -504,6 +516,19 @@ class BackendAPI:
     def configure_dynamic_wallpaper_runtime(self, base_url: str, token: str, host_window: Any | None = None) -> None:
         self.dynamic_wallpaper_service.configure(base_url, token, host_window)
 
+    def configure_dynamic_editor_runtime(self, editor_window: Any | None, editor_url: str) -> None:
+        self._dynamic_editor_window = editor_window
+        self._dynamic_editor_url = str(editor_url)
+        self._dynamic_editor_allow_close = False
+        if editor_window is not None:
+            def hide_editor(*_args: Any) -> bool | None:
+                if self._dynamic_editor_allow_close:
+                    return None
+                with contextlib.suppress(Exception):
+                    editor_window.hide()
+                return False
+            editor_window.events.closing += hide_editor
+
     def _configure_desktop_notifications(
         self,
         notify: Callable[[str, str], None],
@@ -515,6 +540,12 @@ class BackendAPI:
 
     def shutdown_dynamic_wallpaper(self) -> None:
         self.dynamic_wallpaper_service.shutdown()
+        editor = self._dynamic_editor_window
+        self._dynamic_editor_window = None
+        self._dynamic_editor_allow_close = True
+        if editor is not None:
+            with contextlib.suppress(Exception):
+                editor.destroy()
 
     def shutdown_automation(self) -> None:
         self.automation_service.shutdown()
@@ -2715,6 +2746,243 @@ class BackendAPI:
             filetypes=[("Video", "*.mp4 *.webm *.mov *.m4v")],
         )
 
+    def select_dynamic_wallpaper_image(self) -> str | None:
+        return self._show_file_dialog(
+            "open",
+            filetypes=[("Image", "*.avif *.bmp *.gif *.jpeg *.jpg *.png *.webp")],
+        )
+
+    @staticmethod
+    def _bounded_number(value: Any, default: float, minimum: float, maximum: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        return max(minimum, min(maximum, number))
+
+    def _normalize_dynamic_scene(self, value: Any) -> dict[str, Any]:
+        raw = value if isinstance(value, dict) else {}
+        background_raw = raw.get("background") if isinstance(raw.get("background"), dict) else {}
+        background_type = str(background_raw.get("type") or "image")
+        if background_type not in {"video", "image", "slideshow"}:
+            background_type = "image"
+        source = str(background_raw.get("source") or "folder")
+        if source not in {"folder", "favorites"}:
+            source = "folder"
+        transition = str(background_raw.get("transition") or "fade")
+        if transition not in {"fade", "slide-left", "slide-up", "zoom", "blur", "wipe", "flip", "ken-burns"}:
+            transition = "fade"
+        path = str(background_raw.get("path") or "").strip()
+        items = background_raw.get("items") if isinstance(background_raw.get("items"), list) else []
+        stable_items: list[str] = []
+        for item in items[:500]:
+            item_path = str(item or "").strip()
+            suffix = Path(urlparse(item_path).path).suffix.lower()
+            if item_path and suffix in SUPPORTED_IMAGE_SUFFIXES:
+                stable_items.append(item_path)
+        widgets_raw = raw.get("widgets") if isinstance(raw.get("widgets"), list) else []
+        widgets: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(widgets_raw[:64]):
+            if not isinstance(item, dict):
+                continue
+            widget_type = str(item.get("type") or "").strip()[:160]
+            if not widget_type:
+                continue
+            instance_id = re.sub(r"[^A-Za-z0-9._-]", "", str(item.get("id") or ""))[:160]
+            if not instance_id or instance_id in seen_ids:
+                instance_id = f"widget-{index}-{uuid.uuid4().hex[:8]}"
+            seen_ids.add(instance_id)
+            settings_raw = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+            settings: dict[str, Any] = {}
+            if widget_type == "builtin:clock":
+                settings = {
+                    "label": str(settings_raw.get("label") or "")[:40],
+                    "use24Hour": bool(settings_raw.get("use24Hour", True)),
+                    "showDate": bool(settings_raw.get("showDate", True)),
+                }
+            elif widget_type == "builtin:date":
+                settings = {
+                    "title": str(settings_raw.get("title") or "")[:40],
+                    "showWeekday": bool(settings_raw.get("showWeekday", True)),
+                }
+            elif widget_type == "builtin:note":
+                settings = {
+                    "title": str(settings_raw.get("title") or "便笺")[:40],
+                    "content": str(settings_raw.get("content") or "今天也要记得看看喜欢的风景。")[:500],
+                }
+            elif widget_type == "builtin:status":
+                settings = {
+                    "title": str(settings_raw.get("title") or "动态服务")[:40],
+                    "subtitle": str(settings_raw.get("subtitle") or "场景正在运行")[:100],
+                }
+            widgets.append({
+                "id": instance_id,
+                "type": widget_type,
+                "x": self._bounded_number(item.get("x"), 6, 0, 92),
+                "y": self._bounded_number(item.get("y"), 6, 0, 92),
+                "width": self._bounded_number(item.get("width"), 28, 8, 100),
+                "height": self._bounded_number(item.get("height"), 20, 8, 100),
+                "settings": settings,
+            })
+        return {
+            "background": {
+                "type": background_type,
+                "path": path,
+                "source": source,
+                "folder_id": str(background_raw.get("folder_id") or "")[:160],
+                "items": stable_items,
+                "interval_seconds": int(self._bounded_number(background_raw.get("interval_seconds"), 30, 3, 86400)),
+                "transition": transition,
+                "transition_duration": int(self._bounded_number(background_raw.get("transition_duration"), 900, 100, 5000)),
+                "shuffle": bool(background_raw.get("shuffle", False)),
+                "muted": bool(background_raw.get("muted", True)),
+                "loop": bool(background_raw.get("loop", True)),
+                "playback_rate": self._bounded_number(background_raw.get("playback_rate"), 1, 0.25, 4),
+                "autoplay": bool(background_raw.get("autoplay", True)),
+            },
+            "widgets": widgets,
+            "revision": max(0, int(self._bounded_number(raw.get("revision"), 0, 0, 2_147_483_647))),
+        }
+
+    def _dynamic_slideshow_items(self, background: dict[str, Any]) -> list[str]:
+        if background["source"] == "favorites":
+            items = self._favorite_rotation_items({"scope": "folder", "folder_id": background["folder_id"]})
+            hydrated = self._hydrate_favorite_urls({"items": items}).get("items", [])
+            result: list[str] = []
+            for item in hydrated:
+                candidate = str(item.get("local_path") or item.get("source_url") or item.get("preview_url") or "")
+                if Path(urlparse(candidate).path).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES:
+                    result.append(candidate)
+            return result
+        folder = Path(str(background.get("path") or "")).expanduser()
+        if not folder.is_dir():
+            return []
+        return [
+            str(path.resolve())
+            for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold())
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+        ][:500]
+
+    def get_dynamic_wallpaper_scene(self, resolve_items: bool = False) -> dict[str, Any]:
+        scene = self._normalize_dynamic_scene(self.store.get("wallpaper.dynamic", {}))
+        if resolve_items and scene["background"]["type"] == "slideshow":
+            scene["background"]["items"] = self._dynamic_slideshow_items(scene["background"])
+        return scene
+
+    def get_dynamic_wallpaper_catalog(self) -> dict[str, Any]:
+        return {"favorite_folders": self._load_favorites().get("folders", [])}
+
+    def save_dynamic_wallpaper_scene(self, value: Any) -> dict[str, Any]:
+        scene = self._normalize_dynamic_scene(value)
+        background = scene["background"]
+        if background["type"] == "video":
+            path = Path(background["path"]).expanduser()
+            if background["path"] and (not path.is_file() or path.suffix.lower() not in SUPPORTED_VIDEO_SUFFIXES):
+                raise ValueError("请选择受支持的视频文件")
+        elif background["type"] == "image":
+            path = Path(background["path"]).expanduser()
+            if background["path"] and (not path.is_file() or path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES):
+                raise ValueError("请选择受支持的图片文件")
+        elif background["source"] == "folder":
+            folder = Path(background["path"]).expanduser()
+            if background["path"] and not folder.is_dir():
+                raise ValueError("轮播文件夹不存在")
+        scene["revision"] = max(scene["revision"] + 1, int(datetime.now().timestamp() * 1000))
+        self.store.set("wallpaper.dynamic", scene)
+        return self.get_dynamic_wallpaper_scene()
+
+    def start_dynamic_wallpaper_scene(self, value: Any | None = None) -> dict[str, Any]:
+        scene = self.save_dynamic_wallpaper_scene(value) if value is not None else self.get_dynamic_wallpaper_scene()
+        background = scene["background"]
+        if background["type"] in {"image", "video"} and not background["path"]:
+            raise ValueError("请先选择动态壁纸底图")
+        return self.dynamic_wallpaper_service.start_scene(scene["revision"], background["type"])
+
+    def apply_dynamic_wallpaper_scene(self, value: Any) -> dict[str, Any]:
+        scene = self.save_dynamic_wallpaper_scene(value)
+        background = scene["background"]
+        if background["type"] in {"image", "video"} and not background["path"]:
+            raise ValueError("请先选择动态壁纸底图")
+        status = self.dynamic_wallpaper_service.start_scene(scene["revision"], background["type"])
+        return {"scene": scene, "status": status}
+
+    def automation_dynamic_wallpaper(self, config: dict[str, Any]) -> dict[str, Any]:
+        action = str(config.get("action") or "get_type")
+        if action == "get_type":
+            return {"type": self.dynamic_wallpaper_service.current_type()}
+        if action == "start":
+            status = self.start_dynamic_wallpaper(
+                str(config.get("path") or ""),
+                bool(config.get("muted", True)),
+                bool(config.get("loop", True)),
+                float(config.get("playback_rate", 1.0)),
+            )
+            return {"type": "video", "status": status}
+        if action == "stop":
+            return {"type": "", "status": self.stop_dynamic_wallpaper()}
+        if action == "video_control":
+            video_action = str(config.get("video_action") or "auto")
+            return {"type": "video", "status": self.control_dynamic_wallpaper(video_action)}
+        if action in {"play", "pause", "reload"}:
+            return {"type": "video", "status": self.control_dynamic_wallpaper(action)}
+        if action == "slideshow_control":
+            slideshow_action = str(config.get("slideshow_action") or "next")
+            return {"type": "slideshow", "status": self.control_dynamic_wallpaper(slideshow_action)}
+
+        scene = self.get_dynamic_wallpaper_scene()
+        background = scene["background"]
+        if action == "replace_video":
+            background.update({
+                "type": "video",
+                "path": str(config.get("path") or ""),
+                "muted": bool(config.get("muted", True)),
+                "loop": bool(config.get("loop", True)),
+                "playback_rate": float(config.get("playback_rate", 1.0)),
+                "autoplay": str(config.get("video_action") or "auto") != "pause",
+            })
+        elif action == "slideshow_transition":
+            background.update({
+                "type": "slideshow",
+                "transition": str(config.get("transition") or "fade"),
+                "transition_duration": int(config.get("transition_duration", 900)),
+            })
+        elif action == "slideshow_source":
+            background.update({
+                "type": "slideshow",
+                "source": str(config.get("source") or "folder"),
+                "path": str(config.get("path") or ""),
+                "folder_id": str(config.get("folder_id") or ""),
+            })
+        elif action == "slideshow_settings":
+            background.update({
+                "type": "slideshow",
+                "interval_seconds": int(config.get("interval_seconds", 30)),
+                "transition_duration": int(config.get("transition_duration", 900)),
+                "shuffle": bool(config.get("shuffle", False)),
+            })
+        else:
+            raise ValueError("不支持的动态壁纸自动化操作")
+
+        saved = self.save_dynamic_wallpaper_scene(scene)
+        status = self.start_dynamic_wallpaper_scene()
+        background_type = str(saved.get("background", {}).get("type") or background.get("type") or "")
+        return {"type": background_type, "scene": saved, "status": status}
+
+    def open_dynamic_widget_editor(self) -> bool:
+        window = self._dynamic_editor_window
+        if window is None or not self._dynamic_editor_url:
+            raise RuntimeError("小组件编辑窗口尚未就绪")
+        window.load_url(self._dynamic_editor_url)
+        window.show()
+        return True
+
+    def close_dynamic_widget_editor(self) -> bool:
+        window = self._dynamic_editor_window
+        if window is not None:
+            window.hide()
+        return True
+
     def get_dynamic_wallpaper_status(self) -> dict[str, Any]:
         return self.dynamic_wallpaper_service.diagnose()
 
@@ -2738,6 +3006,18 @@ class BackendAPI:
 
     def resolve_dynamic_wallpaper_media(self, revision: int = 0) -> tuple[Path, str] | None:
         return self.dynamic_wallpaper_service.media_file(revision)
+
+    def resolve_dynamic_scene_asset(self, path: str) -> tuple[Path, str] | None:
+        scene = self.get_dynamic_wallpaper_scene(resolve_items=True)
+        allowed = {scene["background"]["path"], *scene["background"]["items"]}
+        candidate = str(Path(str(path)).expanduser().resolve(strict=False))
+        if candidate not in {str(Path(item).expanduser().resolve(strict=False)) for item in allowed if item}:
+            return None
+        asset = Path(candidate)
+        suffix = asset.suffix.lower()
+        if not asset.is_file() or suffix not in SUPPORTED_IMAGE_SUFFIXES | SUPPORTED_VIDEO_SUFFIXES:
+            return None
+        return asset, mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
 
     @staticmethod
     def _favorite_export_options(options: dict[str, Any] | str | None) -> dict[str, Any]:

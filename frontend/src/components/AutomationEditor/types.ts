@@ -24,6 +24,21 @@ export type AutomationNodeType =
   | 'log'
   | 'stop';
 
+export type AutomationType = 'simple' | 'blocks' | 'advanced';
+export type SimpleTriggerKind = 'interval' | 'schedule' | 'startup';
+export type SimpleWallpaperSource = 'folder' | 'file' | 'resource';
+
+export interface SimpleAutomationSettings {
+  trigger: SimpleTriggerKind;
+  interval: number;
+  intervalUnit: 'minutes' | 'hours' | 'days';
+  scheduleTime: string;
+  source: SimpleWallpaperSource;
+  path: string;
+  recursive: boolean;
+  resource: 'bing' | 'spotlight' | 'cnu' | 'pixiv';
+}
+
 export interface AutomationExpression {
   type: string;
   [key: string]: unknown;
@@ -97,6 +112,8 @@ export interface AutomationDocument {
   description: string;
   enabled: boolean;
   version: number;
+  automation_type?: AutomationType;
+  simple?: SimpleAutomationSettings;
   nodes: AutomationNode[];
   edges: AutomationEdge[];
   annotations?: AutomationAnnotation[];
@@ -109,6 +126,7 @@ export interface AutomationSummary {
   name: string;
   description: string;
   enabled: boolean;
+  automation_type?: AutomationType;
   node_count: number;
   updated_at: string;
 }
@@ -132,6 +150,19 @@ export interface AutomationRuntime {
   events: Array<{ time: string; level: string; message: string; node_id: string }>;
   enabled_count: number;
   total_count: number;
+  queued_count?: number;
+}
+
+export const AUTOMATION_TYPE_META: Record<AutomationType, { label: string; description: string }> = {
+  simple: { label: '简单模式', description: '按时间或周期自动更换壁纸' },
+  blocks: { label: '积木模式', description: '像 Scratch 一样拼接执行步骤' },
+  advanced: { label: '高级模式', description: '自由连接完整节点图' },
+};
+
+export function getAutomationType(document: Pick<AutomationDocument, 'automation_type'>): AutomationType {
+  return document.automation_type === 'simple' || document.automation_type === 'blocks'
+    ? document.automation_type
+    : 'advanced';
 }
 
 export const NODE_META: Record<AutomationNodeType, { label: string; description: string }> = {
@@ -146,7 +177,7 @@ export const NODE_META: Record<AutomationNodeType, { label: string; description:
   fetch_resource: { label: '获取资源', description: '从在线资源获取一张壁纸' },
   local_file: { label: '获取本地文件', description: '输出选中的本地图片' },
   set_wallpaper: { label: '设置壁纸', description: '使用上游图片设置壁纸' },
-  dynamic_wallpaper: { label: '动态壁纸', description: '启动、播放、暂停或关闭' },
+  dynamic_wallpaper: { label: '动态壁纸', description: '查询、控制视频或调整图片轮播' },
   notification: { label: '系统通知', description: '发送桌面系统通知' },
   command: { label: '执行命令', description: '无 Shell 执行程序并获取输出' },
   open_target: { label: '打开目标', description: '用系统默认程序打开文件或链接' },
@@ -172,7 +203,7 @@ export function createNodeConfig(type: AutomationNodeType): Record<string, unkno
   if (type === 'wait') return { seconds: 1 };
   if (type === 'fetch_resource') return { source: 'bing', category: 'daily', market: 'zh-CN', quality: 'highDef', selection: 'random' };
   if (type === 'local_file') return { path: '' };
-  if (type === 'dynamic_wallpaper') return { action: 'start', loop: true, muted: true };
+  if (type === 'dynamic_wallpaper') return { action: 'get_type', result_variable: 'dynamic_type', video_action: 'auto', slideshow_action: 'next', source: 'folder', transition: 'fade', transition_duration: 900, interval_seconds: 30, shuffle: false, loop: true, muted: true, playback_rate: 1 };
   if (type === 'log') return { message: '执行到此节点' };
   if (type === 'notification') return { title: '小树壁纸', message: '自动化执行完成' };
   if (type === 'command') return { executable: '', arguments: '', working_directory: '.', timeout_seconds: 60, check: true, result_variable: 'command_result' };
@@ -299,9 +330,10 @@ export function formatNodeSummary(node: AutomationNode): string {
     return path.split(/[\\/]/).pop() || path;
   }
   if (node.type === 'set_wallpaper') return '使用上游图片';
-  if (node.type === 'dynamic_wallpaper') return config.action === 'start'
-    ? `启动 · ${String(config.path || '未选择视频').split(/[\\/]/).pop()}`
-    : String(config.action || 'play');
+  if (node.type === 'dynamic_wallpaper') {
+    const labels: Record<string, string> = { get_type: '获取当前类型', video_control: '控制视频', replace_video: '替换视频', slideshow_control: '切换轮播图片', slideshow_transition: '更换轮播动画', slideshow_source: '更换轮播来源', slideshow_settings: '更改轮播设置', start: '启动兼容视频', stop: '关闭动态壁纸' };
+    return labels[String(config.action)] || String(config.action || '获取当前类型');
+  }
   if (node.type === 'log') return String(config.message || '空日志');
   if (node.type === 'notification') return String(config.title || '系统通知');
   if (node.type === 'command') return String(config.executable || '未配置可执行文件');
@@ -329,7 +361,8 @@ export function formatNodeOutput(node: AutomationNode, port: string = 'default')
   if (node.type === 'open_target') return '已打开的目标';
   if (node.type === 'fetch_resource') return '本地图片路径 + 资源信息';
   if (node.type === 'local_file') return '本地图片路径';
-  if (node.type === 'wait' || node.type === 'set_wallpaper' || node.type === 'dynamic_wallpaper' || node.type === 'log') {
+  if (node.type === 'dynamic_wallpaper') return node.config.action === 'get_type' ? '当前动态壁纸类型' : '动态壁纸操作结果';
+  if (node.type === 'wait' || node.type === 'set_wallpaper' || node.type === 'log') {
     return '上游值（原样）';
   }
   return '无输出';
@@ -389,10 +422,45 @@ export function getNodeSettings(node: AutomationNode, catalog?: AutomationResour
   if (node.type === 'local_file') return [{ pointer: '/path', label: '本地图片', kind: 'path', value: config.path || '' }];
   if (node.type === 'set_wallpaper') return [{ pointer: '/path', label: '回退图片', kind: 'path', value: config.path || '' }];
   if (node.type === 'dynamic_wallpaper') {
-    const result: AutomationSettingDescriptor[] = [{ pointer: '/action', label: '动作', kind: 'select', value: config.action || 'start', options: options([["start", '启动'], ['play', '播放'], ['pause', '暂停'], ['reload', '重载'], ['stop', '关闭']]) }];
-    if (config.action === 'start') result.push(
+    const action = String(config.action || 'get_type');
+    const result: AutomationSettingDescriptor[] = [{ pointer: '/action', label: '操作', kind: 'select', value: action, options: options([
+      ['get_type', '获取动态壁纸类型'],
+      ['video_control', '视频：暂停/播放'],
+      ['replace_video', '视频：替换视频'],
+      ['slideshow_control', '轮播：上一张/下一张'],
+      ['slideshow_transition', '轮播：更换动画'],
+      ['slideshow_source', '轮播：更换来源'],
+      ['slideshow_settings', '轮播：更改设置'],
+      ['start', '兼容：启动本地视频'],
+      ['play', '兼容：播放'],
+      ['pause', '兼容：暂停'],
+      ['reload', '兼容：重载'],
+      ['stop', '关闭动态壁纸'],
+    ]) }];
+    if (action === 'get_type') result.push({ pointer: '/result_variable', label: '保存到变量', kind: 'text', value: config.result_variable || 'dynamic_type' });
+    if (action === 'video_control') result.push({ pointer: '/video_action', label: '播放操作', kind: 'select', value: config.video_action || 'auto', options: options([['auto', '自动切换'], ['play', '播放'], ['pause', '暂停']]) });
+    if (action === 'start' || action === 'replace_video') result.push(
       { pointer: '/path', label: '视频路径', kind: 'video', value: config.path || '' },
-      { pointer: '/loop', label: '循环', kind: 'boolean', value: config.loop !== false },
+      { pointer: '/video_action', label: '替换后状态', kind: 'select', value: config.video_action || 'auto', options: options([['auto', '自动播放'], ['play', '播放'], ['pause', '保持暂停']]) },
+      { pointer: '/muted', label: '静音', kind: 'boolean', value: config.muted !== false },
+      { pointer: '/loop', label: '循环播放', kind: 'boolean', value: config.loop !== false },
+      { pointer: '/playback_rate', label: '播放速度', kind: 'number', value: config.playback_rate ?? 1 },
+    );
+    if (action === 'slideshow_control') result.push({ pointer: '/slideshow_action', label: '切换操作', kind: 'select', value: config.slideshow_action || 'next', options: options([['next', '下一张'], ['previous', '上一张']]) });
+    if (action === 'slideshow_transition') result.push(
+      { pointer: '/transition', label: '轮播动画', kind: 'select', value: config.transition || 'fade', options: options([['fade', '柔和淡入'], ['slide-left', '横向推入'], ['slide-up', '向上揭幕'], ['zoom', '镜头拉近'], ['blur', '清晰聚焦'], ['wipe', '光幕擦除'], ['flip', '空间翻页'], ['ken-burns', '漫游镜头']]) },
+      { pointer: '/transition_duration', label: '动画毫秒', kind: 'number', value: config.transition_duration ?? 900 },
+    );
+    if (action === 'slideshow_source') {
+      const source = String(config.source || 'folder');
+      result.push({ pointer: '/source', label: '轮播来源', kind: 'select', value: source, options: options([['folder', '本地文件夹'], ['favorites', '收藏夹']]) });
+      if (source === 'folder') result.push({ pointer: '/path', label: '图片文件夹', kind: 'directory', value: config.path || '' });
+      else result.push({ pointer: '/folder_id', label: '收藏夹', kind: catalog?.favorite_folders.length ? 'select' : 'text', value: config.folder_id || '', options: catalog?.favorite_folders.map((folder) => ({ id: folder.id, label: folder.name })) });
+    }
+    if (action === 'slideshow_settings') result.push(
+      { pointer: '/interval_seconds', label: '间隔秒数', kind: 'number', value: config.interval_seconds ?? 30 },
+      { pointer: '/transition_duration', label: '动画毫秒', kind: 'number', value: config.transition_duration ?? 900 },
+      { pointer: '/shuffle', label: '随机顺序', kind: 'boolean', value: Boolean(config.shuffle) },
     );
     return result;
   }
@@ -525,6 +593,7 @@ export function createAutomation(): AutomationDocument {
     description: '',
     enabled: false,
     version: 1,
+    automation_type: 'advanced',
     nodes: [
       { id: triggerId, type: 'trigger', x: 80, y: 160, config: { kind: 'manual' } },
       { id: stopId, type: 'stop', x: 420, y: 160, config: {} },
@@ -539,6 +608,7 @@ function createLinearAutomation(
   description: string,
   enabled: boolean,
   steps: Array<{ type: AutomationNodeType; config: Record<string, unknown> }>,
+  automationType: AutomationType = 'advanced',
 ): AutomationDocument {
   const nodes = steps.map((step, index) => ({
     id: crypto.randomUUID(),
@@ -553,6 +623,7 @@ function createLinearAutomation(
     description,
     enabled,
     version: 1,
+    automation_type: automationType,
     nodes,
     edges: nodes.slice(0, -1).map((node, index) => ({
       id: crypto.randomUUID(),
@@ -561,6 +632,83 @@ function createLinearAutomation(
     })),
     annotations: [],
   };
+}
+
+const SIMPLE_RESOURCE_CONFIGS: Record<SimpleAutomationSettings['resource'], Record<string, unknown>> = {
+  bing: { source: 'bing', category: 'daily', market: 'zh-CN', quality: 'highDef', count: 8, selection: 'random' },
+  spotlight: { source: 'spotlight', spotlight_source: 'online', market: 'zh-CN', limit: 20, selection: 'random' },
+  cnu: { source: 'cnu', section: 'selected', page: 1, limit: 20, work_selection: 'random', image_selection: 'random' },
+  pixiv: { source: 'pixiv', mode: 'day', page: 1, limit: 30, work_selection: 'random', image_selection: 'random' },
+};
+
+export const DEFAULT_SIMPLE_SETTINGS: SimpleAutomationSettings = {
+  trigger: 'interval',
+  interval: 30,
+  intervalUnit: 'minutes',
+  scheduleTime: '08:00',
+  source: 'folder',
+  path: '',
+  recursive: false,
+  resource: 'bing',
+};
+
+export function applySimpleSettings(document: AutomationDocument, settings: SimpleAutomationSettings): AutomationDocument {
+  const triggerConfig = settings.trigger === 'interval'
+    ? { kind: 'interval', seconds: Math.max(60, settings.interval * ({ minutes: 60, hours: 3600, days: 86400 }[settings.intervalUnit])) }
+    : settings.trigger === 'schedule'
+      ? { kind: 'schedule', time: settings.scheduleTime }
+      : { kind: 'startup' };
+  const sourceStep = settings.source === 'file'
+    ? { type: 'local_file' as const, config: { path: settings.path } }
+    : settings.source === 'folder'
+      ? { type: 'fetch_resource' as const, config: { source: 'folder', path: settings.path, recursive: settings.recursive, order: 'shuffle' } }
+      : { type: 'fetch_resource' as const, config: SIMPLE_RESOURCE_CONFIGS[settings.resource] };
+  const nodeIds = ['trigger', 'source', 'wallpaper', 'stop'].map((suffix) => `${document.id}-${suffix}`);
+  const steps = [
+    { type: 'trigger' as const, config: triggerConfig },
+    sourceStep,
+    { type: 'set_wallpaper' as const, config: {} },
+    { type: 'stop' as const, config: {} },
+  ];
+  const nodes = steps.map((step, index) => ({ id: nodeIds[index], type: step.type, x: 80 + index * 280, y: 160, config: step.config }));
+  return {
+    ...document,
+    automation_type: 'simple',
+    simple: { ...settings },
+    nodes,
+    edges: nodes.slice(0, -1).map((node, index) => ({ id: `${document.id}-edge-${index}`, source: node.id, target: nodes[index + 1].id })),
+    annotations: [],
+  };
+}
+
+export function createSimpleAutomation(): AutomationDocument {
+  const document: AutomationDocument = {
+    id: crypto.randomUUID().replace(/-/g, ''),
+    name: '自动更换壁纸',
+    description: '使用简单模式创建的壁纸任务',
+    enabled: false,
+    version: 1,
+    automation_type: 'simple',
+    nodes: [],
+    edges: [],
+    annotations: [],
+  };
+  return applySimpleSettings(document, DEFAULT_SIMPLE_SETTINGS);
+}
+
+export function createBlocksAutomation(): AutomationDocument {
+  return createLinearAutomation(
+    '积木自动化',
+    '按顺序执行积木步骤',
+    false,
+    [
+      { type: 'trigger', config: { kind: 'manual' } },
+      { type: 'fetch_resource', config: createNodeConfig('fetch_resource') },
+      { type: 'set_wallpaper', config: {} },
+      { type: 'stop', config: {} },
+    ],
+    'blocks',
+  );
 }
 
 export function createScheduledWallpaperAutomation(options: {

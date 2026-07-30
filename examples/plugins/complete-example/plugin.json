@@ -13,7 +13,8 @@
     "ui.overlay",
     "ui.pages",
     "ui.resource_pages",
-    "ui.theme"
+    "ui.theme",
+    "ui.widgets"
   ],
   "contributes": {
     "pages": [
@@ -154,6 +155,18 @@
         "id": "example-global-style",
         "scope": "global",
         "css": ":root { --complete-example-global-style-enabled: 1; }"
+      }
+    ],
+    "widgets": [
+      {
+        "id": "desktop-note",
+        "label": "示例桌面卡片",
+        "description": "演示插件通过声明式 block 提供桌面小组件。",
+        "default_size": {"width": 28, "height": 20},
+        "blocks": [
+          {"type": "heading", "text": "插件小组件", "level": 3},
+          {"type": "text", "text": "此内容由宿主安全渲染，不执行插件前端代码。"}
+        ]
       }
     ],
     "theme": [

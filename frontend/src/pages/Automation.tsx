@@ -1,22 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AlertDialog, Button, Card, Chip, Description, Dropdown, Input, Kbd, Label, ListBox, Modal, ScrollShadow, Select, Switch, TextArea, TextField, Tooltip, toast } from '@heroui/react';
-import { Braces, ChevronLeft, ChevronRight, CircleStop, Clock3, Download, FileJson, FileOutput, FolderOpen, HelpCircle, Image, MousePointer2, Move, Play, Plus, Redo2, RefreshCw, Save, StickyNote, Trash2, Undo2, Upload, Video } from 'lucide-react';
+import { AlertDialog, Button, Card, Chip, Description, Dropdown, Input, Kbd, Label, ListBox, Modal, ScrollShadow, Select, Switch, Tabs, TextArea, TextField, Tooltip, toast } from '@heroui/react';
+import { Blocks, Braces, ChevronLeft, ChevronRight, CircleStop, Clock3, Download, FileJson, FileOutput, FolderOpen, HelpCircle, Image, MousePointer2, Move, Play, Plus, Redo2, RefreshCw, Save, Settings2, Sparkles, StickyNote, Trash2, Undo2, Upload, Video } from 'lucide-react';
 import AutomationCanvas from '@/components/AutomationEditor/AutomationCanvas';
 import type { AutomationCanvasTool } from '@/components/AutomationEditor/AutomationCanvas';
+import BlocksAutomationEditor from '@/components/AutomationEditor/BlocksAutomationEditor';
+import SimpleAutomationEditor from '@/components/AutomationEditor/SimpleAutomationEditor';
 import {
+  AUTOMATION_TYPE_META,
   NODE_META,
   createNodeConfig,
   createAutomation,
+  createBlocksAutomation,
+  createSimpleAutomation,
   createScheduledDynamicWallpaperAutomation,
   createScheduledWallpaperAutomation,
   createWallpaperRotationAutomation,
+  getAutomationType,
 } from '@/components/AutomationEditor/types';
 import type {
   AutomationDocument,
   AutomationNodeType,
   AutomationRuntime,
   AutomationSummary,
+  AutomationType,
 } from '@/components/AutomationEditor/types';
 import {
   cancelAutomation,
@@ -59,6 +66,7 @@ function documentFingerprint(document: AutomationDocument) {
 export default function Automation() {
   const [searchParams] = useSearchParams();
   const [items, setItems] = useState<AutomationSummary[]>([]);
+  const [activeType, setActiveType] = useState<AutomationType>('simple');
   const [document, setDocument] = useState<AutomationDocument | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<AutomationRuntime | null>(null);
@@ -117,7 +125,14 @@ export default function Automation() {
   const refreshList = async () => setItems(await listAutomations());
   const openDocument = async (id: string) => {
     const loaded = await getAutomation(id);
+    setActiveType(getAutomationType(loaded));
     resetDocument(loaded);
+  };
+
+  const createForType = (type: AutomationType) => {
+    const next = type === 'simple' ? createSimpleAutomation() : type === 'blocks' ? createBlocksAutomation() : createAutomation();
+    setActiveType(type);
+    resetDocument(next, true);
   };
 
   useEffect(() => {
@@ -126,9 +141,12 @@ export default function Automation() {
       if (cancelled) return;
       setItems(result);
       const requestedId = searchParams.get('automation');
-      if (requestedId && result.some((item) => item.id === requestedId)) await openDocument(requestedId);
-      else if (result.length) await openDocument(result[0].id);
-      else resetDocument(createAutomation());
+       if (requestedId && result.some((item) => item.id === requestedId)) await openDocument(requestedId);
+       else {
+         const firstSimple = result.find((item) => getAutomationType(item) === 'simple');
+         if (firstSimple) await openDocument(firstSimple.id);
+         else resetDocument(createSimpleAutomation());
+       }
     }).catch((error: unknown) => toast.danger('自动化加载失败', { description: error instanceof Error ? error.message : '后端未响应' }))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
@@ -137,6 +155,10 @@ export default function Automation() {
   const openCreationModal = () => {
     if (dirty) {
       toast.warning('请先保存当前自动化');
+      return;
+    }
+    if (activeType !== 'advanced') {
+      createForType(activeType);
       return;
     }
     setCreationKind('blank');
@@ -261,20 +283,26 @@ export default function Automation() {
     setSelectedId((id) => id && next.nodes.some((node) => node.id === id) ? id : null);
   };
 
-  const save = async () => {
-    if (!document) return;
-    setSaving(true);
-    try {
+   const save = async (): Promise<boolean> => {
+     if (!document) return false;
+     if (getAutomationType(document) === 'simple' && document.simple?.source !== 'resource' && !document.simple?.path) {
+       toast.warning(document.simple?.source === 'file' ? '请先选择壁纸图片' : '请先选择壁纸文件夹');
+       return false;
+     }
+     setSaving(true);
+     try {
       const saved = await saveAutomation(document);
       documentRef.current = saved;
       setDocument(saved);
       savedFingerprintRef.current = documentFingerprint(saved);
       setDirty(false);
-      await refreshList();
-      toast.success('自动化已保存');
-    } catch (error) {
-      toast.danger('保存失败', { description: error instanceof Error ? error.message : '请检查节点和连接' });
-    } finally {
+       await refreshList();
+       toast.success('自动化已保存');
+       return true;
+     } catch (error) {
+       toast.danger('保存失败', { description: error instanceof Error ? error.message : '请检查节点和连接' });
+       return false;
+     } finally {
       setSaving(false);
     }
   };
@@ -393,9 +421,10 @@ export default function Automation() {
     }
     setImporting(true);
     try {
-      const imported = await pickAndImportAutomation();
-      if (!imported) return;
-      resetDocument(imported, true);
+       const imported = await pickAndImportAutomation();
+       if (!imported) return;
+       setActiveType(getAutomationType(imported));
+       resetDocument(imported, true);
       toast.success(`已导入「${imported.name}」`, { description: '检查后点击保存即可加入自动化列表' });
     } catch (error) {
       toast.danger('导入自动化失败', { description: error instanceof Error ? error.message : '文件格式无效' });
@@ -430,29 +459,54 @@ export default function Automation() {
   if (loading) return <Card className="flex h-64 items-center justify-center">正在加载自动化...</Card>;
   const run = runtime?.run;
   const hasTrigger = document?.nodes.some((node) => node.type === 'trigger') ?? false;
+  const visibleItems = items.filter((item) => getAutomationType(item) === activeType);
+  const currentType = document ? getAutomationType(document) : activeType;
+
+  const changeType = async (type: AutomationType) => {
+    if (type === activeType) return;
+    const currentIsSaved = document ? items.some((item) => item.id === document.id) : false;
+    if (dirty && currentIsSaved) {
+      toast.warning('请先保存当前自动化');
+      return;
+    }
+    setActiveType(type);
+    const first = items.find((item) => getAutomationType(item) === type);
+    if (first) await openDocument(first.id);
+    else createForType(type);
+  };
 
   return (
     <div className="flex h-[calc(100vh-3rem)] min-h-[560px] overflow-clip rounded-lg border border-border bg-surface-secondary">
       <aside className={`flex shrink-0 flex-col border-r border-border bg-background transition-[width] duration-200 ${listExpanded ? 'w-60' : 'w-12'}`}>
         {listExpanded ? <>
-          <div className="flex items-center justify-between gap-2 border-b border-border p-3">
+           <div className="flex items-center justify-between gap-2 p-3">
             <div className="min-w-0 flex-1"><h1 className="font-semibold">自动化</h1><p className="text-xs text-muted">后台持续执行</p></div>
             <div className="flex items-center gap-0.5">
               <Tooltip><Button isIconOnly size="sm" variant="ghost" isPending={importing} aria-label="导入自动化" onPress={() => void importDocument()}><Upload size={15} /></Button><Tooltip.Content>导入 .ltauto 或 JSON</Tooltip.Content></Tooltip>
               <Tooltip><Button isIconOnly size="sm" variant="ghost" aria-label="创建自动化" onPress={openCreationModal}><Plus size={16} /></Button><Tooltip.Content>创建自动化</Tooltip.Content></Tooltip>
               <Tooltip><Button isIconOnly size="sm" variant="ghost" aria-label="收起自动化列表" onPress={() => setListExpanded(false)}><ChevronLeft size={15} /></Button><Tooltip.Content>收起列表</Tooltip.Content></Tooltip>
             </div>
-          </div>
-          <ScrollShadow hideScrollBar className="min-h-0 flex-1 space-y-1 p-2">
-            {items.map((item) => (
+           </div>
+           <Tabs selectedKey={activeType} onSelectionChange={(key) => void changeType(String(key) as AutomationType)} className="border-b border-border px-2 pb-2">
+             <Tabs.ListContainer>
+               <Tabs.List aria-label="自动化类型" className="w-full *:min-w-0 *:flex-1 *:px-2">
+                 <Tabs.Tab id="simple"><Sparkles size={14} /><span className="text-xs">简单</span><Tabs.Indicator /></Tabs.Tab>
+                 <Tabs.Tab id="blocks"><Blocks size={14} /><span className="text-xs">积木</span><Tabs.Indicator /></Tabs.Tab>
+                 <Tabs.Tab id="advanced"><Settings2 size={14} /><span className="text-xs">高级</span><Tabs.Indicator /></Tabs.Tab>
+               </Tabs.List>
+             </Tabs.ListContainer>
+           </Tabs>
+           <ScrollShadow hideScrollBar className="min-h-0 flex-1 space-y-1 p-2">
+             {visibleItems.map((item) => (
               <Button key={item.id} fullWidth variant={document?.id === item.id ? 'secondary' : 'ghost'} className="h-auto justify-start px-3 py-2 text-left" onPress={() => {
                 if (dirty && document?.id !== item.id) { toast.warning('请先保存当前自动化'); return; }
                 void openDocument(item.id);
               }}>
-                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{item.name}</span><span className="block text-xs text-muted">{item.node_count} 个节点</span></span>
-                {item.enabled && <span className="size-2 rounded-full bg-success" />}
-              </Button>
-            ))}
+                 <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{item.name}</span><span className="block text-xs text-muted">{AUTOMATION_TYPE_META[getAutomationType(item)].label}</span></span>
+                 {item.enabled && <span className="size-2 rounded-full bg-success" />}
+               </Button>
+             ))}
+             {!visibleItems.length && <div className="px-3 py-8 text-center"><p className="text-sm font-medium">还没有{AUTOMATION_TYPE_META[activeType].label}任务</p><p className="mt-1 text-xs text-muted">点击上方加号创建第一个任务</p></div>}
           </ScrollShadow>
           <div className="border-t border-border p-3 text-xs text-muted">已启用 {runtime?.enabled_count || 0} / {runtime?.total_count || 0}</div>
         </> : <div className="flex h-full flex-col items-center py-3">
@@ -464,24 +518,25 @@ export default function Automation() {
 
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex min-h-16 items-center gap-2 border-b border-border bg-background px-4">
-          <Input aria-label="自动化名称" className="max-w-56" value={document?.name || ''} onChange={(e) => updateDocument((current) => ({ ...current, name: e.target.value }))} />
+           <Input aria-label="自动化名称" className="max-w-56" value={document?.name || ''} onChange={(e) => updateDocument((current) => ({ ...current, name: e.target.value }))} />
+           <Chip size="sm" variant="soft">{AUTOMATION_TYPE_META[currentType].label}</Chip>
           {dirty && <Chip size="sm" color="warning" variant="soft">未保存</Chip>}
           <div className="flex items-center gap-0.5">
             <Tooltip><Button isIconOnly size="sm" variant="ghost" isDisabled={!past.length} aria-label="撤销" onPress={undo}><Undo2 size={16} /></Button><Tooltip.Content>撤销 (Ctrl + Z)</Tooltip.Content></Tooltip>
             <Tooltip><Button isIconOnly size="sm" variant="ghost" isDisabled={!future.length} aria-label="恢复" onPress={redo}><Redo2 size={16} /></Button><Tooltip.Content>恢复 (Ctrl + Shift + Z / Ctrl + Y)</Tooltip.Content></Tooltip>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Switch isSelected={document?.enabled || false} onChange={async (enabled) => {
-              if (!document) return;
-              if (dirty) await save();
-              const saved = await setAutomationEnabled(document.id, enabled);
+             <Switch isSelected={document?.enabled || false} onChange={async (enabled) => {
+               if (!document) return;
+               if (dirty && !await save()) return;
+               const saved = await setAutomationEnabled(document.id, enabled);
               resetDocument(saved);
               await refreshList();
             }}><Switch.Control><Switch.Thumb /></Switch.Control><Switch.Content>后台启用</Switch.Content></Switch>
             <Button variant="secondary" isPending={saving} onPress={save}><Save size={15} />保存</Button>
-            {run?.running ? <Button variant="danger-soft" onPress={() => void cancelAutomation()}><CircleStop size={15} />停止</Button> : <Button onPress={async () => { if (dirty) await save(); if (document) await runAutomation(document.id); }}><Play size={15} />运行</Button>}
-            <Button variant="ghost" onPress={() => setHelpOpen(true)}><HelpCircle size={16} />查看帮助</Button>
-            <Tooltip><Button isIconOnly variant="ghost" onPress={() => { if (document) { setAdvancedText(JSON.stringify(document, null, 2)); setAdvancedOpen(true); } }}><Braces size={16} /></Button><Tooltip.Content>高级 JSON 编辑</Tooltip.Content></Tooltip>
+             {run?.running ? <Button variant="danger-soft" onPress={() => void cancelAutomation()}><CircleStop size={15} />停止</Button> : <Button onPress={async () => { if (dirty && !await save()) return; if (document) await runAutomation(document.id); }}><Play size={15} />运行</Button>}
+             {currentType === 'advanced' && <Button variant="ghost" onPress={() => setHelpOpen(true)}><HelpCircle size={16} />查看帮助</Button>}
+             {currentType === 'advanced' && <Tooltip><Button isIconOnly variant="ghost" onPress={() => { if (document) { setAdvancedText(JSON.stringify(document, null, 2)); setAdvancedOpen(true); } }}><Braces size={16} /></Button><Tooltip.Content>高级 JSON 编辑</Tooltip.Content></Tooltip>}
             <Dropdown>
               <Tooltip><Button isIconOnly variant="ghost" isPending={exporting} aria-label="导出自动化"><Download size={16} /></Button><Tooltip.Content>导出自动化</Tooltip.Content></Tooltip>
               <Dropdown.Popover placement="bottom end">
@@ -495,13 +550,15 @@ export default function Automation() {
           </div>
         </header>
 
-        <div className="flex min-h-0 flex-1">
+         {currentType === 'simple' && document && <SimpleAutomationEditor document={document} onChange={(next) => updateDocument(() => next)} />}
+         {currentType === 'blocks' && document && <BlocksAutomationEditor document={document} resourceCatalog={resourceCatalog} runningNodeId={run?.current_node_id || ''} onChange={(next) => updateDocument(() => next)} />}
+         {currentType === 'advanced' && <div className="flex min-h-0 flex-1">
           <aside className="flex min-h-0 w-48 shrink-0 flex-col border-r border-border bg-background">
             <ScrollShadow hideScrollBar className="min-h-0 flex-1 p-3">
               <p className="mb-2 text-xs font-medium text-muted">节点库</p>
-              <div className="space-y-1">
-                {NODE_TYPES.map((type) => <Button key={type} fullWidth size="sm" variant="ghost" className="justify-start" isDisabled={type === 'trigger' && hasTrigger} onPress={() => addNode(type)}><Plus size={13} />{NODE_META[type].label}</Button>)}
-              </div>
+               <div className="space-y-1">
+                 {NODE_TYPES.map((type) => <Button key={type} fullWidth size="sm" variant="ghost" className="justify-start" isDisabled={type === 'trigger' && hasTrigger} onPress={() => addNode(type)}><Plus size={13} />{NODE_META[type].label}</Button>)}
+               </div>
               <p className="mt-5 border-t border-border pt-4 text-[11px] leading-5 text-muted">节点内设置是回退值，每个设置左侧都可接入动态值；选项输入支持选项字符串或从 1 开始的序号。一个输出可连接多个节点。按住 Alt 点击端口可解除该端口连接，Ctrl 滚轮缩放。</p>
             </ScrollShadow>
           </aside>
@@ -532,8 +589,8 @@ export default function Automation() {
             onChangeAnnotation={(id, text) => updateDocument((current) => ({ ...current, annotations: (current.annotations || []).map((item) => item.id === id ? { ...item, text } : item) }))}
             onMoveAnnotation={(id, x, y) => updateDocument((current) => ({ ...current, annotations: (current.annotations || []).map((item) => item.id === id ? { ...item, x, y } : item) }), false)}
             onDeleteAnnotation={(id) => updateDocument((current) => ({ ...current, annotations: (current.annotations || []).filter((item) => item.id !== id) }))}
-          />
-        </div>
+           />
+         </div>}
         <footer className="flex h-10 items-center gap-3 border-t border-border bg-background px-4 text-xs text-muted">
           <Chip size="sm" color={run?.status === 'failed' ? 'danger' : run?.running ? 'warning' : run?.status === 'completed' ? 'success' : 'default'} variant="soft">{run?.running ? '执行中' : run?.status || '空闲'}</Chip>
           {run?.automation_name && <span>{run.automation_name}</span>}
@@ -577,7 +634,7 @@ export default function Automation() {
           <Modal.Header>
             <Modal.Icon className="bg-accent-soft text-accent-soft-foreground"><Plus size={20} /></Modal.Icon>
             <Modal.Heading>新建自动化</Modal.Heading>
-            <p className="text-sm text-muted">从空白流程开始，或用常用模板生成可继续编辑的节点图。</p>
+             <p className="text-sm text-muted">高级模式可以从空白流程开始，或用模板生成可自由连接的节点图。</p>
           </Modal.Header>
           <Modal.Body className="space-y-5">
             <div className="grid gap-2 sm:grid-cols-2">
@@ -651,7 +708,7 @@ export default function Automation() {
               </div>
             )}
           </Modal.Body>
-          <Modal.Footer><Button variant="secondary" onPress={() => setCreateOpen(false)}>取消</Button><Button onPress={createFromModal}><Clock3 size={15} />创建节点图</Button></Modal.Footer>
+           <Modal.Footer><Button variant="secondary" onPress={() => setCreateOpen(false)}>取消</Button><Button onPress={createFromModal}><Clock3 size={15} />创建高级任务</Button></Modal.Footer>
         </Modal.Dialog></Modal.Container>
       </Modal.Backdrop>
 
@@ -667,7 +724,7 @@ export default function Automation() {
         <AlertDialog.Backdrop><AlertDialog.Container><AlertDialog.Dialog>
           <AlertDialog.Header><AlertDialog.Icon /><AlertDialog.Heading>删除自动化？</AlertDialog.Heading></AlertDialog.Header>
           <AlertDialog.Body>删除后无法恢复，正在运行的实例也会被取消。</AlertDialog.Body>
-          <AlertDialog.Footer><Button variant="secondary" onPress={() => setDeleteOpen(false)}>取消</Button><Button variant="danger" onPress={async () => { if (document && items.some((item) => item.id === document.id)) await deleteAutomation(document.id); setDeleteOpen(false); await refreshList(); const next = (await listAutomations())[0]; if (next) await openDocument(next.id); else resetDocument(createAutomation()); }}>删除</Button></AlertDialog.Footer>
+           <AlertDialog.Footer><Button variant="secondary" onPress={() => setDeleteOpen(false)}>取消</Button><Button variant="danger" onPress={async () => { if (document && items.some((item) => item.id === document.id)) await deleteAutomation(document.id); setDeleteOpen(false); const refreshed = await listAutomations(); setItems(refreshed); const next = refreshed.find((item) => getAutomationType(item) === activeType); if (next) await openDocument(next.id); else createForType(activeType); }}>删除</Button></AlertDialog.Footer>
         </AlertDialog.Dialog></AlertDialog.Container></AlertDialog.Backdrop>
       </AlertDialog>
 

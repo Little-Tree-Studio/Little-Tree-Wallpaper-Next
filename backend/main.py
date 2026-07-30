@@ -287,7 +287,18 @@ def main() -> None:
                 background_color="#000000",
                 text_select=False,
             )
+            widget_editor = webview.create_window(
+                title="小组件编辑器",
+                html="<!doctype html><html><body style='margin:0;background:#111'></body></html>",
+                width=1120,
+                height=760,
+                min_size=(800, 600),
+                hidden=True,
+                text_select=True,
+            )
             api.configure_dynamic_wallpaper_runtime(base_url, token, dynamic_host)
+            editor_url = f"{base_url}/?token={token}#/dynamic/editor"
+            api.configure_dynamic_editor_runtime(widget_editor, editor_url)
             tray = ApplicationTray(
                 api=api,
                 launch_url=launch_url,
