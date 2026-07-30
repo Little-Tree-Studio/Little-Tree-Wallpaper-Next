@@ -78,5 +78,8 @@ ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
+    "httpx2>=0.1.0",
     "pyinstaller>=6.21.0",
+    "pytest>=9.0.0",
+    "ruff>=0.12.0",
 ]

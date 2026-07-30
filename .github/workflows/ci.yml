@@ -44,7 +44,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
-        run: python -m pip install --disable-pip-version-check -r backend/requirements.txt pytest
+        run: python -m pip install --disable-pip-version-check -r backend/requirements.txt pytest httpx2
 
       - name: Run tests
         run: python -m pytest backend/tests --strict-markers --strict-config
