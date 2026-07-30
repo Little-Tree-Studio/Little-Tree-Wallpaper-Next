@@ -1,197 +1,262 @@
-# Tooling
+# 工具说明
 
-The repository ships a small but complete toolchain under ``tools/``. All
-three tools are dependency-free (Python standard library only) so they run
-unmodified on any developer machine, in CI, or inside a stripped-down
-container.
+仓库的命令行工具位于 `tools/`：
 
-## `tools/sync_meta.py` — single source of truth synchroniser
+| 工具 | 用途 |
+| --- | --- |
+| `tools/sync_meta.py` | 更新 `build.json` 中的构建信息，并同步项目版本号 |
+| `tools/build.py` | 依次更新构建信息、构建前端并通过 PyInstaller 打包应用 |
+| `tools/plugin_pack.py` | 校验插件源码目录并生成可复现的 `.ltp` 插件包 |
 
-The project root ``build.json`` is the **only** place where the application
-version, build type, build time, git commit, app name, description,
-author and repo URL are written. Every other metadata file in the repo
-derives from it via this tool:
+所有命令都应从仓库根目录执行。脚本本身使用 Python 标准库，但完整构建还需要 Node.js、npm、前端依赖和 PyInstaller；插件打包器还需要能够从当前仓库导入 `backend.plugins.validation`。
 
-| Target                | Fields written                                |
-|-----------------------|-----------------------------------------------|
-| `backend/pyproject.toml`   | `project.version`, `project.description` |
-| `backend/app_meta.py`      | `_fallback_metadata()` block (used when `build.json` is missing at runtime, e.g. an installed wheel) |
-| `frontend/package.json`    | `version`                                |
+可通过 `-h` 或 `--help` 查看工具的命令行帮助：
 
-### Common invocations
+```powershell
+python tools/sync_meta.py --help
+python tools/build.py --help
+python tools/plugin_pack.py --help
+```
 
-```bash
-# Refresh build_time + git_commit (no version change), sync all targets.
+## 元数据同步：`tools/sync_meta.py`
+
+`build.json` 是版本号和构建来源信息的唯一数据源。工具每次运行都会读取并更新该文件，然后把版本号同步到以下文件：
+
+| 文件 | 同步内容 |
+| --- | --- |
+| `backend/pyproject.toml` | `[project]` 表中的 `version` |
+| `frontend/package.json` | 顶层 `version` |
+
+当前 `build.json` 包含以下字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `version` | 应用版本号 |
+| `build_type` | 构建渠道，仅支持 `beta` 或 `stable` |
+| `build_time` | 构建时间；默认写入本地时区的当前时间，精确到秒 |
+| `git_commit` | Git 提交短哈希；默认读取当前仓库的 `HEAD` |
+| `built_by` | 构建来源，例如 `manual`、`ci` 或 `pyinstaller` |
+
+### 常用命令
+
+```powershell
+# 刷新构建时间和 Git 提交，并同步版本号
 python tools/sync_meta.py
 
-# Dry-run: print planned changes without writing anything.
+# 只预览结果，不写入任何文件
 python tools/sync_meta.py --dry-run
 
-# Bump the version (release engineering step — see below for the
-# relationship with tools/build.py).
+# 按 SemVer 规则提升版本号
 python tools/sync_meta.py --bump patch
 python tools/sync_meta.py --bump minor
 python tools/sync_meta.py --bump major
 
-# Override the version with an explicit SemVer string.
+# 直接指定版本号
 python tools/sync_meta.py --version 2.1.0
 
-# Mark the build as stable and record how it was produced.
+# 设置构建渠道和构建来源
 python tools/sync_meta.py --build-type stable --built-by ci
 
-# Set explicit values (overrides everything).
-python tools/sync_meta.py \
-    --version 2.1.0 \
-    --build-type beta \
-    --build-time 2026-06-23T14:00:00+08:00 \
-    --git "$(git rev-parse --short HEAD)" \
-    --note "channel=nightly"
-
-# Free-form extra top-level keys (e.g. for an undocumented channel tag).
-python tools/sync_meta.py --note channel=nightly --note flavor=oss
+# 显式指定全部构建来源信息
+python tools/sync_meta.py `
+  --version 2.1.0 `
+  --build-type stable `
+  --build-time 2026-07-31T00:30:00+08:00 `
+  --git 85f6de9 `
+  --built-by ci
 ```
 
-### How it works
+### 参数
 
-1. Reads ``build.json``.
-2. Applies the requested mutations (bump / set / now / git).
-3. Writes ``build.json`` back (unless ``--dry-run``).
-4. Re-writes the three downstream files using regex / JSON-aware
-   replacements; if a target is unchanged, the file is left untouched so
-   the working tree stays clean for ``git status`` / ``git diff``.
+| 参数 | 说明 |
+| --- | --- |
+| `--version VERSION` | 直接设置版本号 |
+| `--bump major\|minor\|patch` | 在当前版本基础上提升主版本、次版本或修订版本 |
+| `--build-type beta\|stable` | 设置构建渠道 |
+| `--build-time TIME` | 设置构建时间；未提供时使用当前时间 |
+| `--git COMMIT` | 设置提交标识；未提供时尝试读取当前 Git 短哈希 |
+| `--built-by WHO` | 设置构建来源 |
+| `--dry-run` | 打印将要同步的内容，但不写文件 |
 
-### CI integration
+`--bump` 与 `--version` 互斥。`--bump` 要求 `build.json` 中的当前版本符合 SemVer；提升版本时会移除原版本的预发布和构建后缀，例如 `2.0.0-beta.1+dev` 执行 `--bump patch` 后得到 `2.0.1`。直接使用 `--version` 时，脚本当前不会额外校验版本格式。
 
-The recommended CI flow is:
+未显式传入 `--git` 时，如果 Git 命令不可用、超时或执行失败，工具会保留 `build.json` 中已有的 `git_commit`。未传入 `--built-by` 时也会保留原值；原值不存在时使用 `manual`。如果 `build_type` 缺失或为空，则默认使用 `beta`。
 
-```bash
-python tools/sync_meta.py --build-type stable --built-by ci
+> 每次运行都会刷新 `build_time`，包括只传入版本参数时。需要保留特定时间应同时传入 `--build-time`。
+
+### 版本发布约定
+
+版本提升属于发布步骤，不属于构建步骤。推荐先同步并提交版本变更，再执行构建：
+
+```powershell
+python tools/sync_meta.py --bump patch
+git add build.json backend/pyproject.toml frontend/package.json
+git commit -m "Bump version to 2.0.1"
+
+python tools/build.py --build-type stable --built-by pyinstaller
 ```
 
-The script exits non-zero on parse errors so a malformed ``build.json``
-fails the build immediately. It is safe to call on every commit because
-it only writes when values actually change.
+`tools/build.py` 不会自动提升版本，只会保留当前版本，或在调用方明确传入 `--version` 时覆盖版本。
 
-> **Versioning is a release-engineering step, not a build step.**
-> `tools/build.py` deliberately does **not** bump the version. Manage
-> version changes ahead of time with `tools/sync_meta.py --bump` (or by
-> editing `build.json` by hand) and commit them, *then* run the build
-> pipeline. This keeps a botched build from accidentally promoting
-> `2.0.0` to `2.0.1` and shipping.
+## 应用构建：`tools/build.py`
 
-## `tools/build.py` — end-to-end build pipeline
+该工具封装了应用发布构建流程：
 
-One command does everything needed to produce a shippable artifact:
+1. 调用 `tools/sync_meta.py` 更新构建信息和版本文件。
+2. 如未跳过前端，检查 `frontend/node_modules`。目录不存在且未启用离线模式时，执行 `npm install --no-audit --no-fund`。
+3. 执行 `npm run build`，由 TypeScript 和 Vite 生成 `frontend/dist`。
+4. 确认仓库根目录存在 `build.spec`。
+5. 执行 `python -m PyInstaller --noconfirm --clean build.spec`。
 
-```bash
-# Full pipeline: stamp provenance, build frontend, then PyInstaller.
+任一子命令返回非零状态时，构建工具会立即以相同状态退出。找不到外部命令时退出码为 `127`。
+
+### 环境要求
+
+- 项目要求的 Python 环境及后端依赖。
+- Node.js 和 npm。
+- PyInstaller；开发依赖定义在 `backend/pyproject.toml` 的 `dev` 依赖组中。
+- 已提交到仓库根目录的 `build.spec`。
+
+工具不会自动安装 PyInstaller，不会在缺少 PyInstaller 时回退构建 wheel，也不会自动生成 `build.spec`。
+
+### 常用命令
+
+```powershell
+# 完整构建：更新元数据、构建前端、生成可执行文件
 python tools/build.py
 
-# Stable release for the current commit.
+# 标记为稳定版，并记录构建来源
 python tools/build.py --build-type stable --built-by pyinstaller
 
-# Iterate on the binary without rebuilding the npm bundle.
+# 使用已有的 frontend/dist，只重新打包应用
 python tools/build.py --no-frontend
 
-# Only stamp provenance (handy for a quick metadata refresh).
+# 仅更新元数据，不构建前端和可执行文件
 python tools/build.py --no-binary
 
-# Preview what would change.
+# 不执行 npm install，但仍执行 npm run build
+python tools/build.py --offline-frontend
+
+# 只预览元数据变化；不会执行前端或 PyInstaller 构建
 python tools/build.py --dry-run
 ```
 
-**Versioning is deliberately a separate step.** The build pipeline never
-auto-bumps ``build.json``'s version field; that decision is owned by
-release engineering and happens *before* the build runs:
+### 参数
 
-```bash
-# 1. Bump the version and commit.
+| 参数 | 说明 |
+| --- | --- |
+| `--version VERSION` | 传递给 `sync_meta.py`，直接设置版本号 |
+| `--build-type beta\|stable` | 设置构建渠道 |
+| `--built-by WHO` | 设置构建来源 |
+| `--no-frontend` | 跳过前端依赖安装和前端构建，继续执行 PyInstaller |
+| `--no-binary` | 更新元数据后立即结束，同时跳过前端和 PyInstaller |
+| `--offline-frontend` | 无条件跳过 `npm install`，但仍执行 `npm run build` |
+| `--dry-run` | 仅预览元数据变化，同时跳过前端和 PyInstaller |
+
+`--offline-frontend` 不会提供离线依赖，也不会检查依赖是否完整；使用它之前应确保 `frontend/node_modules` 已经可用。`--no-frontend` 会直接使用现有的 `frontend/dist`，因此该目录应包含与当前源码和版本匹配的前端产物。
+
+### PyInstaller 产物
+
+当前 `build.spec` 以 `backend/main.py` 为入口，生成单文件、无控制台窗口的应用。默认输出到仓库根目录的 `dist/`：
+
+| 平台 | 可执行文件名称 |
+| --- | --- |
+| Windows | `dist/LittleTreeWallpaper.exe` |
+| macOS / Linux | `dist/小树壁纸 Next` |
+
+Spec 会打包以下数据：
+
+- `build.json`
+- `backend/README.md`
+- `frontend/dist`
+
+它还声明了 pywebview、Windows 通知及各平台 GUI 后端所需的隐藏导入。Windows 图标来自 `frontend/dist/logo.ico`；其他平台不设置图标。若前端产物或图标缺失，PyInstaller 可能直接构建失败，因此正式打包通常不应跳过前端构建。
+
+## 插件打包：`tools/plugin_pack.py`
+
+插件打包器接收一个源码目录，校验其中的 `plugin.json`、Python 模块和静态图片，然后生成确定性的 `.ltp` 文件。`.ltp` 本质上是经过严格约束和复检的 Deflate ZIP 包。
+
+```powershell
+# 输出到当前目录，文件名为 <插件 ID>-<版本>.ltp
+python tools/plugin_pack.py examples/plugins/complete-example
+
+# 指定输出路径
+python tools/plugin_pack.py examples/plugins/complete-example -o C:\Temp\complete-example.ltp
+```
+
+### 参数与输出
+
+| 参数 | 说明 |
+| --- | --- |
+| `source_dir` | 插件源码目录；根目录必须包含 `plugin.json` |
+| `-o PATH`、`--output PATH` | 输出文件路径；扩展名必须是 `.ltp` |
+
+未指定输出路径时，工具在当前工作目录生成 `<id>-<version>.ltp`。指定的输出目录如果不存在，工具只会创建最后一级目录，不会递归创建多级父目录。已有的同名文件会在打包和复检成功后被原子替换。
+
+成功时输出插件 ID、版本、包字节的 SHA-256 以及绝对输出路径：
+
+```text
+id: com.littletree.complete-example
+version: 1.0.0
+sha256: <64 位十六进制摘要>
+output: C:\path\to\com.littletree.complete-example-1.0.0.ltp
+```
+
+校验或写入失败时，错误信息写入标准错误，进程返回 `1`，且不会用未通过校验的临时包替换目标文件。
+
+### 打包流程
+
+1. 拒绝不存在的源码目录、符号链接、Windows junction、特殊文件和不安全路径。
+2. 按不区分大小写的方式检查路径冲突，并限制文件数量及大小。
+3. 读取 UTF-8 编码的 `plugin.json`，调用 `backend.plugins.validation.validate_manifest` 校验清单、权限、入口模块、贡献项和资源引用。
+4. 按相对路径排序文件，以 Deflate 最高压缩级别写入同目录临时包。
+5. 将每个条目的时间固定为 `1980-01-01 00:00:00`，权限规范化为非执行普通文件 `0644`。
+6. 调用 `backend.plugins.validation.read_package` 重新校验最终包，包括图片签名和压缩包结构。
+7. 计算最终包的 SHA-256，并通过 `os.replace` 原子写入目标路径。
+
+相同源码字节在相同 Python 和 zlib 实现下应生成相同包，适合由 CI 复现并发布。SHA-256 只能用于核对包字节，不代表数字签名或作者身份。
+
+### 源目录限制
+
+| 项目 | 限制 |
+| --- | --- |
+| 最终 `.ltp` 大小 | 最大 10 MiB |
+| 解压后文件总大小 | 最大 20 MiB |
+| 文件条目数量 | 最大 256 个 |
+| 单个文件大小 | 最大 4 MiB |
+| `plugin.json` 大小 | 最大 64 KiB |
+| 相对路径长度 | 最大 240 个字符 |
+
+允许打包的文件只有：
+
+- 根目录的 `plugin.json`
+- Python 源文件 `.py`
+- 静态图片 `.gif`、`.jpeg`、`.jpg`、`.png`、`.webp`
+
+包内相对路径的每一级只能使用 ASCII 字母、数字、点、下划线和连字符，并且不能使用 Windows 保留名称。工具拒绝符号链接、junction、可执行文件、原生库、脚本文件和其他文件类型；最终包复检还会拒绝加密条目或不受支持的压缩方式。详细的插件清单、权限及 UI contribution 规范见 [`docs/PLUGINS.md`](PLUGINS.md)。
+
+## 推荐工作流
+
+### 日常开发构建
+
+```powershell
+python tools/build.py
+```
+
+### 正式版本构建
+
+```powershell
+# 先提升并提交版本
 python tools/sync_meta.py --bump patch
-git add build.json && git commit -m 'bump 2.0.1'
 
-# 2. Then build the release.
+# 再从已确定的提交构建稳定版
 python tools/build.py --build-type stable --built-by pyinstaller
 ```
 
-### Pipeline steps (in order)
+### 插件发布
 
-1. **Stamp build provenance** — runs ``tools/sync_meta.py`` with only the
-   non-version flags (``--build-type``, ``--built-by``, optionally
-   ``--version`` for an explicit override). The version is **never**
-   auto-bumped; release engineering manages that step separately.
-2. **Build the frontend** — ``npm install`` (if needed) then ``npm run
-   build``, producing ``frontend/dist``.
-3. **Produce the binary**:
-   - If PyInstaller is installed: generates ``build.spec`` (if missing)
-     and runs ``pyinstaller --noconfirm --clean build.spec``. The
-     resulting ``dist/小树壁纸 Next`` (or ``dist/LittleTreeWallpaper``
-     on Windows) is a single-file executable.
-   - If PyInstaller is **not** installed: falls back to
-     ``python -m build --wheel`` so the same command can still publish
-     a ``pip``-installable artifact (useful for Linux CI without GUI
-     requirements).
-
-### What gets bundled into the binary
-
-The auto-generated ``build.spec`` (committed on first build, then edited
-in place) bundles:
-
-- The Python source tree (via PyInstaller's analyser).
-- ``build.json`` — **required** for ``backend.app_meta`` to find the
-  current version at runtime.
-- ``backend/README.md`` — keeps the package self-describing.
-- ``frontend/dist/`` — the static SPA bundle served by FastAPI.
-- A short list of optional native modules that ``pywebview`` needs
-  (``win32com``, ``AppKit``, ``gi``, …) so PyInstaller doesn't drop them.
-
-### Icon handling
-
-The spec points at ``frontend/dist/logo.ico`` on Windows and at no icon
-on macOS / Linux. Generate the ICO once with your tool of choice and
-commit it next to ``logo.png``.
-
-## How the bits fit together
-
-```
-                       build.json  (project root)
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
-   tools/sync_meta.py                edit by hand
-   (--bump / --version)            (commit before building)
-              │                           │
-              └─────────────┬─────────────┘
-                            │
-                            │  tools/sync_meta.py (no flags)
-                            ▼
-   ┌──────────────┬──────────────────────┬──────────────────┐
-   │ pyproject    │  backend/app_meta    │ frontend/        │
-   │ .toml        │  .py fallback        │ package.json     │
-   └──────────────┴──────────────────────┴──────────────────┘
-                            │
-                            │  tools/build.py
-                            ▼
-                     PyInstaller / wheel
-                            │
-                            ▼
-                  dist/小树壁纸 Next (or wheel)
-                            │
-                            │  read at startup by
-                            ▼
-                  backend/app_meta  →  get_build_info RPC
-                                              │
-                                              ▼
-                                    frontend (App.tsx)
-                                       ├─ BetaWarningModal
-                                       └─ BetaWatermark
+```powershell
+python tools/plugin_pack.py path\to\plugin-source -o dist\plugin-id-1.0.0.ltp
 ```
 
-**Two rules of thumb:**
-
-1. **Version bumps happen before builds.** ``tools/sync_meta.py --bump``
-   mutates ``build.json`` and is the only supported way to change the
-   version. Commit the result, then run ``tools/build.py``.
-2. **The build script never edits the version.** ``tools/build.py`` only
-   refreshes ``build_time`` / ``git_commit`` / ``built_by`` (and accepts an
-   explicit ``--version`` override for callers that already know the
-   target version from a git tag).
+发布前应保存工具输出的 SHA-256，并在独立可信渠道公布摘要。插件会以与应用相同的操作系统和 Python 权限在进程内执行；包校验不是安全沙箱，只应安装和启用可信、可审计的插件。
