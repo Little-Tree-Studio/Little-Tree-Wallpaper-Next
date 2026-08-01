@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Card, Chip, Input, Label, ListBox, ScrollShadow, Select, Spinner, Switch, TextArea, toast } from '@heroui/react';
+import { Button, Card, Chip, Input, Label, ListBox, ScrollShadow, Select, Slider, Spinner, Switch, TextArea, toast } from '@heroui/react';
 import { Check, Grip, MonitorUp, Save, SlidersHorizontal, X } from 'lucide-react';
-import DynamicDesktop, { DesktopPreviewOverlay, useWidgetDefinitions } from '@/components/DynamicDesktop';
+import DynamicDesktop, { DesktopPreviewOverlay, useWidgetDefinitions, widgetMinimumSize } from '@/components/DynamicDesktop';
 import {
   closeDynamicWidgetEditor,
   applyDynamicWallpaperScene,
@@ -21,6 +21,7 @@ function ContentSettings({ widget, onSettingsChange }: {
   const patch = (updates: Record<string, unknown>) => onSettingsChange({ ...settings, ...updates });
   const text = (key: string, fallback = '') => typeof settings[key] === 'string' ? String(settings[key]) : fallback;
   const flag = (key: string, fallback: boolean) => typeof settings[key] === 'boolean' ? Boolean(settings[key]) : fallback;
+  const number = (key: string, fallback: number) => typeof settings[key] === 'number' ? Number(settings[key]) : fallback;
 
   if (widget.type === 'builtin:clock') return (
     <div className="space-y-4">
@@ -47,6 +48,36 @@ function ContentSettings({ widget, onSettingsChange }: {
       <div><Label htmlFor="widget-status-subtitle">状态文字</Label><Input id="widget-status-subtitle" className="mt-1" variant="secondary" maxLength={100} value={text('subtitle', '场景正在运行')} onChange={(event) => patch({ subtitle: event.target.value })} /></div>
     </div>
   );
+  if (widget.type === 'builtin:greeting') return (
+    <div className="space-y-4">
+      <div><Label htmlFor="widget-greeting-title">问候语</Label><Input id="widget-greeting-title" className="mt-1" variant="secondary" maxLength={40} placeholder="留空时跟随时段变化" value={text('title')} onChange={(event) => patch({ title: event.target.value })} /></div>
+      <div><Label htmlFor="widget-greeting-subtitle">副标题</Label><Input id="widget-greeting-subtitle" className="mt-1" variant="secondary" maxLength={100} value={text('subtitle', '愿今天也有好风景')} onChange={(event) => patch({ subtitle: event.target.value })} /></div>
+    </div>
+  );
+  if (widget.type === 'builtin:countdown') return (
+    <div className="space-y-4">
+      <div><Label htmlFor="widget-countdown-title">标题</Label><Input id="widget-countdown-title" className="mt-1" variant="secondary" maxLength={40} value={text('title', '倒计时')} onChange={(event) => patch({ title: event.target.value })} /></div>
+      <div><Label htmlFor="widget-countdown-target">目标日期</Label><Input id="widget-countdown-target" className="mt-1" variant="secondary" type="date" value={text('target')} onChange={(event) => patch({ target: event.target.value })} /></div>
+      <div><Label htmlFor="widget-countdown-complete">完成提示</Label><Input id="widget-countdown-complete" className="mt-1" variant="secondary" maxLength={80} value={text('completeText', '时间到了')} onChange={(event) => patch({ completeText: event.target.value })} /></div>
+    </div>
+  );
+  if (widget.type === 'builtin:quote') return (
+    <div className="space-y-4">
+      <div><Label htmlFor="widget-quote-content">文字内容</Label><TextArea id="widget-quote-content" fullWidth className="mt-1 min-h-28" variant="secondary" maxLength={240} value={text('quote', '慢一点，也没关系。')} onChange={(event) => patch({ quote: event.target.value })} /></div>
+      <div><Label htmlFor="widget-quote-author">署名</Label><Input id="widget-quote-author" className="mt-1" variant="secondary" maxLength={60} placeholder="可选" value={text('author')} onChange={(event) => patch({ author: event.target.value })} /></div>
+    </div>
+  );
+  if (widget.type === 'builtin:progress') return (
+    <div className="space-y-4">
+      <div><Label htmlFor="widget-progress-title">标题</Label><Input id="widget-progress-title" className="mt-1" variant="secondary" maxLength={40} value={text('title', '本周进度')} onChange={(event) => patch({ title: event.target.value })} /></div>
+      <Slider minValue={0} maxValue={100} step={1} value={number('value', 50)} onChange={(value) => patch({ value: Number(value) })}>
+        <Label>完成进度</Label>
+        <Slider.Output>{({ state }) => `${Math.round(state.values[0])}%`}</Slider.Output>
+        <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+      </Slider>
+      <div><Label htmlFor="widget-progress-unit">显示单位</Label><Input id="widget-progress-unit" className="mt-1" variant="secondary" maxLength={12} value={text('unit', '%')} onChange={(event) => patch({ unit: event.target.value })} /></div>
+    </div>
+  );
   return <p className="rounded-lg bg-surface-secondary p-3 text-xs leading-5 text-muted">插件小组件的内容由插件声明预先定义。桌面背景不接收交互，因此插件小组件不能包含按钮。</p>;
 }
 
@@ -60,6 +91,7 @@ export default function DynamicWidgetEditor() {
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const [dragStatus, setDragStatus] = useState<{ x: number; y: number } | null>(null);
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const editVersionRef = useRef(0);
 
   useEffect(() => {
     getDynamicWallpaperScene().then(setScene).catch((error: unknown) => {
@@ -98,29 +130,46 @@ export default function DynamicWidgetEditor() {
 
   if (!scene) return <div className="flex h-screen items-center justify-center bg-background"><Spinner /></div>;
   const selected = scene.widgets.find((widget) => widget.id === selectedId) ?? null;
-  const setWidgets = (widgets: DynamicWidgetInstance[]) => setScene({ ...scene, widgets });
+  const setWidgets = (widgets: DynamicWidgetInstance[]) => {
+    editVersionRef.current += 1;
+    setScene((current) => current ? { ...current, widgets } : current);
+  };
   const updateSelected = (updates: Partial<DynamicWidgetInstance>) => {
-    if (!selected) return;
-    setWidgets(scene.widgets.map((widget) => {
-      if (widget.id !== selected.id) return widget;
-      const next = { ...widget, ...updates };
-      next.width = Math.max(8, Math.min(100, next.width));
-      next.height = Math.max(8, Math.min(100, next.height));
-      next.x = Math.max(0, Math.min(100 - next.width, next.x));
-      next.y = Math.max(0, Math.min(100 - next.height, next.y));
-      return next;
-    }));
+    if (!selectedId) return;
+    editVersionRef.current += 1;
+    setScene((current) => current ? {
+      ...current,
+      widgets: current.widgets.map((widget) => {
+        if (widget.id !== selectedId) return widget;
+        const minimum = widgetMinimumSize(widget.type);
+        const next = { ...widget, ...updates };
+        next.width = Math.max(minimum.width, Math.min(100, next.width));
+        next.height = Math.max(minimum.height, Math.min(100, next.height));
+        next.x = Math.max(0, Math.min(100 - next.width, next.x));
+        next.y = Math.max(0, Math.min(100 - next.height, next.y));
+        return next;
+      }),
+    } : current);
   };
 
   const persist = async (apply: boolean) => {
+    if (pending) return;
     setPending(apply ? 'apply' : 'save');
+    const editVersion = editVersionRef.current;
     try {
+      const latest = await getDynamicWallpaperScene();
+      const payload = { ...latest, widgets: scene.widgets };
       if (apply) {
-        const result = await applyDynamicWallpaperScene(scene);
-        setScene(result.scene);
+        const result = await applyDynamicWallpaperScene(payload);
+        setScene((current) => editVersionRef.current === editVersion
+          ? result.scene
+          : current ? { ...current, background: result.scene.background, revision: result.scene.revision } : result.scene);
         toast.success(result.status.last_operation === 'apply-scene-requested' ? '布局已保存并排队应用' : '布局已保存并开始应用');
       } else {
-        setScene(await saveDynamicWallpaperScene(scene));
+        const saved = await saveDynamicWallpaperScene(payload);
+        setScene((current) => editVersionRef.current === editVersion
+          ? saved
+          : current ? { ...current, background: saved.background, revision: saved.revision } : saved);
         toast.success('布局已保存');
       }
     } catch (error) {
@@ -143,13 +192,13 @@ export default function DynamicWidgetEditor() {
             </Select>
           )}
           <Chip size="sm" variant="soft">{scene.widgets.length} 个组件</Chip>
-          <Button variant="secondary" onPress={() => void persist(false)} isPending={pending === 'save'}><Save size={16} />保存</Button>
-          <Button onPress={() => void persist(true)} isPending={pending === 'apply'}><Check size={16} />保存并应用</Button>
-          <Button isIconOnly variant="ghost" aria-label="关闭编辑器" onPress={() => void closeDynamicWidgetEditor()}><X size={18} /></Button>
+          <Button variant="secondary" onPress={() => void persist(false)} isPending={pending === 'save'} isDisabled={pending !== ''}><Save size={16} />保存</Button>
+          <Button onPress={() => void persist(true)} isPending={pending === 'apply'} isDisabled={pending !== ''}><Check size={16} />保存并应用</Button>
+          <Button isIconOnly variant="ghost" aria-label="关闭编辑器" onPress={() => void closeDynamicWidgetEditor()} isDisabled={pending !== ''}><X size={18} /></Button>
         </div>
       </header>
 
-      <main className="flex min-h-0 flex-1 gap-4 p-4">
+      <main className="flex min-h-0 flex-1 gap-4 p-4" inert={pending !== ''} aria-busy={pending !== ''}>
         <div ref={canvasAreaRef} className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-border bg-surface-secondary">
           <div className="relative overflow-hidden rounded-xl bg-black shadow-xl ring-1 ring-border" style={{ width: canvasSize.width, height: canvasSize.height }}>
             <div
@@ -163,6 +212,7 @@ export default function DynamicWidgetEditor() {
               <DynamicDesktop
                 scene={scene}
                 editing
+                editingScale={canvasSize.width / display.width}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onChange={setWidgets}
@@ -185,11 +235,30 @@ export default function DynamicWidgetEditor() {
           <ScrollShadow className="min-h-0 flex-1 pr-1">
             {selected ? <div className="space-y-5">
               <section><div className="mb-3 flex items-center gap-2 text-sm font-semibold"><SlidersHorizontal size={15} />内容</div><ContentSettings widget={selected} onSettingsChange={(settings) => updateSelected({ settings })} /></section>
+              <section>
+                <Slider minValue={0} maxValue={100} step={1} value={Math.round((selected.opacity ?? 1) * 100)} onChange={(value) => updateSelected({ opacity: Number(value) / 100 })}>
+                  <Label>整体透明度</Label>
+                  <Slider.Output>{({ state }) => `${Math.round(state.values[0])}%`}</Slider.Output>
+                  <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                </Slider>
+              </section>
+              <section>
+                <Slider minValue={0} maxValue={100} step={1} value={Math.round((selected.background_opacity ?? 1) * 100)} onChange={(value) => updateSelected({ background_opacity: Number(value) / 100 })}>
+                  <Label>背景透明度</Label>
+                  <Slider.Output>{({ state }) => `${Math.round(state.values[0])}%`}</Slider.Output>
+                  <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                </Slider>
+              </section>
+              <section>
+                <Switch isSelected={selected.background_blur !== false} onChange={(background_blur) => updateSelected({ background_blur })}>
+                  <Switch.Content><span><span className="block text-sm font-medium">背景模糊</span><span className="block text-xs text-muted">关闭后可配合 0% 背景透明度获得完全透明背景</span></span><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
+                </Switch>
+              </section>
               <section><p className="mb-3 text-sm font-semibold">位置与尺寸</p><div className="grid grid-cols-2 gap-3">
                 {([
                   ['x', '横向位置'], ['y', '纵向位置'], ['width', '宽度'], ['height', '高度'],
                 ] as const).map(([key, label]) => (
-                  <div key={key}><Label htmlFor={`widget-${key}`}>{label}</Label><Input id={`widget-${key}`} className="mt-1" variant="secondary" type="number" min="0" max="100" value={String(Math.round(selected[key]))} onChange={(event) => updateSelected({ [key]: Number(event.target.value) || 0 })} /></div>
+                  <div key={key}><Label htmlFor={`widget-${key}`}>{label}</Label><Input id={`widget-${key}`} className="mt-1" variant="secondary" type="number" min={key === 'width' ? widgetMinimumSize(selected.type).width : key === 'height' ? widgetMinimumSize(selected.type).height : 0} max="100" value={String(Math.round(selected[key]))} onChange={(event) => updateSelected({ [key]: Number(event.target.value) || 0 })} /></div>
                 ))}
               </div></section>
             </div> : <div className="flex min-h-40 flex-col items-center justify-center rounded-xl bg-surface-secondary px-4 text-center text-sm text-muted"><Grip size={22} className="mb-2" /><p>从下方拖入一个组件，或选择桌面中已有组件。</p></div>}
@@ -197,26 +266,28 @@ export default function DynamicWidgetEditor() {
         </Card>
       </main>
 
-      <section className="shrink-0 border-t border-border bg-surface px-5 py-4">
+      <section className="shrink-0 border-t border-border bg-surface px-5 py-4" inert={pending !== ''}>
         <div className="mb-3 flex items-center justify-between"><div><h2 className="text-sm font-semibold">小组件抽屉</h2><p className="text-xs text-muted">拖到桌面后在右侧设置内容；应用后桌面小组件不接收鼠标交互。</p></div><Grip size={18} className="text-muted" /></div>
         <ScrollShadow orientation="horizontal" className="w-full pb-1">
           <div className="flex gap-3">
-            {definitions.map((definition) => (
-              <Card
-                key={definition.type}
-                draggable
-                variant="secondary"
-                className="w-52 shrink-0 cursor-grab gap-2 p-3 active:cursor-grabbing"
-                onDragStart={(event) => {
-                  event.dataTransfer.effectAllowed = 'copy';
-                  event.dataTransfer.setData('application/x-ltw-widget', definition.type);
-                }}
-              >
-                <div className="flex items-start justify-between gap-2"><Card.Title className="text-sm">{definition.label}</Card.Title>{definition.pluginId && <Chip size="sm" variant="soft">插件</Chip>}</div>
-                <Card.Description className="line-clamp-2 text-xs">{definition.description}</Card.Description>
-                <div className="text-[11px] text-muted">默认 {definition.width}% x {definition.height}%</div>
-              </Card>
-            ))}
+            {definitions.map((definition) => {
+              const DefinitionIcon = definition.icon;
+              return (
+                <Card
+                  key={definition.type}
+                  draggable
+                  variant="secondary"
+                  className="group w-56 shrink-0 cursor-grab gap-3 p-4 transition-transform active:scale-[0.98] active:cursor-grabbing"
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'copy';
+                    event.dataTransfer.setData('application/x-ltw-widget', definition.type);
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent"><DefinitionIcon size={17} /></span><div className="min-w-0 flex-1"><Card.Title className="truncate text-sm">{definition.label}</Card.Title><Card.Description className="mt-1 line-clamp-2 text-xs">{definition.description}</Card.Description></div>{definition.pluginId && <Chip size="sm" variant="soft">插件</Chip>}</div>
+                  <div className="text-[11px] text-muted">默认 {definition.width}% x {definition.height}%</div>
+                </Card>
+              );
+            })}
           </div>
         </ScrollShadow>
       </section>

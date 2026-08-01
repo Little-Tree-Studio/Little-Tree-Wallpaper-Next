@@ -2265,10 +2265,10 @@ class BackendAPI:
         self._save_favorites(data)
 
     @_favorites_transaction
-    def create_favorite_folder(self, name: str, description: str = "") -> dict[str, Any]:
+    def create_favorite_folder(self, name: str, description: str | None = "") -> dict[str, Any]:
         data = self._load_favorites()
         normalized_name = name.strip()
-        normalized_description = description.strip()
+        normalized_description = (description or "").strip()
         if not normalized_name:
             raise ValueError("收藏夹名称不能为空")
         if any(str(folder.get("name", "")).strip() == normalized_name for folder in data.get("folders", [])):
@@ -2284,10 +2284,10 @@ class BackendAPI:
         return folder
 
     @_favorites_transaction
-    def update_favorite_folder(self, folder_id: str, name: str, description: str = "") -> dict[str, Any]:
+    def update_favorite_folder(self, folder_id: str, name: str, description: str | None = "") -> dict[str, Any]:
         data = self._load_favorites()
         normalized_name = name.strip()
-        normalized_description = description.strip()
+        normalized_description = (description or "").strip()
         if not normalized_name:
             raise ValueError("收藏夹名称不能为空")
 
@@ -2762,6 +2762,11 @@ class BackendAPI:
 
     def _normalize_dynamic_scene(self, value: Any) -> dict[str, Any]:
         raw = value if isinstance(value, dict) else {}
+        try:
+            revision = int(raw.get("revision") or 0)
+        except (TypeError, ValueError, OverflowError):
+            revision = 0
+        revision = max(0, min(9_007_199_254_740_991, revision))
         background_raw = raw.get("background") if isinstance(raw.get("background"), dict) else {}
         background_type = str(background_raw.get("type") or "image")
         if background_type not in {"video", "image", "slideshow"}:
@@ -2794,35 +2799,76 @@ class BackendAPI:
                 instance_id = f"widget-{index}-{uuid.uuid4().hex[:8]}"
             seen_ids.add(instance_id)
             settings_raw = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+            def widget_text(key: str, default: str, limit: int) -> str:
+                value = settings_raw.get(key, default)
+                return str(default if value is None else value)[:limit]
+
             settings: dict[str, Any] = {}
             if widget_type == "builtin:clock":
                 settings = {
-                    "label": str(settings_raw.get("label") or "")[:40],
+                    "label": widget_text("label", "", 40),
                     "use24Hour": bool(settings_raw.get("use24Hour", True)),
                     "showDate": bool(settings_raw.get("showDate", True)),
                 }
             elif widget_type == "builtin:date":
                 settings = {
-                    "title": str(settings_raw.get("title") or "")[:40],
+                    "title": widget_text("title", "", 40),
                     "showWeekday": bool(settings_raw.get("showWeekday", True)),
                 }
             elif widget_type == "builtin:note":
                 settings = {
-                    "title": str(settings_raw.get("title") or "便笺")[:40],
-                    "content": str(settings_raw.get("content") or "今天也要记得看看喜欢的风景。")[:500],
+                    "title": widget_text("title", "便笺", 40),
+                    "content": widget_text("content", "今天也要记得看看喜欢的风景。", 500),
                 }
             elif widget_type == "builtin:status":
                 settings = {
-                    "title": str(settings_raw.get("title") or "动态服务")[:40],
-                    "subtitle": str(settings_raw.get("subtitle") or "场景正在运行")[:100],
+                    "title": widget_text("title", "动态服务", 40),
+                    "subtitle": widget_text("subtitle", "场景正在运行", 100),
                 }
+            elif widget_type == "builtin:greeting":
+                settings = {
+                    "title": widget_text("title", "", 40),
+                    "subtitle": widget_text("subtitle", "愿今天也有好风景", 100),
+                }
+            elif widget_type == "builtin:countdown":
+                target = widget_text("target", "", 40)
+                try:
+                    if target:
+                        datetime.strptime(target, "%Y-%m-%d")
+                except ValueError:
+                    target = ""
+                settings = {
+                    "title": widget_text("title", "倒计时", 40),
+                    "target": target,
+                    "completeText": widget_text("completeText", "时间到了", 80),
+                }
+            elif widget_type == "builtin:quote":
+                settings = {
+                    "quote": widget_text("quote", "慢一点，也没关系。", 240),
+                    "author": widget_text("author", "", 60),
+                }
+            elif widget_type == "builtin:progress":
+                settings = {
+                    "title": widget_text("title", "本周进度", 40),
+                    "value": self._bounded_number(settings_raw.get("value"), 50, 0, 100),
+                    "unit": widget_text("unit", "%", 12),
+                }
+            minimum_width, minimum_height = {
+                "builtin:clock": (20, 14), "builtin:date": (16, 18),
+                "builtin:note": (20, 18), "builtin:status": (20, 14),
+                "builtin:greeting": (22, 14), "builtin:countdown": (18, 18),
+                "builtin:quote": (22, 18), "builtin:progress": (22, 14),
+            }.get(widget_type, (8, 8))
             widgets.append({
                 "id": instance_id,
                 "type": widget_type,
                 "x": self._bounded_number(item.get("x"), 6, 0, 92),
                 "y": self._bounded_number(item.get("y"), 6, 0, 92),
-                "width": self._bounded_number(item.get("width"), 28, 8, 100),
-                "height": self._bounded_number(item.get("height"), 20, 8, 100),
+                "width": self._bounded_number(item.get("width"), 28, minimum_width, 100),
+                "height": self._bounded_number(item.get("height"), 20, minimum_height, 100),
+                "opacity": self._bounded_number(item.get("opacity"), 1, 0, 1),
+                "background_opacity": self._bounded_number(item.get("background_opacity"), 1, 0, 1),
+                "background_blur": bool(item.get("background_blur", True)),
                 "settings": settings,
             })
         return {
@@ -2842,7 +2888,7 @@ class BackendAPI:
                 "autoplay": bool(background_raw.get("autoplay", True)),
             },
             "widgets": widgets,
-            "revision": max(0, int(self._bounded_number(raw.get("revision"), 0, 0, 2_147_483_647))),
+            "revision": revision,
         }
 
     def _dynamic_slideshow_items(self, background: dict[str, Any]) -> list[str]:
@@ -2888,8 +2934,14 @@ class BackendAPI:
             folder = Path(background["path"]).expanduser()
             if background["path"] and not folder.is_dir():
                 raise ValueError("轮播文件夹不存在")
-        scene["revision"] = max(scene["revision"] + 1, int(datetime.now().timestamp() * 1000))
-        self.store.set("wallpaper.dynamic", scene)
+        with self.store.transaction():
+            persisted = self._normalize_dynamic_scene(self.store.get("wallpaper.dynamic", {}))
+            scene["revision"] = max(
+                persisted["revision"] + 1,
+                scene["revision"] + 1,
+                int(datetime.now().timestamp() * 1000),
+            )
+            self.store.set("wallpaper.dynamic", scene)
         return self.get_dynamic_wallpaper_scene()
 
     def start_dynamic_wallpaper_scene(self, value: Any | None = None) -> dict[str, Any]:

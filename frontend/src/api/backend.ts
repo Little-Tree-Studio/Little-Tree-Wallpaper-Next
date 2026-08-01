@@ -91,6 +91,26 @@ function mediaApiUrl(path: string): string {
   return `${window.location.protocol}//localhost${port}${path}`;
 }
 
+/** Use the RPC origin when JavaScript must read a loopback media response. */
+function readableMediaUrl(url: string): string {
+  if (typeof window === 'undefined' || window.location.hostname !== '127.0.0.1') return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (
+      parsed.hostname === 'localhost'
+      && parsed.protocol === window.location.protocol
+      && parsed.port === window.location.port
+      && MEDIA_API_PATHS.some((prefix) => parsed.pathname === prefix || parsed.pathname.startsWith(prefix))
+    ) {
+      parsed.hostname = window.location.hostname;
+      return parsed.toString();
+    }
+  } catch {
+    // Let fetch report malformed external URLs with its normal error.
+  }
+  return url;
+}
+
 function isolateMediaUrls<T>(value: T): T {
   if (typeof value === 'string') return mediaApiUrl(value) as T;
   if (Array.isArray(value)) return value.map(isolateMediaUrls) as T;
@@ -526,7 +546,7 @@ export async function copyImageToClipboardWithProgress(url: string): Promise<boo
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs })
+    (onProgress) => fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return false;
 
@@ -566,7 +586,7 @@ export async function downloadWithProgress(
       failureLabel: '下载失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs });
+      const blob = await fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs });
       const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         toast.danger('保存失败', { timeout: 0 });
@@ -591,7 +611,7 @@ export async function saveAsWithProgress(
       failureLabel: '拉取数据失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(sourceUrl, onProgress, { headers: authHeaders(), timeoutMs });
+      const blob = await fetchBlobWithProgress(readableMediaUrl(sourceUrl), onProgress, { headers: authHeaders(), timeoutMs });
       const path = await saveBlobAs(blob, filenameForBlob(filename, blob));
       return { path, cancelled: path === null };
     }
@@ -639,7 +659,7 @@ export async function setWallpaperWithProgress(
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs })
+    (onProgress) => fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return null;
 
@@ -689,7 +709,7 @@ export async function openWithSystemWithProgress(
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(url, onProgress, { headers: authHeaders(), timeoutMs })
+    (onProgress) => fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return null;
 
@@ -795,11 +815,11 @@ export async function removeFavorite(id: string): Promise<void> {
 }
 
 export async function createFavoriteFolder(name: string, description?: string): Promise<FavoriteFolder> {
-  return call('create_favorite_folder', name, description);
+  return call('create_favorite_folder', name, description ?? '');
 }
 
 export async function updateFavoriteFolder(id: string, name: string, description?: string): Promise<FavoriteFolder> {
-  return call('update_favorite_folder', id, name, description);
+  return call('update_favorite_folder', id, name, description ?? '');
 }
 
 export async function deleteFavoriteFolder(id: string): Promise<void> {
@@ -1138,6 +1158,9 @@ export interface DynamicWidgetInstance {
   y: number;
   width: number;
   height: number;
+  opacity: number;
+  background_opacity: number;
+  background_blur: boolean;
   settings: Record<string, unknown>;
 }
 

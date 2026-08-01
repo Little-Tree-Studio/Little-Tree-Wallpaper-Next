@@ -3,11 +3,14 @@ from __future__ import annotations
 import unittest
 import time
 from contextlib import nullcontext
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event, RLock
 from unittest.mock import MagicMock, patch
 
 from backend.api import BackendAPI
 from backend.services.dynamic_wallpaper import WindowsDynamicWallpaperService
+from backend.settings_manager import SettingsStore
 
 
 class FakeWindow:
@@ -389,6 +392,52 @@ class DynamicWallpaperWindowLifecycleTests(unittest.TestCase):
         self.assertEqual(settings["title"], "提醒")
         self.assertEqual(len(settings["content"]), 500)
         self.assertNotIn("ignored", settings)
+
+    def test_scene_normalizes_widget_opacity_and_new_widget_settings(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({
+            "widgets": [
+                {
+                    "id": "progress",
+                    "type": "builtin:progress",
+                    "opacity": 0,
+                    "background_opacity": 0.35,
+                    "background_blur": False,
+                    "settings": {"value": 125, "unit": "%", "ignored": True},
+                },
+            ],
+        })
+
+        widget = scene["widgets"][0]
+        self.assertEqual(widget["opacity"], 0)
+        self.assertEqual(widget["background_opacity"], 0.35)
+        self.assertFalse(widget["background_blur"])
+        self.assertEqual(widget["settings"], {"title": "本周进度", "value": 100, "unit": "%"})
+
+        legacy = api._normalize_dynamic_scene({
+            "widgets": [{"id": "clock", "type": "builtin:clock"}],
+        })
+        self.assertEqual(legacy["widgets"][0]["opacity"], 1)
+        self.assertEqual(legacy["widgets"][0]["background_opacity"], 1)
+        self.assertTrue(legacy["widgets"][0]["background_blur"])
+
+    def test_scene_preserves_millisecond_revision(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({"revision": 1_800_000_000_000})
+
+        self.assertEqual(scene["revision"], 1_800_000_000_000)
+
+    def test_save_advances_from_persisted_revision(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+        with TemporaryDirectory() as directory:
+            api.store = SettingsStore(Path(directory) / "config.json")
+            first = api.save_dynamic_wallpaper_scene({"revision": 8_000_000_000_000})
+            second = api.save_dynamic_wallpaper_scene({"revision": 0})
+
+        self.assertEqual(first["revision"], 8_000_000_000_001)
+        self.assertEqual(second["revision"], first["revision"] + 1)
 
 
 if __name__ == "__main__":

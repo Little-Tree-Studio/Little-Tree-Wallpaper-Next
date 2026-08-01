@@ -66,6 +66,17 @@ export default function DynamicWallpaper() {
   }, []);
 
   useEffect(() => {
+    const syncWidgets = async () => {
+      try {
+        const latest = await getDynamicWallpaperScene();
+        setScene((current) => current ? { ...current, widgets: latest.widgets, revision: latest.revision } : latest);
+      } catch { /* keep local background edits when synchronization fails */ }
+    };
+    window.addEventListener('focus', syncWidgets);
+    return () => window.removeEventListener('focus', syncWidgets);
+  }, []);
+
+  useEffect(() => {
     const preview = previewRef.current;
     if (!preview) return undefined;
     const update = () => setPreviewWidth(preview.getBoundingClientRect().width);
@@ -76,7 +87,14 @@ export default function DynamicWallpaper() {
   }, [display?.width, display?.height, scene !== null, status !== null]);
 
   if (!scene || !status) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
-  const updateBackground = (updates: Partial<DynamicWallpaperScene['background']>) => setScene({ ...scene, background: { ...scene.background, ...updates } });
+  const updateBackground = (updates: Partial<DynamicWallpaperScene['background']>) => setScene((current) => (
+    current ? { ...current, background: { ...current.background, ...updates } } : current
+  ));
+
+  const withLatestWidgets = async () => {
+    const latest = await getDynamicWallpaperScene();
+    return { ...scene, widgets: latest.widgets, revision: latest.revision };
+  };
 
   const selectSource = async () => {
     setPending('pick');
@@ -89,20 +107,23 @@ export default function DynamicWallpaper() {
     } finally { setPending(''); }
   };
 
-  const save = async () => {
+  const save = async (): Promise<DynamicWallpaperScene | null> => {
     setPending('save');
     try {
-      setScene(await saveDynamicWallpaperScene(scene));
+      const saved = await saveDynamicWallpaperScene(await withLatestWidgets());
+      setScene(saved);
       toast.success('动态场景已保存');
+      return saved;
     } catch (error) {
       toast.danger('保存失败', { description: error instanceof Error ? error.message : String(error) });
+      return null;
     } finally { setPending(''); }
   };
 
   const start = async () => {
     setPending('start');
     try {
-      const result = await applyDynamicWallpaperScene(scene);
+      const result = await applyDynamicWallpaperScene(await withLatestWidgets());
       setStatus(result.status);
       setScene(result.scene);
       toast.info(result.status.last_operation === 'apply-scene-requested' ? '新场景已排队' : status.running ? '正在应用新场景' : '正在启动动态壁纸', {
@@ -127,7 +148,7 @@ export default function DynamicWallpaper() {
   };
 
   const openEditor = async () => {
-    await save();
+    if (!await save()) return;
     try { await openDynamicWidgetEditor(); }
     catch (error) { toast.danger('无法打开编辑器', { description: error instanceof Error ? error.message : String(error) }); }
   };

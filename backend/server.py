@@ -23,6 +23,7 @@ import ipaddress
 import json
 import socket
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -343,9 +344,21 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
         token: Per-session secret token used to authorize API calls.
         frontend_dir: Directory containing the built frontend (``index.html``).
     """
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        result = await run_in_threadpool(api.plugin_manager.start_enabled)
+        logger.info("Started {} enabled plugin(s)", len(result.get("plugins", [])))
+        logger.info("FastAPI backend started (serving frontend from {})", frontend_dir)
+        try:
+            yield
+        finally:
+            await run_in_threadpool(api.plugin_manager.shutdown)
+            logger.info("FastAPI backend shutting down")
+
     app = FastAPI(
         title=APP_NAME_EN,
         version=VERSION,
+        lifespan=lifespan,
         # Disable auto docs so the API surface is not discoverable.
         docs_url=None,
         redoc_url=None,
@@ -366,17 +379,6 @@ def create_app(api: Any, token: str, frontend_dir: Path) -> FastAPI:
     app.add_middleware(RequestLoggingMiddleware)
 
     verify_token = _verify_token_factory(token)
-
-    @app.on_event("startup")
-    async def _on_startup() -> None:  # pragma: no cover - lifecycle hook
-        result = await run_in_threadpool(api.plugin_manager.start_enabled)
-        logger.info("Started {} enabled plugin(s)", len(result.get("plugins", [])))
-        logger.info("FastAPI backend started (serving frontend from {})", frontend_dir)
-
-    @app.on_event("shutdown")
-    async def _on_shutdown() -> None:  # pragma: no cover - lifecycle hook
-        await run_in_threadpool(api.plugin_manager.shutdown)
-        logger.info("FastAPI backend shutting down")
 
     @app.get("/api/health")
     async def health(_: None = Depends(verify_token)) -> dict[str, Any]:
