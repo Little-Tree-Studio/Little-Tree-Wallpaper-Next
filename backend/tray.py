@@ -7,8 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import webview
 from loguru import logger
+from lumiview import WindowHookEvent
 
 
 class ApplicationTray:
@@ -17,17 +17,15 @@ class ApplicationTray:
     def __init__(
         self,
         api: Any,
-        launch_url: str,
         title: str,
         icon_path: str | None,
-        dynamic_host: Any,
+        create_main_window: Callable[[], Any],
         on_quit: Callable[[], None],
     ) -> None:
         self._api = api
-        self._launch_url = launch_url
         self._title = title
         self._icon_path = icon_path
-        self._dynamic_host = dynamic_host
+        self._create_main_window = create_main_window
         self._on_quit = on_quit
         self._lock = threading.RLock()
         self._window_operation_lock = threading.Lock()
@@ -41,8 +39,10 @@ class ApplicationTray:
         with self._lock:
             self._main_window = window
             self._allow_close = False
-        window.events.closing += self._on_main_closing
-        window.events.closed += lambda *_args: self._on_main_closed(window)
+
+        @window.on(WindowHookEvent.CloseRequested)
+        def on_close_requested() -> None:
+            self._on_main_closing()
 
     def _on_main_closing(self, *_args: Any) -> bool | None:
         with self._lock:
@@ -78,18 +78,11 @@ class ApplicationTray:
                     return
             try:
                 if window is None:
-                    window = webview.create_window(
-                        title=self._title,
-                        url=self._launch_url,
-                        width=1200,
-                        height=800,
-                        min_size=(800, 600),
-                        text_select=True,
-                    )
+                    window = self._create_main_window()
                     self.attach_main_window(window)
                 else:
                     window.show()
-                    window.restore()
+                    window.minimize(False)
             except Exception as exc:
                 logger.error("Failed to show main window: {}", exc)
 
@@ -108,7 +101,8 @@ class ApplicationTray:
                     return
                 self._allow_close = True
             with contextlib.suppress(Exception):
-                window.destroy()
+                self._on_main_closed(window)
+                window.close()
 
     def notify(self, title: str, message: str) -> None:
         """Show a clickable Windows notification with a tray fallback."""
@@ -205,7 +199,6 @@ class ApplicationTray:
             self._api.shutdown_dynamic_wallpaper()
         if window is not None:
             with contextlib.suppress(Exception):
-                window.destroy()
-        with contextlib.suppress(Exception):
-            self._dynamic_host.destroy()
+                self._on_main_closed(window)
+                window.close()
         self._on_quit()

@@ -209,7 +209,7 @@ Spec 会打包以下数据：
 - `backend/README.md`
 - `frontend/dist`
 
-它还声明了 pywebview、Windows 通知及各平台 GUI 后端所需的隐藏导入。Windows 图标来自 `frontend/dist/logo.ico`；其他平台不设置图标。若前端产物或图标缺失，PyInstaller 可能直接构建失败，因此正式打包通常不应跳过前端构建。
+它还收集了 LumiView、wryview、Windows 通知及各平台 GUI 后端所需的二进制和隐藏导入。Windows 图标来自 `frontend/dist/logo.ico`；其他平台不设置图标。若前端产物或图标缺失，PyInstaller 可能直接构建失败，因此正式打包通常不应跳过前端构建。
 
 ## 插件打包：`tools/plugin_pack.py`
 

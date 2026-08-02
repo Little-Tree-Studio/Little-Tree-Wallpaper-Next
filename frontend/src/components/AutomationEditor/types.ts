@@ -448,7 +448,7 @@ export function getNodeSettings(node: AutomationNode, catalog?: AutomationResour
     );
     if (action === 'slideshow_control') result.push({ pointer: '/slideshow_action', label: '切换操作', kind: 'select', value: config.slideshow_action || 'next', options: options([['next', '下一张'], ['previous', '上一张']]) });
     if (action === 'slideshow_transition') result.push(
-      { pointer: '/transition', label: '轮播动画', kind: 'select', value: config.transition || 'fade', options: options([['fade', '柔和淡入'], ['slide-left', '横向推入'], ['slide-up', '向上揭幕'], ['zoom', '镜头拉近'], ['blur', '清晰聚焦'], ['wipe', '光幕擦除'], ['flip', '空间翻页'], ['ken-burns', '漫游镜头']]) },
+      { pointer: '/transition', label: '轮播动画', kind: 'select', value: config.transition || 'fade', options: options([['fade', '柔和淡入'], ['slide-left', '横向推入'], ['slide-right', '反向推入'], ['slide-up', '向上揭幕'], ['slide-down', '向下揭幕'], ['zoom', '镜头拉近'], ['zoom-out', '镜头拉远'], ['blur', '清晰聚焦'], ['wipe', '光幕擦除'], ['diagonal-wipe', '斜向擦除'], ['iris', '圆形展开'], ['shutter', '中央展开'], ['flip', '空间翻页'], ['rotate', '旋转入场'], ['grayscale', '黑白显色'], ['ken-burns', '漫游镜头']]) },
       { pointer: '/transition_duration', label: '动画毫秒', kind: 'number', value: config.transition_duration ?? 900 },
     );
     if (action === 'slideshow_source') {

@@ -68,6 +68,7 @@ const EMPTY_STATUS: DynamicWallpaperStatus = {
   window_handle: '',
   dynamic_type: '',
   runtime_mode: '',
+  runtime_revision: 0,
   window: {
     valid: false,
     visible: false,
@@ -345,8 +346,8 @@ export default function DynamicWallpaperDebug() {
               {action === 'stop' ? <Spinner size="sm" color="current" /> : <Square size={15} fill="currentColor" />}
               停止并恢复桌面
             </Button>
-            <Button isIconOnly variant="ghost" onPress={() => void controlPlayer(telemetry.paused ? 'play' : 'pause')} isDisabled={!status.running} aria-label={telemetry.paused ? '继续播放' : '暂停播放'}>
-              {telemetry.paused ? <Play size={16} /> : <Pause size={16} />}
+            <Button isIconOnly variant="ghost" onPress={() => void controlPlayer(telemetry.received && telemetry.paused ? 'play' : 'pause')} isDisabled={!status.running} aria-label={telemetry.received && telemetry.paused ? '继续播放' : '暂停播放'}>
+              {telemetry.received && telemetry.paused ? <Play size={16} /> : <Pause size={16} />}
             </Button>
             <Button isIconOnly variant="ghost" onPress={() => void controlPlayer('reload')} isDisabled={!status.running} aria-label="重新加载视频">
               <RefreshCw size={16} />

@@ -10,7 +10,7 @@ const overlayPositions = ['top-left', 'top-right', 'bottom-left', 'bottom-right'
 function lockOverlayStack(element: HTMLElement | null, position: string): void {
   if (!element) return;
   const mobile = window.matchMedia('(max-width: 640px)').matches;
-  const left = mobile ? '4.75rem' : '5rem';
+  const left = mobile ? '4.25rem' : '4.5rem';
   const edge = mobile ? '0.75rem' : '1rem';
   const values: Record<string, string> = {
     position: 'fixed',

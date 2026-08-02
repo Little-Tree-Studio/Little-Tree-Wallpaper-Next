@@ -273,7 +273,7 @@ export default function AutomationCanvas({
   };
 
   return (
-    <div className="relative h-full min-h-[420px] min-w-0 flex-1 overflow-hidden bg-surface-tertiary/50">
+    <div className="relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-tertiary/50">
       <div
         ref={rootRef}
         className="automation-canvas absolute inset-0 overflow-auto"

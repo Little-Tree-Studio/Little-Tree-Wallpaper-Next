@@ -191,11 +191,10 @@ def _validate_referer(value: str | None) -> str:
     return referer
 
 
-# RPC methods that must not themselves produce log entries. Inspecting the logs
-# (e.g. the stats/count shown on the Help page) would otherwise inflate its own
-# numbers on every refresh, since each call is logged by the middleware and the
-# RPC dispatcher.
-_QUIET_RPC_METHODS = frozenset({"get_log_stats", "get_debug_log"})
+# RPC methods that must not themselves produce log entries. Log inspection would
+# otherwise inflate its own counts, while scene reads may come from a long-lived
+# dynamic wallpaper runtime where routine refreshes are not actionable events.
+_QUIET_RPC_METHODS = frozenset({"get_log_stats", "get_debug_log", "get_dynamic_wallpaper_scene"})
 
 
 def _rpc_method_from_path(path: str) -> str | None:
@@ -286,7 +285,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         return response
 
 
-# Hostnames that may legitimately target this loopback-only server. pywebview
+# Hostnames that may legitimately target this loopback-only server. LumiView
 # loads the UI from ``http://127.0.0.1:<port>``, so every genuine request carries
 # one of these as its Host header.
 _ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})

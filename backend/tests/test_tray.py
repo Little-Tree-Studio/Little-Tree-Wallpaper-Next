@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from backend.tray import ApplicationTray
 
@@ -11,10 +11,9 @@ class ApplicationTrayTests(unittest.TestCase):
         self.api = MagicMock()
         self.tray = ApplicationTray(
             api=self.api,
-            launch_url="http://127.0.0.1/",
             title="Little Tree",
             icon_path=None,
-            dynamic_host=MagicMock(),
+            create_main_window=MagicMock(),
             on_quit=MagicMock(),
         )
 
@@ -30,27 +29,35 @@ class ApplicationTrayTests(unittest.TestCase):
 
         icon.notify.assert_called_once_with("Message", "Title")
 
-    @patch("backend.tray.webview.create_window")
-    def test_show_recreates_released_window(self, create_window: MagicMock) -> None:
+    def test_show_recreates_released_window(self) -> None:
         window = MagicMock()
-        create_window.return_value = window
+        self.tray._create_main_window.return_value = window
 
         self.tray.show_main_window()
 
         self.assertIs(self.tray._main_window, window)
-        create_window.assert_called_once()
+        self.tray._create_main_window.assert_called_once()
 
-    def test_quit_stops_dynamic_wallpaper_before_destroying_host(self) -> None:
+    def test_dynamic_play_and_pause_dispatch_to_backend(self) -> None:
+        self.tray._dynamic_action("play")
+        self.tray._dynamic_action("pause")
+
+        self.assertEqual(
+            self.api.control_dynamic_wallpaper.call_args_list,
+            [call("play"), call("pause")],
+        )
+
+    def test_quit_stops_dynamic_wallpaper_before_closing_main_window(self) -> None:
         calls: list[str] = []
         main_window = MagicMock()
         self.tray._main_window = main_window
         self.tray._api.shutdown_dynamic_wallpaper.side_effect = lambda: calls.append("shutdown")
-        self.tray._dynamic_host.destroy.side_effect = lambda: calls.append("destroy-host")
+        main_window.close.side_effect = lambda: calls.append("close-main")
 
         self.tray.quit()
 
-        self.assertEqual(calls, ["shutdown", "destroy-host"])
-        main_window.destroy.assert_called_once_with()
+        self.assertEqual(calls, ["shutdown", "close-main"])
+        main_window.close.assert_called_once_with()
         self.tray._on_quit.assert_called_once_with()
 
     def test_closing_main_window_stops_dynamic_wallpaper_before_hiding(self) -> None:

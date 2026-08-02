@@ -476,7 +476,7 @@ export default function Automation() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] min-h-[560px] overflow-clip rounded-lg border border-border bg-surface-secondary">
+    <div className="flex h-full min-h-0 overflow-clip rounded-lg border border-border bg-surface-secondary">
       <aside className={`flex shrink-0 flex-col border-r border-border bg-background transition-[width] duration-200 ${listExpanded ? 'w-60' : 'w-12'}`}>
         {listExpanded ? <>
            <div className="flex items-center justify-between gap-2 p-3">

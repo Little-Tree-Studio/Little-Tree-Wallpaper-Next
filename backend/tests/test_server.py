@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.server import _CONTROL_RPC_LIMITER, _DATA_RPC_LIMITER, _rpc_limiter_for_method, create_app
+from backend.server import (
+    _CONTROL_RPC_LIMITER,
+    _DATA_RPC_LIMITER,
+    _QUIET_RPC_METHODS,
+    _rpc_limiter_for_method,
+    create_app,
+)
 from fastapi.testclient import TestClient
 
 
@@ -27,6 +33,9 @@ class _API:
 
 
 class ServerIsolationTests(unittest.TestCase):
+    def test_dynamic_scene_reads_are_quiet(self) -> None:
+        self.assertIn("get_dynamic_wallpaper_scene", _QUIET_RPC_METHODS)
+
     def test_slow_data_rpcs_use_an_independent_worker_budget(self) -> None:
         self.assertIs(_rpc_limiter_for_method("query_bing"), _DATA_RPC_LIMITER)
         self.assertIs(_rpc_limiter_for_method("execute_wallpaper_source"), _DATA_RPC_LIMITER)

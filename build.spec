@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 
 DATAS = [
@@ -11,10 +13,11 @@ DATAS = [
     ('frontend/dist', 'frontend/dist'),
 ]
 
+LUMIVIEW_DATAS, LUMIVIEW_BINARIES, LUMIVIEW_HIDDENIMPORTS = collect_all('lumiview')
+WRYVIEW_DATAS, WRYVIEW_BINARIES, WRYVIEW_HIDDENIMPORTS = collect_all('wryview')
+DATAS += LUMIVIEW_DATAS + WRYVIEW_DATAS
+
 HIDDENIMPORTS = [
-    "webview.platforms.winforms",
-    "webview.platforms.edgechromium",
-    "clr_loader",
     "win32com",
     "win32com.client",
     "pywintypes",
@@ -28,12 +31,12 @@ HIDDENIMPORTS = [
     "AppKit",
     "Foundation",
     "gi",
-]
+] + LUMIVIEW_HIDDENIMPORTS + WRYVIEW_HIDDENIMPORTS
 
 a = Analysis(
     ['backend/main.py'],
     pathex=[str(Path('backend/main.py').resolve().parent.parent)],
-    binaries=[],
+    binaries=LUMIVIEW_BINARIES + WRYVIEW_BINARIES,
     datas=DATAS,
     hiddenimports=HIDDENIMPORTS,
     hookspath=[],

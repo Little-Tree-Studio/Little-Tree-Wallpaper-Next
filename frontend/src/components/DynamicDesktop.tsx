@@ -58,20 +58,79 @@ export function useWidgetDefinitions(): WidgetDefinition[] {
   ];
 }
 
-function Background({ scene }: { scene: DynamicWallpaperScene }) {
+function ImageOverlay({ scene, isPaused }: { scene: DynamicWallpaperScene; isPaused: boolean }) {
   const { background } = scene;
-  const [index, setIndex] = useState(0);
+  if (background.type !== 'image' || background.overlay_effect === 'none') return null;
+  const count = Math.max(8, Math.min(120, Math.round(background.overlay_density)));
+  const motion = ['bubbles'].includes(background.overlay_effect)
+    ? 'rise'
+    : ['fireflies', 'dust', 'stars'].includes(background.overlay_effect) ? 'float' : 'fall';
+  return (
+    <div className="dynamic-image-overlay pointer-events-none absolute inset-0 z-10 overflow-hidden" aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => {
+        const left = (index * 47 + 13) % 100;
+        const delay = -((index * 31) % 100) / 10;
+        const durationBase = background.overlay_effect === 'rain' ? 2.5 : motion === 'float' ? 8 : 7;
+        const durationRange = background.overlay_effect === 'rain' ? 2 : 8;
+        const duration = (durationBase + (index * 17) % durationRange) / background.overlay_speed;
+        const size = (6 + (index * 11) % 12) * background.overlay_size;
+        return (
+          <span
+            key={index}
+            className={`dynamic-image-particle dynamic-image-particle--${background.overlay_effect} dynamic-image-particle--motion-${motion}`}
+            style={{
+              left: `${left}%`,
+              width: size,
+              height: size,
+              top: motion === 'float' ? `${8 + (index * 37) % 80}%` : undefined,
+              opacity: background.overlay_opacity,
+              animationDelay: `${delay}s`,
+              animationDuration: `${duration}s`,
+              animationPlayState: isPaused ? 'paused' : 'running',
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function Background({
+  scene,
+  onPlaybackStateChange,
+}: {
+  scene: DynamicWallpaperScene;
+  onPlaybackStateChange?: (paused: boolean, event: string, ended?: boolean) => void;
+}) {
+  const { background } = scene;
+  const [motionPaused, setMotionPaused] = useState(false);
+  const [slideshowFrame, setSlideshowFrame] = useState({
+    index: 0,
+    sequence: 0,
+    previous: null as { index: number; sequence: number } | null,
+  });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const slideshowTimerRef = useRef<number | null>(null);
   const items = background.type === 'slideshow' ? background.items : background.path ? [background.path] : [];
 
   useEffect(() => {
     const runtimeWindow = window as typeof window & { __ltwDynamicRuntime?: Record<string, () => unknown> };
-    const move = (offset: number) => setIndex((current) => items.length ? (current + offset + items.length) % items.length : 0);
+    const move = (offset: number) => setSlideshowFrame((current) => {
+      if (!items.length) return { index: 0, sequence: current.sequence, previous: null };
+      const nextIndex = (current.index + offset + items.length) % items.length;
+      if (nextIndex === current.index) return current;
+      return {
+        index: nextIndex,
+        sequence: current.sequence + 1,
+        previous: { index: current.index, sequence: current.sequence },
+      };
+    });
     runtimeWindow.__ltwDynamicRuntime = {
-      play: () => videoRef.current?.play(),
-      pause: () => videoRef.current?.pause(),
-      auto: () => videoRef.current?.paused ? videoRef.current.play() : videoRef.current?.pause(),
+      play: () => videoRef.current ? videoRef.current.play() : setMotionPaused(false),
+      pause: () => videoRef.current ? videoRef.current.pause() : setMotionPaused(true),
+      auto: () => videoRef.current
+        ? videoRef.current.paused ? videoRef.current.play() : videoRef.current.pause()
+        : setMotionPaused((paused) => !paused),
       reload: () => { videoRef.current?.load(); return videoRef.current?.play(); },
       next: () => move(1),
       previous: () => move(-1),
@@ -92,19 +151,39 @@ function Background({ scene }: { scene: DynamicWallpaperScene }) {
   }, [background.type, items.join('\n')]);
 
   useEffect(() => {
-    setIndex(0);
-    if (background.type !== 'slideshow' || items.length < 2) return undefined;
+    if (background.type !== 'video') {
+      onPlaybackStateChange?.(motionPaused, motionPaused ? 'pause' : 'playing');
+    }
+  }, [background.type, motionPaused, onPlaybackStateChange]);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = background.volume;
+  }, [background.volume]);
+
+  useEffect(() => {
+    setSlideshowFrame((current) => current.index === 0 && current.previous === null
+      ? current
+      : { index: 0, sequence: current.sequence + 1, previous: null });
+    if (background.type !== 'slideshow' || items.length < 2 || motionPaused) return undefined;
     const timer = window.setInterval(() => {
-      setIndex((current) => background.shuffle
-        ? Math.floor(Math.random() * items.length)
-        : (current + 1) % items.length);
+      setSlideshowFrame((current) => {
+        const nextIndex = background.shuffle
+          ? Math.floor(Math.random() * items.length)
+          : (current.index + 1) % items.length;
+        if (nextIndex === current.index) return current;
+        return {
+          index: nextIndex,
+          sequence: current.sequence + 1,
+          previous: { index: current.index, sequence: current.sequence },
+        };
+      });
     }, background.interval_seconds * 1000);
     slideshowTimerRef.current = timer;
     return () => {
       window.clearInterval(timer);
       if (slideshowTimerRef.current === timer) slideshowTimerRef.current = null;
     };
-  }, [background.type, background.interval_seconds, background.shuffle, items.join('\n')]);
+  }, [background.type, background.interval_seconds, background.shuffle, motionPaused, items.join('\n')]);
 
   if (background.type === 'video' && background.path) {
     return (
@@ -115,25 +194,62 @@ function Background({ scene }: { scene: DynamicWallpaperScene }) {
         muted={background.muted}
         loop={background.loop}
         playsInline
+        onPlaying={() => onPlaybackStateChange?.(false, 'playing')}
+        onPause={() => onPlaybackStateChange?.(true, 'pause')}
+        onEnded={() => onPlaybackStateChange?.(true, 'ended', true)}
         ref={(video) => {
           videoRef.current = video;
           if (video) {
             video.playbackRate = background.playback_rate;
+            video.volume = background.volume;
             if (background.autoplay === false) video.pause();
           }
         }}
       />
     );
   }
-  const current = items[index];
+  const current = items[slideshowFrame.index];
+  const previous = background.type === 'slideshow' && slideshowFrame.previous
+    ? items[slideshowFrame.previous.index]
+    : null;
+  const imageFit = background.type === 'image' ? background.image_fit : 'cover';
   return current ? (
-    <img
-      key={`${current}-${index}`}
-      src={dynamicWallpaperAssetUrl(current)}
-      alt="动态壁纸底图"
-      className={`dynamic-scene-media dynamic-transition-${background.transition} absolute inset-0 size-full object-cover`}
-      style={{ animationDuration: `${background.transition_duration}ms` }}
-    />
+    <>
+      {imageFit === 'repeat' ? (
+        <div
+          className="absolute inset-0 bg-center bg-repeat"
+          style={{ backgroundImage: `url("${dynamicWallpaperAssetUrl(current).replace(/"/g, '%22')}")` }}
+        />
+      ) : (
+        <>
+      {previous && (
+        <img
+          key={`frame-${slideshowFrame.previous?.sequence}`}
+          src={dynamicWallpaperAssetUrl(previous)}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 size-full object-cover"
+        />
+      )}
+      <img
+        key={`frame-${slideshowFrame.sequence}`}
+        src={dynamicWallpaperAssetUrl(current)}
+        alt="动态壁纸底图"
+        className={`dynamic-scene-media dynamic-transition-${background.transition} absolute inset-0 size-full`}
+        style={{
+          animationDuration: `${background.transition_duration}ms`,
+          animationPlayState: motionPaused ? 'paused' : 'running',
+          objectFit: imageFit,
+          objectPosition: '50% 50%',
+        }}
+        onAnimationEnd={() => setSlideshowFrame((latest) => latest.sequence === slideshowFrame.sequence
+          ? { ...latest, previous: null }
+          : latest)}
+      />
+        </>
+      )}
+      <ImageOverlay scene={scene} isPaused={motionPaused} />
+    </>
   ) : (
     <div className="absolute inset-0 bg-surface-tertiary" />
   );
@@ -304,6 +420,7 @@ function WidgetContent({ widget }: { widget: DynamicWidgetInstance }) {
 
 interface DynamicDesktopProps {
   scene: DynamicWallpaperScene;
+  onPlaybackStateChange?: (paused: boolean, event: string, ended?: boolean) => void;
   editing?: boolean;
   editingScale?: number;
   selectedId?: string | null;
@@ -335,6 +452,7 @@ export function DesktopPreviewOverlay({ display }: { display: NonNullable<Dynami
 
 export default function DynamicDesktop({
   scene,
+  onPlaybackStateChange,
   editing = false,
   editingScale = 1,
   selectedId,
@@ -344,29 +462,10 @@ export default function DynamicDesktop({
   showDragStatus = true,
   onDragStatusChange,
 }: DynamicDesktopProps) {
-  const definitions = useWidgetDefinitions();
   const desktopRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ id: string; pointerId: number; offsetX: number; offsetY: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const visibleEditingScale = Math.max(0.1, Math.min(1, editingScale));
-  const addWidget = (type: string, x: number, y: number) => {
-    const definition = definitions.find((item) => item.type === type);
-    if (!definition || !onChange) return;
-    const widget: DynamicWidgetInstance = {
-      id: `widget-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      type,
-      x: Math.round(Math.max(0, Math.min(100 - definition.width, x - definition.width / 2))),
-      y: Math.round(Math.max(0, Math.min(100 - definition.height, y - definition.height / 2))),
-      width: definition.width,
-      height: definition.height,
-      opacity: 1,
-      background_opacity: 1,
-      background_blur: true,
-      settings: {},
-    };
-    onChange([...scene.widgets, widget]);
-    onSelect?.(widget.id);
-  };
   const moveWidget = (id: string, x: number, y: number) => {
     const widget = scene.widgets.find((item) => item.id === id);
     if (!widget || !onChange) return;
@@ -409,20 +508,8 @@ export default function DynamicDesktop({
       }}
       onPointerUp={finishPointerDrag}
       onPointerCancel={finishPointerDrag}
-      onDragOver={(event) => editing && event.preventDefault()}
-      onDrop={(event) => {
-        if (!editing) return;
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        const type = event.dataTransfer.getData('application/x-ltw-widget');
-        const existingId = event.dataTransfer.getData('application/x-ltw-widget-instance');
-        const x = ((event.clientX - rect.left) / rect.width) * 100;
-        const y = ((event.clientY - rect.top) / rect.height) * 100;
-        if (existingId) moveWidget(existingId, x, y);
-        else if (type) addWidget(type, x, y);
-      }}
     >
-      <Background scene={scene} />
+      <Background scene={scene} onPlaybackStateChange={onPlaybackStateChange} />
       <div className="absolute inset-0 bg-black/5" />
       {preview && <DesktopPreviewOverlay display={preview} />}
       {scene.widgets.map((widget) => (

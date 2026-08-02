@@ -38,6 +38,7 @@ import {
   Palette,
   Plus,
   Save,
+  PanelsTopLeft,
   Trash2,
   Type,
   Upload,
@@ -68,6 +69,7 @@ import type {
   ThemePreviewAssets,
   ThemeProfile,
   ThemeSummary,
+  ThemeWindowIconSlot,
 } from '@/theme/types';
 
 type EditablePaletteKey = keyof ThemePalette;
@@ -90,6 +92,17 @@ const BACKGROUND_TYPES: Array<{ id: ThemeBackgroundType; label: string }> = [
   { id: 'gradient', label: '渐变' },
   { id: 'image', label: '图片' },
   { id: 'video', label: '视频' },
+];
+
+const WINDOW_ICON_FIELDS: Array<{
+  slot: ThemeWindowIconSlot;
+  label: string;
+  preview: keyof Pick<ThemePreviewAssets, 'window_minimize' | 'window_maximize' | 'window_restore' | 'window_close'>;
+}> = [
+  { slot: 'minimize', label: '最小化', preview: 'window_minimize' },
+  { slot: 'maximize', label: '最大化', preview: 'window_maximize' },
+  { slot: 'restore', label: '还原窗口', preview: 'window_restore' },
+  { slot: 'close', label: '关闭', preview: 'window_close' },
 ];
 
 function formatBytes(bytes: number): string {
@@ -446,6 +459,28 @@ export default function ThemeSettingsPanel() {
     }
   };
 
+  const handlePickWindowIcon = async (slot: ThemeWindowIconSlot, mode: AssetStorageMode) => {
+    try {
+      const selection = await pickThemeAsset(draft.id, 'image', mode);
+      if (!selection) return;
+      const field = WINDOW_ICON_FIELDS.find((item) => item.slot === slot);
+      if (!field) return;
+      updateDraft((next) => { next.window_chrome.icons[slot] = selection.source; });
+      setPreviewAssets((current) => ({
+        ...current,
+        [field.preview]: themePreviewUrl(selection.preview_token),
+      }));
+    } catch (error) {
+      toast.danger('窗口图标选择失败', { description: error instanceof Error ? error.message : '未知错误' });
+    }
+  };
+
+  const clearWindowIconPreview = (slot: ThemeWindowIconSlot) => {
+    const field = WINDOW_ICON_FIELDS.find((item) => item.slot === slot);
+    if (!field) return;
+    setPreviewAssets((current) => ({ ...current, [field.preview]: undefined }));
+  };
+
   const discardAndContinue = () => {
     const target = pendingSelection;
     const proceed = pendingNavigationRef.current;
@@ -579,6 +614,7 @@ export default function ThemeSettingsPanel() {
                     <Tabs.Tab id="basic"><Palette size={14} />基本<Tabs.Indicator /></Tabs.Tab>
                     <Tabs.Tab id="colors"><Palette size={14} />颜色<Tabs.Indicator /></Tabs.Tab>
                     <Tabs.Tab id="background"><ImageIcon size={14} />背景<Tabs.Indicator /></Tabs.Tab>
+                    <Tabs.Tab id="window"><PanelsTopLeft size={14} />窗口<Tabs.Indicator /></Tabs.Tab>
                     <Tabs.Tab id="font"><Type size={14} />字体<Tabs.Indicator /></Tabs.Tab>
                     <Tabs.Tab id="css"><Code2 size={14} />CSS<Tabs.Indicator /></Tabs.Tab>
                   </Tabs.List>
@@ -736,6 +772,232 @@ export default function ThemeSettingsPanel() {
                         <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
                       </Slider>
                     )}
+                  </div>
+                </Tabs.Panel>
+
+                <Tabs.Panel id="window" className="pt-5">
+                  <div className="space-y-6">
+                    <section className="space-y-3">
+                      <div>
+                        <h3 className="text-sm font-semibold">窗口按钮图标</h3>
+                        <p className="mt-1 text-xs text-muted">可分别替换最小化、最大化、还原和关闭图标。内置资源会随主题包导出。</p>
+                      </div>
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        {WINDOW_ICON_FIELDS.map((field) => {
+                          const source = draft.window_chrome.icons[field.slot];
+                          const mode = source?.mode ?? 'default';
+                          return (
+                            <Card key={field.slot} variant="secondary" className="gap-3 p-4">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-sm font-medium">{field.label}</span>
+                                {source && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    isDisabled={isReadonly}
+                                    onPress={() => {
+                                      updateDraft((next) => { next.window_chrome.icons[field.slot] = null; });
+                                      clearWindowIconPreview(field.slot);
+                                    }}
+                                  >
+                                    恢复默认
+                                  </Button>
+                                )}
+                              </div>
+                              <SelectControl
+                                label="图标来源"
+                                value={mode}
+                                options={[
+                                  { id: 'default', label: '默认图标' },
+                                  { id: 'bundled', label: '内置到主题' },
+                                  { id: 'path', label: '本地路径引用' },
+                                  { id: 'url', label: '链接引用' },
+                                ]}
+                                onChange={(value) => {
+                                  updateDraft((next) => {
+                                    next.window_chrome.icons[field.slot] = value === 'default'
+                                      ? null
+                                      : { mode: value as ThemeAssetMode, value: '' };
+                                  });
+                                  clearWindowIconPreview(field.slot);
+                                }}
+                                isDisabled={isReadonly}
+                              />
+                              {mode === 'url' ? (
+                                <TextField
+                                  isDisabled={isReadonly}
+                                  value={source?.value ?? ''}
+                                  onChange={(value) => {
+                                    updateDraft((next) => {
+                                      const icon = next.window_chrome.icons[field.slot];
+                                      if (icon) icon.value = value;
+                                    });
+                                    clearWindowIconPreview(field.slot);
+                                  }}
+                                >
+                                  <Label>图片链接</Label>
+                                  <Input />
+                                </TextField>
+                              ) : source ? (
+                                <Button
+                                  fullWidth
+                                  variant="secondary"
+                                  isDisabled={isReadonly}
+                                  onPress={() => void handlePickWindowIcon(field.slot, mode as AssetStorageMode)}
+                                >
+                                  <FolderOpen size={15} />
+                                  <span className="truncate">{source.value || '选择图片文件'}</span>
+                                </Button>
+                              ) : null}
+                            </Card>
+                          );
+                        })}
+                      </div>
+                    </section>
+
+                    <Separator />
+
+                    <section className="space-y-4">
+                      <div>
+                        <h3 className="text-sm font-semibold">关闭按钮悬停</h3>
+                        <p className="mt-1 text-xs text-muted">未开启时使用 HeroUI 默认危险色。</p>
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-3">
+                          <Switch
+                            className="w-full"
+                            isSelected={draft.window_chrome.close_hover.background !== null}
+                            onChange={(selected) => updateDraft((next) => {
+                              next.window_chrome.close_hover.background = selected ? '#C42B1C' : null;
+                            })}
+                            isDisabled={isReadonly}
+                          >
+                            <Switch.Content className="!flex-row w-full items-center justify-between gap-3">
+                              <span>自定义悬停背景</span>
+                              <Switch.Control><Switch.Thumb /></Switch.Control>
+                            </Switch.Content>
+                          </Switch>
+                          {draft.window_chrome.close_hover.background && (
+                            <ColorControl
+                              label="悬停背景"
+                              value={draft.window_chrome.close_hover.background}
+                              onChange={(value) => updateDraft((next) => { next.window_chrome.close_hover.background = value; })}
+                              isDisabled={isReadonly}
+                            />
+                          )}
+                        </div>
+                        <div className="space-y-3">
+                          <Switch
+                            className="w-full"
+                            isSelected={draft.window_chrome.close_hover.foreground !== null}
+                            onChange={(selected) => updateDraft((next) => {
+                              next.window_chrome.close_hover.foreground = selected ? '#FFFFFF' : null;
+                            })}
+                            isDisabled={isReadonly}
+                          >
+                            <Switch.Content className="!flex-row w-full items-center justify-between gap-3">
+                              <span>自定义悬停图标色</span>
+                              <Switch.Control><Switch.Thumb /></Switch.Control>
+                            </Switch.Content>
+                          </Switch>
+                          {draft.window_chrome.close_hover.foreground && (
+                            <ColorControl
+                              label="悬停图标"
+                              value={draft.window_chrome.close_hover.foreground}
+                              onChange={(value) => updateDraft((next) => { next.window_chrome.close_hover.foreground = value; })}
+                              isDisabled={isReadonly}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </section>
+
+                    <Separator />
+
+                    <section className="space-y-4">
+                      <div>
+                        <h3 className="text-sm font-semibold">导航框架</h3>
+                        <p className="mt-1 text-xs text-muted">同时作用于顶栏和侧栏，主题图片或视频会透过半透明框架显示。</p>
+                      </div>
+                      <Card variant="secondary" className="gap-2 p-4">
+                        <Switch
+                          className="w-full"
+                          isSelected={draft.navigation_chrome.acrylic}
+                          onChange={(selected) => updateDraft((next) => {
+                            next.navigation_chrome.acrylic = selected;
+                            if (selected) {
+                              next.navigation_chrome.background_opacity = 1;
+                              next.navigation_chrome.backdrop_blur = 0;
+                            }
+                          })}
+                          isDisabled={isReadonly}
+                        >
+                          <Switch.Content className="!flex-row w-full items-center justify-between gap-3">
+                            <span>使用系统亚克力效果</span>
+                            <Switch.Control><Switch.Thumb /></Switch.Control>
+                          </Switch.Content>
+                        </Switch>
+                        <p className="text-xs text-muted">仅在 Windows 和 macOS 下生效；其他系统自动回退为不透明导航框架。启用后透明度和模糊设置不可用。</p>
+                      </Card>
+                      <div className="grid gap-5 md:grid-cols-2">
+                        <div className="space-y-3">
+                          <Switch
+                            className="w-full"
+                            isSelected={draft.navigation_chrome.background_opacity < 1}
+                            onChange={(selected) => updateDraft((next) => {
+                              if (selected) next.navigation_chrome.acrylic = false;
+                              next.navigation_chrome.background_opacity = selected ? 0.72 : 1;
+                            })}
+                            isDisabled={isReadonly}
+                          >
+                            <Switch.Content className="!flex-row w-full items-center justify-between gap-3">
+                              <span>半透明导航框架</span>
+                              <Switch.Control><Switch.Thumb /></Switch.Control>
+                            </Switch.Content>
+                          </Switch>
+                          <Slider
+                            minValue={0.1}
+                            maxValue={1}
+                            step={0.05}
+                            value={draft.navigation_chrome.background_opacity}
+                            onChange={(value) => updateDraft((next) => { next.navigation_chrome.background_opacity = Number(value); })}
+                            isDisabled={isReadonly || draft.navigation_chrome.acrylic || draft.navigation_chrome.background_opacity === 1}
+                          >
+                            <Label>背景不透明度</Label>
+                            <Slider.Output>{Math.round(draft.navigation_chrome.background_opacity * 100)}%</Slider.Output>
+                            <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                          </Slider>
+                        </div>
+                        <div className="space-y-3">
+                          <Switch
+                            className="w-full"
+                            isSelected={draft.navigation_chrome.backdrop_blur > 0}
+                            onChange={(selected) => updateDraft((next) => {
+                              if (selected) next.navigation_chrome.acrylic = false;
+                              next.navigation_chrome.backdrop_blur = selected ? 16 : 0;
+                            })}
+                            isDisabled={isReadonly}
+                          >
+                            <Switch.Content className="!flex-row w-full items-center justify-between gap-3">
+                              <span>导航框架模糊</span>
+                              <Switch.Control><Switch.Thumb /></Switch.Control>
+                            </Switch.Content>
+                          </Switch>
+                          <Slider
+                            minValue={0}
+                            maxValue={64}
+                            step={1}
+                            value={draft.navigation_chrome.backdrop_blur}
+                            onChange={(value) => updateDraft((next) => { next.navigation_chrome.backdrop_blur = Number(value); })}
+                            isDisabled={isReadonly || draft.navigation_chrome.acrylic || draft.navigation_chrome.backdrop_blur === 0}
+                          >
+                            <Label>背景模糊</Label>
+                            <Slider.Output>{draft.navigation_chrome.backdrop_blur}px</Slider.Output>
+                            <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                          </Slider>
+                        </div>
+                      </div>
+                    </section>
                   </div>
                 </Tabs.Panel>
 

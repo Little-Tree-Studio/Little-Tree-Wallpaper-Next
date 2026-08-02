@@ -83,6 +83,23 @@ forest.lttheme
       "value": "assets/interface.woff2"
     }
   },
+  "window_chrome": {
+    "icons": {
+      "minimize": null,
+      "maximize": null,
+      "restore": null,
+      "close": { "mode": "bundled", "value": "assets/close.png" }
+    },
+    "close_hover": {
+      "background": "#C42B1C",
+      "foreground": "#FFFFFF"
+    }
+  },
+  "navigation_chrome": {
+    "acrylic": false,
+    "background_opacity": 0.72,
+    "backdrop_blur": 16
+  },
   "custom_css": "[data-theme-profile=\"forest-night\"] { --radius: 0.375rem; }",
   "created_at": "",
   "updated_at": "",
@@ -106,6 +123,8 @@ forest.lttheme
 | `colors` | object | 是 | 主题色和浅色/深色语义颜色。 |
 | `background` | object | 是 | 应用背景定义。 |
 | `typography` | object | 是 | 字体族及可选字体资源。 |
+| `window_chrome` | object | 否 | 窗口按钮图标及关闭按钮悬停颜色；缺失时使用默认图标和危险色。 |
+| `navigation_chrome` | object | 否 | 顶栏与侧栏组成的导航框架材质。 |
 | `custom_css` | string | 否 | 注入到应用文档末尾的 CSS，最大 128 KiB。 |
 
 导入发生 ID 冲突时，应用会生成带数字后缀的新 ID，不会覆盖已安装主题。
@@ -157,7 +176,23 @@ forest.lttheme
 
 图片支持 AVIF、BMP、GIF、JPEG、PNG、WebP。视频支持 MP4、WebM、MOV、M4V。
 
-## 7. 资源来源
+## 7. 窗口与导航框架
+
+`window_chrome.icons` 可分别配置 `minimize`、`maximize`、`restore` 和 `close`。每项为图片资源对象或 `null`；`null` 使用应用默认图标。内置图片会随 `.lttheme` 导出，路径和链接资源不会进入主题包。
+
+`window_chrome.close_hover.background` 和 `foreground` 控制关闭按钮悬停颜色。字段为 `null` 时使用默认红色背景和白色图标。
+
+`navigation_chrome` 同时控制顶栏和侧栏：
+
+| 字段 | 类型 | 范围 | 说明 |
+| --- | --- | --- | --- |
+| `acrylic` | boolean | `true` / `false` | 使用原生 Acrylic/Vibrancy。仅 Windows 和 macOS 生效；其他平台回退为不透明框架。 |
+| `background_opacity` | number | 0 至 1 | 普通材质的背景不透明度。 |
+| `backdrop_blur` | number | 0 至 64 | 普通材质的背景模糊像素。 |
+
+普通半透明和背景模糊可同时使用并分别调节。启用 `acrylic` 后，运行时忽略这两个普通材质参数，主题设计器也会禁用对应控件。
+
+## 8. 资源来源
 
 背景和字体使用统一资源对象：
 
@@ -184,7 +219,7 @@ forest.lttheme
 
 不支持在主题 JSON 中使用 Base64 或 Data URL。大图片和视频应放入 `.lttheme` 的 `assets/`，这样可避免 JSON 和 RPC 内存膨胀。
 
-## 8. 字体
+## 9. 字体
 
 `typography.font_family` 是 CSS 回退字体族列表。`typography.source` 可以为 `null`，表示使用默认字体；也可以使用 `installed`、`bundled`、`path` 或 `url`。
 
@@ -203,7 +238,7 @@ forest.lttheme
 
 字体链接必须直接返回字体文件。指向 CSS 样式表的 Google Fonts 等链接不能作为 `source`；这类高级加载可在可信主题的 `custom_css` 中使用 `@import`，但不建议依赖远程样式表。
 
-## 9. 自定义 CSS
+## 10. 自定义 CSS
 
 `custom_css` 使用 `<style>.textContent` 注入，不会被作为 HTML 解析。主题切换、预览关闭或设计器卸载时，运行时会覆盖或恢复对应样式。
 
@@ -256,7 +291,7 @@ forest.lttheme
 
 例如，`/* @page settings */` 会应用于所有设置分类。页面切换时，运行时会重新生成主题样式，只保留全局 CSS 和当前页面匹配的块。
 
-## 10. 导入、导出和管理
+## 11. 导入、导出和管理
 
 主题设置位于“设置 > 外观”：
 
@@ -269,7 +304,7 @@ forest.lttheme
 
 切换主题或新建主题时，如果当前草稿未保存，设置界面会先要求确认放弃修改。
 
-## 11. 校验和限制
+## 12. 校验和限制
 
 - 主题清单最大 512 KiB，自定义 CSS 最大 128 KiB。
 - `.lttheme` 最大 1 GiB，最多 64 个文件。
@@ -279,7 +314,7 @@ forest.lttheme
 - 本地主题媒体路由要求当前应用会话令牌，并返回 `X-Content-Type-Options: nosniff`。
 - 视频媒体路由声明字节范围支持，允许 WebView 按需读取和拖动播放位置。
 
-## 12. 兼容性规则
+## 13. 兼容性规则
 
 主题读取器只接受明确支持的 `format_version`。未来新增可选字段时会保持同一版本；删除字段、改变字段语义或修改资源布局时将提升版本。
 

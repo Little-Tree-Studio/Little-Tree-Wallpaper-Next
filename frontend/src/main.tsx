@@ -6,6 +6,7 @@ import './index.css';
 import App from './App';
 import { waitForApi } from '@/api/backend';
 import { logError } from '@/lib/log';
+import WindowTitleBar from '@/components/WindowTitleBar';
 
 const BRIDGE_TIMEOUT_MS = 12000;
 
@@ -48,7 +49,9 @@ function BridgeLoader() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col items-center justify-center bg-background text-foreground">
+    <div className="flex h-screen w-screen min-h-0 flex-col bg-background text-foreground">
+      {!window.location.hash.startsWith('#/dynamic/runtime') && <WindowTitleBar title="小树壁纸 Next" />}
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
       <div className="flex flex-col items-center gap-6 rounded-2xl border border-border bg-surface p-10 shadow-lg">
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
           <Sprout size={36} />
@@ -80,11 +83,12 @@ function BridgeLoader() {
               后端服务未响应
             </div>
             <div className="max-w-xs text-center text-sm text-muted">
-              前端无法连接到 pywebview 后端。请确认应用是通过桌面宿主（Python）启动的，而不是直接在浏览器中打开。
+              前端无法连接到 LumiView 后端。请确认应用是通过桌面宿主（Python）启动的，而不是直接在浏览器中打开。
             </div>
             <Button onPress={() => window.location.reload()}>重新连接</Button>
           </>
         )}
+      </div>
       </div>
     </div>
   );

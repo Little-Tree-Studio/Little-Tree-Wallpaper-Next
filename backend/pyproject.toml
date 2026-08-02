@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [
     { name = "Little Tree Studio" },
 ]
-keywords = ["wallpaper", "desktop", "pywebview", "react"]
+keywords = ["wallpaper", "desktop", "lumiview", "react"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
@@ -36,14 +36,13 @@ dependencies = [
     "psutil>=7.2.2",
     "pyperclip>=1.11.0",
     "pystray>=0.19.5",
-    "pywebview>=6.2.1",
     "pywin32>=306; platform_system=='Windows'",
     "requests>=2.34.2",
     "rtoml>=0.12.0",
     "PyYAML>=6.0.2",
     "uvicorn>=0.32.0",
     "windows-toasts>=1.3.1; platform_system=='Windows'",
-    "lumiview",
+    "lumiview>=0.1.0.dev0",
 ]
 
 [project.scripts]

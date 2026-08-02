@@ -38,17 +38,13 @@ class BlockingWindow(FakeWindow):
 
 
 class DynamicWallpaperServiceTests(unittest.TestCase):
-    @patch("backend.services.dynamic_wallpaper.os.name", "nt")
-    def test_hidden_host_handle_is_discovered_without_before_show_event(self) -> None:
-        service = WindowsDynamicWallpaperService()
-        window = FakeWindow()
-        service._native_handle = MagicMock(return_value=1234)
+    def test_runtime_bounds_use_logical_pixels_at_common_dpi_scales(self) -> None:
+        convert = WindowsDynamicWallpaperService._logical_runtime_bounds
 
-        handle = service._wait_for_host_handle(window, timeout=0.1)
-
-        self.assertEqual(handle, 1234)
-        self.assertEqual(service._prepared_window_handle, 1234)
-        self.assertTrue(service._host_ready.is_set())
+        self.assertEqual(convert(0, 0, 1920, 1080, 96), (0, 0, 1920, 1080))
+        self.assertEqual(convert(0, 0, 1920, 1080, 120), (0, 0, 1536, 864))
+        self.assertEqual(convert(0, 0, 1920, 1080, 144), (0, 0, 1280, 720))
+        self.assertEqual(convert(1920, 0, 2560, 1440, 144), (1280, 0, 1707, 960))
 
     def test_stop_releases_media_and_clears_references(self) -> None:
         service = WindowsDynamicWallpaperService()
@@ -119,7 +115,7 @@ class DynamicWallpaperServiceTests(unittest.TestCase):
         service._operation_lock.release()
 
     @patch("backend.services.dynamic_wallpaper.os.name", "nt")
-    def test_running_scene_applies_revision_without_reloading_webview(self) -> None:
+    def test_running_scene_navigates_existing_embedded_webview(self) -> None:
         service = WindowsDynamicWallpaperService()
         window = FakeWindow()
         service._window = window
@@ -132,7 +128,10 @@ class DynamicWallpaperServiceTests(unittest.TestCase):
 
         service._run_scene_start(7, "slideshow")
 
-        self.assertEqual(window.urls, [])
+        self.assertEqual(
+            window.urls,
+            ["http://127.0.0.1:8123/?token=secret#/dynamic/runtime?revision=7"],
+        )
         self.assertEqual(service._last_operation, "switch-scene")
         self.assertEqual(service._runtime_type, "slideshow")
         self.assertFalse(service._operation_lock.locked())
@@ -249,8 +248,18 @@ class DynamicWallpaperServiceTests(unittest.TestCase):
 
         service.control("auto")
 
-        self.assertIn("__ltwPlayer?.auto", window.scripts[0])
+        self.assertIn("__ltwPlayer.auto", window.scripts[0])
         self.assertIn("__ltwDynamicRuntime?.auto", window.scripts[0])
+
+    def test_scene_telemetry_uses_scene_revision(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        service._attached = True
+        service._runtime_revision = 17
+
+        service.update_telemetry({"media_revision": 17, "event": "playing", "paused": False})
+
+        self.assertTrue(service._telemetry["received"])
+        self.assertFalse(service._telemetry["paused"])
 
 
 class BackgroundWallpaperConfirmationTests(unittest.TestCase):
@@ -316,6 +325,7 @@ class DynamicWallpaperAutomationTests(unittest.TestCase):
                 "transition_duration": 900,
                 "shuffle": False,
                 "muted": True,
+                "volume": 1.0,
                 "loop": True,
                 "playback_rate": 1.0,
                 "autoplay": True,
@@ -361,15 +371,13 @@ class DynamicWallpaperWindowLifecycleTests(unittest.TestCase):
         api = BackendAPI.__new__(BackendAPI)
         api.dynamic_wallpaper_service = MagicMock()
         api._dynamic_editor_window = MagicMock()
-        api._dynamic_editor_allow_close = False
         editor = api._dynamic_editor_window
 
         api.shutdown_dynamic_wallpaper()
 
         api.dynamic_wallpaper_service.shutdown.assert_called_once_with()
-        editor.destroy.assert_called_once_with()
+        editor.close.assert_called_once_with()
         self.assertIsNone(api._dynamic_editor_window)
-        self.assertTrue(api._dynamic_editor_allow_close)
 
     def test_scene_normalizes_builtin_widget_content(self) -> None:
         api = BackendAPI.__new__(BackendAPI)
@@ -428,6 +436,65 @@ class DynamicWallpaperWindowLifecycleTests(unittest.TestCase):
         scene = api._normalize_dynamic_scene({"revision": 1_800_000_000_000})
 
         self.assertEqual(scene["revision"], 1_800_000_000_000)
+
+    def test_scene_preserves_new_slideshow_transition(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({"background": {"transition": "iris"}})
+
+        self.assertEqual(scene["background"]["transition"], "iris")
+
+    def test_scene_normalizes_image_overlay_settings(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({
+            "background": {
+                "overlay_effect": "fireflies",
+                "overlay_density": 500,
+                "overlay_speed": 0,
+                "overlay_size": 9,
+                "overlay_opacity": 0,
+                "image_fit": "repeat",
+            },
+        })
+
+        background = scene["background"]
+        self.assertEqual(background["overlay_effect"], "fireflies")
+        self.assertEqual(background["overlay_density"], 120)
+        self.assertEqual(background["overlay_speed"], 0.25)
+        self.assertEqual(background["overlay_size"], 2)
+        self.assertEqual(background["overlay_opacity"], 0.1)
+        self.assertEqual(background["image_fit"], "repeat")
+
+    def test_scene_normalizes_video_volume(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        quiet = api._normalize_dynamic_scene({"background": {"volume": 0.35}})
+        loud = api._normalize_dynamic_scene({"background": {"volume": 5}})
+
+        self.assertEqual(quiet["background"]["volume"], 0.35)
+        self.assertEqual(loud["background"]["volume"], 1)
+
+    def test_saved_slideshow_items_are_resolved_not_persisted(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first.jpg").write_bytes(b"image")
+            api.store = SettingsStore(root / "config.json")
+
+            saved = api.save_dynamic_wallpaper_scene({
+                "background": {
+                    "type": "slideshow",
+                    "source": "folder",
+                    "path": str(root),
+                    "items": ["C:/stale.jpg"],
+                },
+            })
+
+            persisted = api.store.get("wallpaper.dynamic")
+
+        self.assertEqual(saved["background"]["items"], [str((root / "first.jpg").resolve())])
+        self.assertEqual(persisted["background"]["items"], [])
 
     def test_save_advances_from_persisted_revision(self) -> None:
         api = BackendAPI.__new__(BackendAPI)

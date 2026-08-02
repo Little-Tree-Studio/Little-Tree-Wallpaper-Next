@@ -49,6 +49,12 @@ _MAX_CUSTOM_CSS_CHARS = 128 * 1024
 _MAX_PACKAGE_BYTES = 1024 * 1024 * 1024
 _MAX_PACKAGE_FILES = 64
 _MAX_ASSET_BYTES = 768 * 1024 * 1024
+_WINDOW_ICON_ROLES = {
+    "window-minimize": "minimize",
+    "window-maximize": "maximize",
+    "window-restore": "restore",
+    "window-close": "close",
+}
 
 
 DEFAULT_THEME: dict[str, Any] = {
@@ -97,6 +103,23 @@ DEFAULT_THEME: dict[str, Any] = {
         "font_family": '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         "source": None,
     },
+    "window_chrome": {
+        "icons": {
+            "minimize": None,
+            "maximize": None,
+            "restore": None,
+            "close": None,
+        },
+        "close_hover": {
+            "background": None,
+            "foreground": None,
+        },
+    },
+    "navigation_chrome": {
+        "acrylic": False,
+        "background_opacity": 1.0,
+        "backdrop_blur": 0.0,
+    },
     "custom_css": "",
     "created_at": "",
     "updated_at": "",
@@ -128,6 +151,10 @@ def _color(value: Any, field: str) -> str:
     raise ValueError(f"{field} 不是受支持的 CSS 颜色")
 
 
+def _optional_color(value: Any, field: str) -> str | None:
+    return None if value is None else _color(value, field)
+
+
 def _gradient(value: Any) -> str:
     normalized = _string(value, "background.gradient", 2048, allow_empty=False)
     if "url(" in normalized.lower() or not _GRADIENT_RE.fullmatch(normalized):
@@ -143,6 +170,12 @@ def _number(value: Any, field: str, minimum: float, maximum: float) -> float:
     if not minimum <= number <= maximum:
         raise ValueError(f"{field} 超出范围")
     return number
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} 必须是布尔值")
+    return value
 
 
 def _safe_asset_path(root: Path, value: str) -> Path:
@@ -261,6 +294,20 @@ def normalize_theme(
     if "</style" in custom_css.lower():
         raise ValueError("custom_css 包含无效的 style 结束标签")
 
+    window_chrome = value.get("window_chrome", DEFAULT_THEME["window_chrome"])
+    if not isinstance(window_chrome, dict):
+        raise ValueError("window_chrome 必须是对象")
+    window_icons = window_chrome.get("icons", DEFAULT_THEME["window_chrome"]["icons"])
+    if not isinstance(window_icons, dict):
+        raise ValueError("window_chrome.icons 必须是对象")
+    close_hover = window_chrome.get("close_hover", DEFAULT_THEME["window_chrome"]["close_hover"])
+    if not isinstance(close_hover, dict):
+        raise ValueError("window_chrome.close_hover 必须是对象")
+
+    navigation_chrome = value.get("navigation_chrome", DEFAULT_THEME["navigation_chrome"])
+    if not isinstance(navigation_chrome, dict):
+        raise ValueError("navigation_chrome 必须是对象")
+
     normalized = {
         "format": THEME_FORMAT,
         "format_version": THEME_FORMAT_VERSION,
@@ -294,6 +341,43 @@ def normalize_theme(
                 theme_root=theme_root,
                 check_paths=check_paths,
                 allow_installed=True,
+            ),
+        },
+        "window_chrome": {
+            "icons": {
+                slot: _source(
+                    window_icons.get(slot),
+                    f"window_chrome.icons.{slot}",
+                    "image",
+                    theme_root=theme_root,
+                    check_paths=check_paths,
+                )
+                for slot in ("minimize", "maximize", "restore", "close")
+            },
+            "close_hover": {
+                "background": _optional_color(
+                    close_hover.get("background"),
+                    "window_chrome.close_hover.background",
+                ),
+                "foreground": _optional_color(
+                    close_hover.get("foreground"),
+                    "window_chrome.close_hover.foreground",
+                ),
+            },
+        },
+        "navigation_chrome": {
+            "acrylic": _boolean(navigation_chrome.get("acrylic", False), "navigation_chrome.acrylic"),
+            "background_opacity": _number(
+                navigation_chrome.get("background_opacity", 1),
+                "navigation_chrome.background_opacity",
+                0,
+                1,
+            ),
+            "backdrop_blur": _number(
+                navigation_chrome.get("backdrop_blur", 0),
+                "navigation_chrome.backdrop_blur",
+                0,
+                64,
             ),
         },
         "custom_css": custom_css,
@@ -549,16 +633,23 @@ class ThemeService:
 
     def resolve_asset(self, theme_id: str, role: str) -> tuple[Path, str] | None:
         role = str(role).strip().lower()
-        if role not in {"background", "font"}:
+        if role not in {"background", "font", *_WINDOW_ICON_ROLES}:
             return None
         try:
             theme = self.get_theme(theme_id)
         except ValueError:
             return None
-        source = theme["typography"]["source"] if role == "font" else theme["background"]["source"]
+        if role == "font":
+            source = theme["typography"]["source"]
+            asset_role = "font"
+        elif role == "background":
+            source = theme["background"]["source"]
+            asset_role = "video" if theme["background"]["type"] == "video" else "image"
+        else:
+            source = theme["window_chrome"]["icons"][_WINDOW_ICON_ROLES[role]]
+            asset_role = "image"
         if not source or source["mode"] == "url":
             return None
-        asset_role = "font" if role == "font" else ("video" if theme["background"]["type"] == "video" else "image")
         if source["mode"] == "bundled":
             path = _safe_asset_path(self._theme_dir(theme_id), source["value"])
         else:
@@ -636,11 +727,16 @@ class ThemeService:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
                 archive.writestr(THEME_MANIFEST, json.dumps(theme, ensure_ascii=False, indent=2))
                 if theme_id != DEFAULT_THEME_ID:
-                    for role in ("background", "font"):
-                        source = theme["typography"]["source"] if role == "font" else theme["background"]["source"]
+                    sources = [theme["background"]["source"], theme["typography"]["source"]]
+                    sources.extend(theme["window_chrome"]["icons"].values())
+                    archived: set[str] = set()
+                    for source in sources:
                         if source and source["mode"] == "bundled":
+                            if source["value"] in archived:
+                                continue
                             asset = _safe_asset_path(self._theme_dir(theme_id), source["value"])
                             archive.write(asset, source["value"])
+                            archived.add(source["value"])
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)

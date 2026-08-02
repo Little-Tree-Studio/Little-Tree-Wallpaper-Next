@@ -128,6 +128,61 @@ class ThemeServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.save_theme(theme)
 
+    def test_legacy_theme_gets_default_window_and_navigation_chrome(self) -> None:
+        theme = self.custom_theme()
+        theme.pop("window_chrome")
+        theme.pop("navigation_chrome")
+
+        saved = self.service.save_theme(theme)
+
+        self.assertEqual(saved["window_chrome"], DEFAULT_THEME["window_chrome"])
+        self.assertEqual(saved["navigation_chrome"], DEFAULT_THEME["navigation_chrome"])
+
+    def test_window_icon_and_chrome_settings_round_trip_in_package(self) -> None:
+        theme = self.custom_theme()
+        source = Path(self.temporary.name) / "close.png"
+        source.write_bytes(b"window-icon")
+        picked = self.service.pick_asset(theme["id"], "image", "bundled", source)
+        theme["window_chrome"]["icons"]["close"] = picked["source"]
+        theme["window_chrome"]["icons"]["restore"] = picked["source"]
+        theme["window_chrome"]["close_hover"] = {
+            "background": "#AA1122",
+            "foreground": "#FFFFFF",
+        }
+        theme["navigation_chrome"] = {"background_opacity": 0.65, "backdrop_blur": 18}
+        self.service.save_theme(theme)
+
+        package = Path(self.temporary.name) / "chrome.lttheme"
+        self.service.export_theme(theme["id"], package)
+        with zipfile.ZipFile(package) as archive:
+            self.assertEqual(archive.namelist().count(picked["source"]["value"]), 1)
+        imported = self.service.import_theme(package)
+
+        self.assertEqual(
+            imported["navigation_chrome"],
+            {"acrylic": False, "background_opacity": 0.65, "backdrop_blur": 18.0},
+        )
+        self.assertEqual(imported["window_chrome"]["close_hover"]["background"], "#AA1122")
+        resolved = self.service.resolve_asset(imported["id"], "window-close")
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved[0].read_bytes(), b"window-icon")
+
+    def test_rejects_invalid_window_chrome_values(self) -> None:
+        theme = self.custom_theme()
+        theme["navigation_chrome"]["backdrop_blur"] = 65
+        with self.assertRaises(ValueError):
+            self.service.save_theme(theme)
+
+        theme = self.custom_theme("invalid-hover")
+        theme["window_chrome"]["close_hover"]["background"] = "red; color: black"
+        with self.assertRaises(ValueError):
+            self.service.save_theme(theme)
+
+        theme = self.custom_theme("invalid-acrylic")
+        theme["navigation_chrome"]["acrylic"] = "true"
+        with self.assertRaises(ValueError):
+            self.service.save_theme(theme)
+
 
 if __name__ == "__main__":
     unittest.main()

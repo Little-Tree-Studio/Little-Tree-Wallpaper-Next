@@ -12,6 +12,14 @@ import {
 import type { DisplayResolution, DynamicWallpaperScene, DynamicWidgetInstance } from '@/api/backend';
 
 interface CanvasSize { width: number; height: number }
+interface DrawerDrag {
+  type: string;
+  label: string;
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  overCanvas: boolean;
+}
 
 function ContentSettings({ widget, onSettingsChange }: {
   widget: DynamicWidgetInstance;
@@ -90,11 +98,14 @@ export default function DynamicWidgetEditor() {
   const [displayId, setDisplayId] = useState('');
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const [dragStatus, setDragStatus] = useState<{ x: number; y: number } | null>(null);
+  const [drawerDrag, setDrawerDrag] = useState<DrawerDrag | null>(null);
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const desktopCanvasRef = useRef<HTMLDivElement | null>(null);
+  const drawerDragRef = useRef<DrawerDrag | null>(null);
   const editVersionRef = useRef(0);
 
   useEffect(() => {
-    getDynamicWallpaperScene().then(setScene).catch((error: unknown) => {
+    getDynamicWallpaperScene(true).then(setScene).catch((error: unknown) => {
       toast.danger('小组件布局加载失败', { description: error instanceof Error ? error.message : String(error) });
     });
     getDisplayResolutions().then((items) => {
@@ -128,11 +139,41 @@ export default function DynamicWidgetEditor() {
     return () => observer.disconnect();
   }, [display.width, display.height, scene !== null]);
 
-  if (!scene) return <div className="flex h-screen items-center justify-center bg-background"><Spinner /></div>;
+  if (!scene) return <div className="flex size-full items-center justify-center bg-background"><Spinner /></div>;
   const selected = scene.widgets.find((widget) => widget.id === selectedId) ?? null;
   const setWidgets = (widgets: DynamicWidgetInstance[]) => {
     editVersionRef.current += 1;
     setScene((current) => current ? { ...current, widgets } : current);
+  };
+  const isOverCanvas = (clientX: number, clientY: number) => {
+    const rect = desktopCanvasRef.current?.getBoundingClientRect();
+    return Boolean(rect
+      && clientX >= rect.left
+      && clientX <= rect.right
+      && clientY >= rect.top
+      && clientY <= rect.bottom);
+  };
+  const addDrawerWidget = (type: string, clientX: number, clientY: number) => {
+    const definition = definitions.find((item) => item.type === type);
+    const rect = desktopCanvasRef.current?.getBoundingClientRect();
+    if (!definition || !rect || !isOverCanvas(clientX, clientY)) return;
+    const centerX = ((clientX - rect.left) / rect.width) * 100;
+    const centerY = ((clientY - rect.top) / rect.height) * 100;
+    const widget: DynamicWidgetInstance = {
+      id: `widget-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      type,
+      x: Math.round(Math.max(0, Math.min(100 - definition.width, centerX - definition.width / 2))),
+      y: Math.round(Math.max(0, Math.min(100 - definition.height, centerY - definition.height / 2))),
+      width: definition.width,
+      height: definition.height,
+      opacity: 1,
+      background_opacity: 1,
+      background_blur: true,
+      settings: {},
+    };
+    editVersionRef.current += 1;
+    setScene((current) => current ? { ...current, widgets: [...current.widgets, widget] } : current);
+    setSelectedId(widget.id);
   };
   const updateSelected = (updates: Partial<DynamicWidgetInstance>) => {
     if (!selectedId) return;
@@ -178,7 +219,7 @@ export default function DynamicWidgetEditor() {
   };
 
   return (
-    <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
+    <div className="flex size-full min-h-0 flex-col bg-background text-foreground">
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-5">
         <div className="flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"><MonitorUp size={19} /></div>
@@ -199,8 +240,8 @@ export default function DynamicWidgetEditor() {
       </header>
 
       <main className="flex min-h-0 flex-1 gap-4 p-4" inert={pending !== ''} aria-busy={pending !== ''}>
-        <div ref={canvasAreaRef} className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-border bg-surface-secondary">
-          <div className="relative overflow-hidden rounded-xl bg-black shadow-xl ring-1 ring-border" style={{ width: canvasSize.width, height: canvasSize.height }}>
+        <div ref={canvasAreaRef} className={`relative flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border bg-surface-secondary transition-colors ${drawerDrag?.overCanvas ? 'border-primary bg-accent-soft' : 'border-border'}`}>
+          <div ref={desktopCanvasRef} className="relative overflow-hidden rounded-xl bg-black shadow-xl ring-1 ring-border" style={{ width: canvasSize.width, height: canvasSize.height }}>
             <div
               className="absolute left-0 top-0 origin-top-left"
               style={{
@@ -273,24 +314,71 @@ export default function DynamicWidgetEditor() {
             {definitions.map((definition) => {
               const DefinitionIcon = definition.icon;
               return (
-                <Card
+                <div
                   key={definition.type}
-                  draggable
-                  variant="secondary"
-                  className="group w-56 shrink-0 cursor-grab gap-3 p-4 transition-transform active:scale-[0.98] active:cursor-grabbing"
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = 'copy';
-                    event.dataTransfer.setData('application/x-ltw-widget', definition.type);
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`拖动添加${definition.label}`}
+                  className="w-56 shrink-0 cursor-grab touch-none select-none active:cursor-grabbing"
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    const nextDrag = {
+                      type: definition.type,
+                      label: definition.label,
+                      pointerId: event.pointerId,
+                      clientX: event.clientX,
+                      clientY: event.clientY,
+                      overCanvas: isOverCanvas(event.clientX, event.clientY),
+                    };
+                    drawerDragRef.current = nextDrag;
+                    setDrawerDrag(nextDrag);
+                  }}
+                  onPointerMove={(event) => {
+                    const current = drawerDragRef.current;
+                    if (current?.pointerId !== event.pointerId) return;
+                    event.preventDefault();
+                    const nextDrag = {
+                      ...current,
+                      clientX: event.clientX,
+                      clientY: event.clientY,
+                      overCanvas: isOverCanvas(event.clientX, event.clientY),
+                    };
+                    drawerDragRef.current = nextDrag;
+                    setDrawerDrag(nextDrag);
+                  }}
+                  onPointerUp={(event) => {
+                    const current = drawerDragRef.current;
+                    if (current?.pointerId !== event.pointerId) return;
+                    event.preventDefault();
+                    addDrawerWidget(current.type, event.clientX, event.clientY);
+                    drawerDragRef.current = null;
+                    setDrawerDrag(null);
+                  }}
+                  onPointerCancel={() => {
+                    drawerDragRef.current = null;
+                    setDrawerDrag(null);
                   }}
                 >
-                  <div className="flex items-start justify-between gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent"><DefinitionIcon size={17} /></span><div className="min-w-0 flex-1"><Card.Title className="truncate text-sm">{definition.label}</Card.Title><Card.Description className="mt-1 line-clamp-2 text-xs">{definition.description}</Card.Description></div>{definition.pluginId && <Chip size="sm" variant="soft">插件</Chip>}</div>
-                  <div className="text-[11px] text-muted">默认 {definition.width}% x {definition.height}%</div>
-                </Card>
+                  <Card variant="secondary" className="pointer-events-none group gap-3 p-4 transition-transform active:scale-[0.98]">
+                    <div className="flex items-start justify-between gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent"><DefinitionIcon size={17} /></span><div className="min-w-0 flex-1"><Card.Title className="truncate text-sm">{definition.label}</Card.Title><Card.Description className="mt-1 line-clamp-2 text-xs">{definition.description}</Card.Description></div>{definition.pluginId && <Chip size="sm" variant="soft">插件</Chip>}</div>
+                    <div className="text-[11px] text-muted">默认 {definition.width}% x {definition.height}%</div>
+                  </Card>
+                </div>
               );
             })}
           </div>
         </ScrollShadow>
       </section>
+      {drawerDrag && (
+        <div
+          className={`pointer-events-none fixed z-[100] -translate-x-1/2 -translate-y-1/2 rounded-xl border px-4 py-2 text-sm font-medium shadow-xl backdrop-blur ${drawerDrag.overCanvas ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-surface/95 text-foreground'}`}
+          style={{ left: drawerDrag.clientX, top: drawerDrag.clientY }}
+        >
+          {drawerDrag.overCanvas ? `放置 ${drawerDrag.label}` : drawerDrag.label}
+        </div>
+      )}
     </div>
   );
 }

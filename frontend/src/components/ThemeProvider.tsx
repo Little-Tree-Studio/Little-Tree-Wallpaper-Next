@@ -12,7 +12,9 @@ import type {
   ThemeMode,
   ThemePreviewAssets,
   ThemeProfile,
+  ThemeWindowIconSlot,
 } from '@/theme/types';
+import type { ThemeMediaRole } from '@/api/backend';
 
 interface ThemeContextValue {
   theme: ThemeMode;
@@ -50,12 +52,17 @@ function ensureStyle(id: string): HTMLStyleElement {
   return element;
 }
 
-function assetUrl(theme: ThemeProfile, role: 'background' | 'font', preview?: string): string {
+function assetUrl(theme: ThemeProfile, role: ThemeMediaRole, preview?: string): string {
   if (preview) return preview;
-  const source = role === 'font' ? theme.typography.source : theme.background.source;
+  const iconSlot = role.startsWith('window-') ? role.slice(7) as ThemeWindowIconSlot : null;
+  const source = role === 'font'
+    ? theme.typography.source
+    : role === 'background'
+      ? theme.background.source
+      : iconSlot ? theme.window_chrome.icons[iconSlot] : null;
   if (!source || !source.value.trim()) return '';
   if (source.mode === 'installed') return '';
-  return source.mode === 'url' ? source.value : themeMediaUrl(theme.id, role);
+  return source.mode === 'url' ? source.value : themeMediaUrl(theme.id, role, theme.updated_at);
 }
 
 function pageIdFromPath(pathname: string): string {
@@ -124,6 +131,35 @@ function applyTheme(theme: ThemeProfile, resolved: ResolvedTheme, assets: ThemeP
     '--muted-foreground': palette.muted,
   };
   for (const [name, value] of Object.entries(variables)) html.style.setProperty(name, value);
+
+  const iconPreviews: Record<ThemeWindowIconSlot, string | undefined> = {
+    minimize: assets.window_minimize,
+    maximize: assets.window_maximize,
+    restore: assets.window_restore,
+    close: assets.window_close,
+  };
+  for (const slot of ['minimize', 'maximize', 'restore', 'close'] as const) {
+    const url = assetUrl(theme, `window-${slot}`, iconPreviews[slot]);
+    const variable = `--window-icon-${slot}`;
+    if (url) html.style.setProperty(variable, `url(${JSON.stringify(url)})`);
+    else html.style.removeProperty(variable);
+    html.toggleAttribute(`data-window-icon-${slot}`, Boolean(url));
+  }
+  const closeHover = theme.window_chrome.close_hover;
+  if (closeHover.background) html.style.setProperty('--window-close-hover-background', closeHover.background);
+  else html.style.removeProperty('--window-close-hover-background');
+  if (closeHover.foreground) html.style.setProperty('--window-close-hover-foreground', closeHover.foreground);
+  else html.style.removeProperty('--window-close-hover-foreground');
+  html.style.setProperty('--navigation-chrome-opacity', `${theme.navigation_chrome.background_opacity * 100}%`);
+  html.style.setProperty('--navigation-chrome-blur', `${theme.navigation_chrome.backdrop_blur}px`);
+  const nativeAcrylicSupported = /Win|Mac/.test(navigator.platform) && Boolean(window.lumiview?.windowTheme);
+  html.toggleAttribute('data-navigation-acrylic', theme.navigation_chrome.acrylic && nativeAcrylicSupported);
+  const navigationBlur = theme.navigation_chrome.acrylic ? 0 : theme.navigation_chrome.backdrop_blur;
+  const navigationFilter = navigationBlur > 0 ? `blur(${navigationBlur}px)` : 'none';
+  document.querySelectorAll<HTMLElement>('.theme-navigation-chrome').forEach((element) => {
+    element.style.backdropFilter = navigationFilter;
+    element.style.setProperty('-webkit-backdrop-filter', navigationFilter);
+  });
 
   const fontSource = assetUrl(theme, 'font', assets.font);
   const fontStyle = ensureStyle('little-tree-theme-font');
@@ -267,6 +303,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     applyTheme(effectiveTheme, resolvedTheme, previewAssets, pageId);
+    const material = window.lumiview?.windowTheme;
+    if (material) {
+      void material.setAcrylic(effectiveTheme.navigation_chrome.acrylic, resolvedTheme === 'dark')
+        .then((supported) => {
+          document.documentElement.toggleAttribute(
+            'data-navigation-acrylic',
+            effectiveTheme.navigation_chrome.acrylic && supported,
+          );
+        })
+        .catch(() => document.documentElement.removeAttribute('data-navigation-acrylic'));
+    }
     window.dispatchEvent(new Event('ltw:host-theme-applied'));
   }, [effectiveTheme, pageId, previewAssets, resolvedTheme]);
 

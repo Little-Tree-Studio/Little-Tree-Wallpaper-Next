@@ -35,10 +35,12 @@ import PluginPage from '@/plugins/PluginPage';
 import PluginGlobalUI from '@/plugins/PluginGlobalUI';
 import StaticWallpaperGuardProvider from '@/components/StaticWallpaperGuardProvider';
 import TextContextMenu from '@/components/TextContextMenu';
+import WindowTitleBar from '@/components/WindowTitleBar';
 
 function AppContent() {
   const location = useLocation();
   const isWallpaperRuntime = location.pathname === '/dynamic/runtime';
+  const windowTitle = location.pathname === '/dynamic/editor' ? '小组件编辑器' : '小树壁纸 Next';
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
 
   useEffect(() => {
@@ -75,6 +77,9 @@ function AppContent() {
 
   return (
     <ThemeProvider>
+      <div className="relative z-10 flex h-screen w-screen min-h-0 flex-col overflow-hidden">
+        <WindowTitleBar title={windowTitle} />
+        <div className="min-h-0 flex-1">
         <StaticWallpaperGuardProvider>
           <PluginProvider>
             <ImageViewerProvider>
@@ -120,6 +125,8 @@ function AppContent() {
             </ImageViewerProvider>
           </PluginProvider>
         </StaticWallpaperGuardProvider>
+        </div>
+      </div>
     </ThemeProvider>
   );
 }

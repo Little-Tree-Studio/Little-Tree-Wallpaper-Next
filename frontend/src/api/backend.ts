@@ -45,7 +45,7 @@ import type {
 
 // ---------------------------------------------------------------------------
 // Bridge: the frontend talks to the FastAPI backend over HTTP (same origin).
-// A per-session secret token (delivered via the pywebview launch URL) authorizes
+// A per-session secret token (delivered via the LumiView launch URL) authorizes
 // every request via the X-Api-Token header. Same-origin fetch avoids CORS.
 // ---------------------------------------------------------------------------
 const TOKEN_STORAGE_KEY = '__ltw_api_token__';
@@ -80,7 +80,7 @@ const MEDIA_API_PATHS = [
 
 /**
  * Keep media transfers out of the RPC origin's browser connection pool.
- * pywebview launches from 127.0.0.1; localhost reaches the same loopback
+ * LumiView launches from 127.0.0.1; localhost reaches the same loopback
  * server while being scheduled as a separate browser origin.
  */
 function mediaApiUrl(path: string): string {
@@ -908,9 +908,14 @@ export async function exportTheme(themeId: string): Promise<string | null> {
   return call('export_theme', themeId);
 }
 
-export function themeMediaUrl(themeId: string, role: 'background' | 'font'): string {
+export type ThemeMediaRole = 'background' | 'font' | 'window-minimize' | 'window-maximize' | 'window-restore' | 'window-close';
+
+export function themeMediaUrl(themeId: string, role: ThemeMediaRole, version = ''): string {
   const token = readToken();
-  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  const params = new URLSearchParams();
+  if (token) params.set('token', token);
+  if (version) params.set('v', version);
+  const query = params.size ? `?${params.toString()}` : '';
   return mediaApiUrl(`/api/theme-media/${encodeURIComponent(themeId)}/${role}${query}`);
 }
 
@@ -1061,6 +1066,7 @@ export interface DynamicWallpaperStatus {
   running: boolean;
   dynamic_type: DynamicBackgroundType | '';
   runtime_mode: 'raw-video' | 'scene' | '';
+  runtime_revision: number;
   media_path: string;
   media_name: string;
   media_exists: boolean;
@@ -1133,7 +1139,34 @@ export async function controlDynamicWallpaper(action: 'play' | 'pause' | 'auto' 
 
 export type DynamicBackgroundType = 'video' | 'image' | 'slideshow';
 export type DynamicSlideshowSource = 'folder' | 'favorites';
-export type DynamicTransition = 'fade' | 'slide-left' | 'slide-up' | 'zoom' | 'blur' | 'wipe' | 'flip' | 'ken-burns';
+export type DynamicOverlayEffect =
+  | 'none'
+  | 'snow'
+  | 'petals'
+  | 'rain'
+  | 'leaves'
+  | 'fireflies'
+  | 'bubbles'
+  | 'dust'
+  | 'stars';
+export type DynamicImageFit = 'cover' | 'contain' | 'fill' | 'none' | 'scale-down' | 'repeat';
+export type DynamicTransition =
+  | 'fade'
+  | 'slide-left'
+  | 'slide-right'
+  | 'slide-up'
+  | 'slide-down'
+  | 'zoom'
+  | 'zoom-out'
+  | 'blur'
+  | 'wipe'
+  | 'diagonal-wipe'
+  | 'iris'
+  | 'shutter'
+  | 'flip'
+  | 'rotate'
+  | 'grayscale'
+  | 'ken-burns';
 
 export interface DynamicBackgroundConfig {
   type: DynamicBackgroundType;
@@ -1146,9 +1179,16 @@ export interface DynamicBackgroundConfig {
   transition_duration: number;
   shuffle: boolean;
   muted: boolean;
+  volume: number;
   loop: boolean;
   playback_rate: number;
   autoplay: boolean;
+  image_fit: DynamicImageFit;
+  overlay_effect: DynamicOverlayEffect;
+  overlay_density: number;
+  overlay_speed: number;
+  overlay_size: number;
+  overlay_opacity: number;
 }
 
 export interface DynamicWidgetInstance {
@@ -1176,6 +1216,25 @@ export async function selectDynamicWallpaperImage(): Promise<string | null> {
 
 export async function getDynamicWallpaperScene(resolveItems = false): Promise<DynamicWallpaperScene> {
   return call('get_dynamic_wallpaper_scene', resolveItems);
+}
+
+export async function resolveDynamicWallpaperScene(scene: DynamicWallpaperScene): Promise<DynamicWallpaperScene> {
+  return call('resolve_dynamic_wallpaper_scene', scene);
+}
+
+export async function reportDynamicWallpaperTelemetry(payload: {
+  media_revision: number;
+  event: string;
+  paused: boolean;
+  ended?: boolean;
+}): Promise<void> {
+  await waitForApi();
+  const response = await fetch('/api/dynamic-wallpaper/telemetry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error('动态壁纸运行状态上报失败');
 }
 
 export async function getDynamicWallpaperCatalog(): Promise<{ favorite_folders: FavoriteFolder[] }> {
@@ -1207,6 +1266,7 @@ export async function closeDynamicWidgetEditor(): Promise<boolean> {
 
 export function dynamicWallpaperAssetUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith('/api/')) return mediaApiUrl(path);
   const token = readToken();
   const query = `path=${encodeURIComponent(path)}${token ? `&token=${token}` : ''}`;
   return mediaApiUrl(`/api/dynamic-wallpaper/asset?${query}`);

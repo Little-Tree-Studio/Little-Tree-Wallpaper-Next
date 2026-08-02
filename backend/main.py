@@ -1,7 +1,7 @@
 """Application entry point.
 
 Starts a FastAPI backend (uvicorn) bound to ``127.0.0.1`` on a random free port
-(so it is never exposed to the network), then opens a pywebview window pointed
+(so it is never exposed to the network), then opens a LumiView window pointed
 at the backend. The frontend receives a per-session secret token via the launch
 URL and uses it to authorize all API calls.
 """
@@ -20,16 +20,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import uvicorn
-import webview
-from loguru import logger
-
 sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
+
+from backend.webview_config import configure_webview2_gesture_arguments  # noqa: E402
+
+configure_webview2_gesture_arguments()
+
+import uvicorn
+from loguru import logger
+from lumiview import CloseBehavior
 
 from backend.api import BackendAPI  # noqa: E402
 from backend.app_meta import APP_NAME, BUILD_TIME, GIT_COMMIT, VERSION  # noqa: E402
 from backend.logging_setup import LOG_DIR  # noqa: E402
 from backend.logging_setup import configure as configure_logging
+from backend.lumiview_host import LumiViewHost  # noqa: E402
 from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir  # noqa: E402
 from backend.server import create_app  # noqa: E402
 from backend.tray import ApplicationTray  # noqa: E402
@@ -210,7 +215,6 @@ def _start_backend(api: BackendAPI, token: str, port: int) -> uvicorn.Server:
 
 
 def _resolve_icon(frontend_dir: Path) -> str | None:
-    # pywebview on Windows requires an .ico; other platforms accept .png.
     ico = frontend_dir / "logo.ico"
     if ico.exists():
         return str(ico)
@@ -262,58 +266,81 @@ def main() -> None:
         # The token is delivered to the frontend via the launch URL; the React app
         # reads it once, stores it in sessionStorage and strips it from the bar.
         launch_url = f"{base_url}/?token={token}"
-        logger.info("Launching pywebview window at {}", base_url)
+        logger.info("Launching LumiView window at {}", base_url)
 
         try:
-            main_window = webview.create_window(
-                title=APP_NAME,
-                url=launch_url,
-                width=1200,
-                height=800,
-                min_size=(800, 600),
-                text_select=True,
-            )
-            dynamic_host = webview.create_window(
-                title="Little Tree Dynamic Wallpaper Host",
-                html="<!doctype html><html><body style='margin:0;background:#000'></body></html>",
-                width=800,
-                height=450,
-                resizable=False,
-                hidden=True,
-                frameless=True,
-                easy_drag=False,
-                shadow=False,
-                focus=False,
-                background_color="#000000",
-                text_select=False,
-            )
-            widget_editor = webview.create_window(
-                title="小组件编辑器",
-                html="<!doctype html><html><body style='margin:0;background:#111'></body></html>",
-                width=1120,
-                height=760,
-                min_size=(800, 600),
-                hidden=True,
-                text_select=True,
-            )
-            api.configure_dynamic_wallpaper_runtime(base_url, token, dynamic_host)
-            editor_url = f"{base_url}/?token={token}#/dynamic/editor"
-            api.configure_dynamic_editor_runtime(widget_editor, editor_url)
-            tray = ApplicationTray(
-                api=api,
-                launch_url=launch_url,
-                title=APP_NAME,
-                icon_path=_resolve_icon(frontend_dir),
-                dynamic_host=dynamic_host,
-                on_quit=lambda: setattr(server, "should_exit", True),
-            )
-            api._configure_desktop_notifications(tray.notify)
-            tray.attach_main_window(main_window)
-            def start_background_runtime() -> None:
-                api.start_automation_runtime()
-                tray.start()
+            host = LumiViewHost(APP_NAME, str(get_cache_dir() / "webview"))
+            runtime_error: list[BaseException] = []
 
-            webview.start(start_background_runtime, debug=True, icon=_resolve_icon(frontend_dir))
+            async def start_runtime() -> None:
+                try:
+                    icon_path = _resolve_icon(frontend_dir)
+                    main_window = await host.create_window_async(
+                        title=APP_NAME,
+                        url=launch_url,
+                        width=1200,
+                        height=800,
+                        min_size=(800, 600),
+                        icon=icon_path,
+                        devtools=True,
+                        frameless=True,
+                    )
+                    logger.info("LumiView main window created")
+                    widget_editor = await host.create_window_async(
+                        title="小组件编辑器",
+                        html="<!doctype html><html><body style='margin:0;background:#111'></body></html>",
+                        width=1120,
+                        height=760,
+                        min_size=(800, 600),
+                        hidden=True,
+                        icon=icon_path,
+                        close_behavior=CloseBehavior.Hide,
+                        frameless=True,
+                    )
+                    logger.info("LumiView widget editor created")
+                    api.configure_dynamic_wallpaper_runtime(
+                        base_url,
+                        token,
+                        host.create_embedded_webview,
+                    )
+                    editor_url = f"{base_url}/?token={token}#/dynamic/editor"
+                    api.configure_dynamic_editor_runtime(widget_editor, editor_url)
+
+                    def create_main_window() -> Any:
+                        return host.create_window(
+                            title=APP_NAME,
+                            url=launch_url,
+                            width=1200,
+                            height=800,
+                            min_size=(800, 600),
+                            icon=icon_path,
+                            devtools=True,
+                            frameless=True,
+                        )
+
+                    def stop_runtime() -> None:
+                        server.should_exit = True
+                        host.exit()
+
+                    tray = ApplicationTray(
+                        api=api,
+                        title=APP_NAME,
+                        icon_path=icon_path,
+                        create_main_window=create_main_window,
+                        on_quit=stop_runtime,
+                    )
+                    api._configure_desktop_notifications(tray.notify)
+                    tray.attach_main_window(main_window)
+                    api.start_automation_runtime()
+                    tray.start()
+                except BaseException as exc:
+                    logger.exception("LumiView runtime initialization failed: {}", exc)
+                    runtime_error.append(exc)
+                    host.exit()
+
+            host.run(start_runtime)
+            if runtime_error:
+                raise runtime_error[0]
         except Exception as exc:
             report_path = _generate_crash_report()
             logger.error("Window runtime error: {}. Crash report: {}", exc, report_path)

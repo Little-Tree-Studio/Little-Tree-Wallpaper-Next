@@ -42,6 +42,22 @@ export interface ThemeTypography {
   source: ThemeAssetSource | null;
 }
 
+export type ThemeWindowIconSlot = 'minimize' | 'maximize' | 'restore' | 'close';
+
+export interface ThemeWindowChrome {
+  icons: Record<ThemeWindowIconSlot, ThemeAssetSource | null>;
+  close_hover: {
+    background: string | null;
+    foreground: string | null;
+  };
+}
+
+export interface ThemeNavigationChrome {
+  acrylic: boolean;
+  background_opacity: number;
+  backdrop_blur: number;
+}
+
 export interface ThemeProfile {
   format: 'little-tree-theme';
   format_version: 1;
@@ -53,6 +69,8 @@ export interface ThemeProfile {
   colors: ThemeColors;
   background: ThemeBackground;
   typography: ThemeTypography;
+  window_chrome: ThemeWindowChrome;
+  navigation_chrome: ThemeNavigationChrome;
   custom_css: string;
   created_at: string;
   updated_at: string;
@@ -81,6 +99,10 @@ export interface ThemeAssetSelection {
 export interface ThemePreviewAssets {
   background?: string;
   font?: string;
+  window_minimize?: string;
+  window_maximize?: string;
+  window_restore?: string;
+  window_close?: string;
 }
 
 export interface ActiveThemeResponse {

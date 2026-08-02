@@ -46,6 +46,23 @@ export const DEFAULT_THEME: ThemeProfile = {
     font_family: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     source: null,
   },
+  window_chrome: {
+    icons: {
+      minimize: null,
+      maximize: null,
+      restore: null,
+      close: null,
+    },
+    close_hover: {
+      background: null,
+      foreground: null,
+    },
+  },
+  navigation_chrome: {
+    acrylic: false,
+    background_opacity: 1,
+    backdrop_blur: 0,
+  },
   custom_css: '',
   created_at: '',
   updated_at: '',

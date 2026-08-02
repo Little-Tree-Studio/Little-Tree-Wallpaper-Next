@@ -115,7 +115,7 @@ class BackendAPI:
         self._api_token: str | None = None
         self._dynamic_editor_window: Any | None = None
         self._dynamic_editor_url = ""
-        self._dynamic_editor_allow_close = False
+        self._dynamic_preview_assets: set[str] = set()
         self._pending_wallpaper_lock = threading.RLock()
         self._pending_static_wallpaper: dict[str, Any] | None = None
         self._desktop_notify: Callable[[str, str], None] | None = None
@@ -208,7 +208,7 @@ class BackendAPI:
             ("dynamic_wallpaper", "/video_action"): ["auto", "play", "pause"],
             ("dynamic_wallpaper", "/slideshow_action"): ["next", "previous"],
             ("dynamic_wallpaper", "/source"): ["folder", "favorites"],
-            ("dynamic_wallpaper", "/transition"): ["fade", "slide-left", "slide-up", "zoom", "blur", "wipe", "flip", "ken-burns"],
+            ("dynamic_wallpaper", "/transition"): ["fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom", "zoom-out", "blur", "wipe", "diagonal-wipe", "iris", "shutter", "flip", "rotate", "grayscale", "ken-burns"],
         }
         options = static_options.get((node_type, pointer))
         if node_type == "fetch_resource" and pointer == "/source_id":
@@ -513,21 +513,17 @@ class BackendAPI:
         """Inject the per-session token used to authorize preview URLs."""
         self._api_token = token
 
-    def configure_dynamic_wallpaper_runtime(self, base_url: str, token: str, host_window: Any | None = None) -> None:
-        self.dynamic_wallpaper_service.configure(base_url, token, host_window)
+    def configure_dynamic_wallpaper_runtime(
+        self,
+        base_url: str,
+        token: str,
+        runtime_factory: Callable[..., Any] | None = None,
+    ) -> None:
+        self.dynamic_wallpaper_service.configure(base_url, token, runtime_factory)
 
     def configure_dynamic_editor_runtime(self, editor_window: Any | None, editor_url: str) -> None:
         self._dynamic_editor_window = editor_window
         self._dynamic_editor_url = str(editor_url)
-        self._dynamic_editor_allow_close = False
-        if editor_window is not None:
-            def hide_editor(*_args: Any) -> bool | None:
-                if self._dynamic_editor_allow_close:
-                    return None
-                with contextlib.suppress(Exception):
-                    editor_window.hide()
-                return False
-            editor_window.events.closing += hide_editor
 
     def _configure_desktop_notifications(
         self,
@@ -542,10 +538,9 @@ class BackendAPI:
         self.dynamic_wallpaper_service.shutdown()
         editor = self._dynamic_editor_window
         self._dynamic_editor_window = None
-        self._dynamic_editor_allow_close = True
         if editor is not None:
             with contextlib.suppress(Exception):
-                editor.destroy()
+                editor.close()
 
     def shutdown_automation(self) -> None:
         self.automation_service.shutdown()
@@ -1733,7 +1728,7 @@ class BackendAPI:
             )
             if sys.platform == "win32":
                 # Prefer pywin32 when available; it handles window/thread
-                # clipboard ownership correctly inside pywebview.
+                # clipboard ownership correctly inside the embedded WebView.
                 try:
                     return self._copy_image_to_clipboard_win32_pywin32(image)
                 except Exception as exc:  # noqa: BLE001
@@ -2775,8 +2770,14 @@ class BackendAPI:
         if source not in {"folder", "favorites"}:
             source = "folder"
         transition = str(background_raw.get("transition") or "fade")
-        if transition not in {"fade", "slide-left", "slide-up", "zoom", "blur", "wipe", "flip", "ken-burns"}:
+        if transition not in {"fade", "slide-left", "slide-right", "slide-up", "slide-down", "zoom", "zoom-out", "blur", "wipe", "diagonal-wipe", "iris", "shutter", "flip", "rotate", "grayscale", "ken-burns"}:
             transition = "fade"
+        overlay_effect = str(background_raw.get("overlay_effect") or "none")
+        if overlay_effect not in {"none", "snow", "petals", "rain", "leaves", "fireflies", "bubbles", "dust", "stars"}:
+            overlay_effect = "none"
+        image_fit = str(background_raw.get("image_fit") or "cover")
+        if image_fit not in {"cover", "contain", "fill", "none", "scale-down", "repeat"}:
+            image_fit = "cover"
         path = str(background_raw.get("path") or "").strip()
         items = background_raw.get("items") if isinstance(background_raw.get("items"), list) else []
         stable_items: list[str] = []
@@ -2883,9 +2884,16 @@ class BackendAPI:
                 "transition_duration": int(self._bounded_number(background_raw.get("transition_duration"), 900, 100, 5000)),
                 "shuffle": bool(background_raw.get("shuffle", False)),
                 "muted": bool(background_raw.get("muted", True)),
+                "volume": self._bounded_number(background_raw.get("volume"), 1, 0, 1),
                 "loop": bool(background_raw.get("loop", True)),
                 "playback_rate": self._bounded_number(background_raw.get("playback_rate"), 1, 0.25, 4),
                 "autoplay": bool(background_raw.get("autoplay", True)),
+                "image_fit": image_fit,
+                "overlay_effect": overlay_effect,
+                "overlay_density": int(self._bounded_number(background_raw.get("overlay_density"), 36, 8, 120)),
+                "overlay_speed": self._bounded_number(background_raw.get("overlay_speed"), 1, 0.25, 3),
+                "overlay_size": self._bounded_number(background_raw.get("overlay_size"), 1, 0.5, 2),
+                "overlay_opacity": self._bounded_number(background_raw.get("overlay_opacity"), 0.8, 0.1, 1),
             },
             "widgets": widgets,
             "revision": revision,
@@ -2898,7 +2906,7 @@ class BackendAPI:
             result: list[str] = []
             for item in hydrated:
                 candidate = str(item.get("local_path") or item.get("source_url") or item.get("preview_url") or "")
-                if Path(urlparse(candidate).path).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES:
+                if candidate.startswith(("http://", "https://", "/api/")) or Path(candidate).suffix.lower() in SUPPORTED_IMAGE_SUFFIXES:
                     result.append(candidate)
             return result
         folder = Path(str(background.get("path") or "")).expanduser()
@@ -2914,6 +2922,17 @@ class BackendAPI:
         scene = self._normalize_dynamic_scene(self.store.get("wallpaper.dynamic", {}))
         if resolve_items and scene["background"]["type"] == "slideshow":
             scene["background"]["items"] = self._dynamic_slideshow_items(scene["background"])
+        return scene
+
+    def resolve_dynamic_wallpaper_scene(self, value: Any) -> dict[str, Any]:
+        scene = self._normalize_dynamic_scene(value)
+        if scene["background"]["type"] == "slideshow":
+            scene["background"]["items"] = self._dynamic_slideshow_items(scene["background"])
+        self._dynamic_preview_assets = {
+            item
+            for item in (scene["background"]["path"], *scene["background"]["items"])
+            if item and not str(item).startswith(("http://", "https://"))
+        }
         return scene
 
     def get_dynamic_wallpaper_catalog(self) -> dict[str, Any]:
@@ -2941,8 +2960,10 @@ class BackendAPI:
                 scene["revision"] + 1,
                 int(datetime.now().timestamp() * 1000),
             )
-            self.store.set("wallpaper.dynamic", scene)
-        return self.get_dynamic_wallpaper_scene()
+            stored_scene = self._normalize_dynamic_scene(scene)
+            stored_scene["background"]["items"] = []
+            self.store.set("wallpaper.dynamic", stored_scene)
+        return self.get_dynamic_wallpaper_scene(resolve_items=True)
 
     def start_dynamic_wallpaper_scene(self, value: Any | None = None) -> dict[str, Any]:
         scene = self.save_dynamic_wallpaper_scene(value) if value is not None else self.get_dynamic_wallpaper_scene()
@@ -3061,7 +3082,11 @@ class BackendAPI:
 
     def resolve_dynamic_scene_asset(self, path: str) -> tuple[Path, str] | None:
         scene = self.get_dynamic_wallpaper_scene(resolve_items=True)
-        allowed = {scene["background"]["path"], *scene["background"]["items"]}
+        allowed = {
+            scene["background"]["path"],
+            *scene["background"]["items"],
+            *getattr(self, "_dynamic_preview_assets", set()),
+        }
         candidate = str(Path(str(path)).expanduser().resolve(strict=False))
         if candidate not in {str(Path(item).expanduser().resolve(strict=False)) for item in allowed if item}:
             return None

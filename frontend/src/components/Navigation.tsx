@@ -71,11 +71,7 @@ export default function Navigation({ activeRoute, onChange, className = '' }: Na
   };
 
   return (
-    <nav className={`flex w-16 flex-col items-center gap-2 border-r border-border bg-surface-secondary py-3 ${className}`}>
-      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg overflow-hidden">
-        <img src="./logo.png" alt="小树壁纸" className="h-full w-full object-cover" />
-      </div>
-
+    <nav className={`theme-navigation-chrome flex w-14 flex-col items-center gap-2 py-3 ${className}`}>
       <ScrollShadow hideScrollBar className="flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-x-hidden">
           {[...items, ...pluginItems].map((item) => {
             const isPlugin = item.icon === Puzzle;

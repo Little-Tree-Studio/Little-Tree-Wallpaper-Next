@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Chip, Input, Label, ListBox, Select, Spinner, Switch, Tooltip, toast } from '@heroui/react';
-import { Bug, FolderOpen, Image, Images, MonitorPlay, Pause, Play, Puzzle, RefreshCw, Settings2, Square, Video } from 'lucide-react';
+import { Alert, Button, Card, Chip, Input, Label, ListBox, Select, Slider, Spinner, Switch, Tag, TagGroup, Tabs, Tooltip, toast } from '@heroui/react';
+import { Bug, Circle, CloudRain, Flower2, FolderOpen, Image, Images, Leaf, MonitorPlay, Pause, Play, Puzzle, RefreshCw, Settings2, Snowflake, Sparkle, Sparkles, Square, SunDim, Video } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import DynamicDesktop, { DesktopPreviewOverlay } from '@/components/DynamicDesktop';
 import {
@@ -10,23 +10,65 @@ import {
   getDynamicWallpaperScene,
   getDynamicWallpaperStatus,
   openDynamicWidgetEditor,
+  resolveDynamicWallpaperScene,
   saveDynamicWallpaperScene,
   selectAutomationDirectory,
   selectDynamicWallpaperImage,
   selectDynamicWallpaperMedia,
   stopDynamicWallpaper,
 } from '@/api/backend';
-import type { DisplayResolution, DynamicBackgroundType, DynamicTransition, DynamicWallpaperScene, DynamicWallpaperStatus } from '@/api/backend';
+import type { DisplayResolution, DynamicBackgroundType, DynamicImageFit, DynamicOverlayEffect, DynamicTransition, DynamicWallpaperScene, DynamicWallpaperStatus } from '@/api/backend';
 
 const TRANSITIONS: { id: DynamicTransition; label: string; description: string }[] = [
   { id: 'fade', label: '柔和淡入', description: '经典交叉淡化' },
   { id: 'slide-left', label: '横向推入', description: '从右向左推进' },
+  { id: 'slide-right', label: '反向推入', description: '从左向右推进' },
   { id: 'slide-up', label: '向上揭幕', description: '从底部推入画面' },
+  { id: 'slide-down', label: '向下揭幕', description: '从顶部推入画面' },
   { id: 'zoom', label: '镜头拉近', description: '缩放并淡入' },
+  { id: 'zoom-out', label: '镜头拉远', description: '由远及近展开画面' },
   { id: 'blur', label: '清晰聚焦', description: '由模糊变清晰' },
   { id: 'wipe', label: '光幕擦除', description: '横向揭开新画面' },
+  { id: 'diagonal-wipe', label: '斜向擦除', description: '沿对角线揭开画面' },
+  { id: 'iris', label: '圆形展开', description: '从画面中心向外展开' },
+  { id: 'shutter', label: '中央展开', description: '从中央向两侧打开' },
   { id: 'flip', label: '空间翻页', description: '轻微透视翻转' },
+  { id: 'rotate', label: '旋转入场', description: '轻微旋转并稳定画面' },
+  { id: 'grayscale', label: '黑白显色', description: '从黑白逐渐恢复色彩' },
   { id: 'ken-burns', label: '漫游镜头', description: '缓慢平移与缩放' },
+];
+
+const OVERLAY_EFFECTS: { id: DynamicOverlayEffect; label: string; description: string }[] = [
+  { id: 'none', label: '无叠加', description: '只显示原始图片' },
+  { id: 'snow', label: '飘雪', description: '柔和雪粒缓慢落下' },
+  { id: 'petals', label: '飘花', description: '花瓣旋转飘落' },
+  { id: 'rain', label: '细雨', description: '细密雨丝快速划过' },
+  { id: 'leaves', label: '落叶', description: '秋叶摇曳旋转落下' },
+  { id: 'fireflies', label: '萤火', description: '暖色微光随机漂浮' },
+  { id: 'bubbles', label: '气泡', description: '透明气泡缓慢上升' },
+  { id: 'dust', label: '浮尘', description: '细小光尘安静游动' },
+  { id: 'stars', label: '星光', description: '星点闪烁并轻微漂移' },
+];
+
+const OVERLAY_ICONS = {
+  none: Image,
+  snow: Snowflake,
+  petals: Flower2,
+  rain: CloudRain,
+  leaves: Leaf,
+  fireflies: SunDim,
+  bubbles: Circle,
+  dust: Sparkles,
+  stars: Sparkle,
+} satisfies Record<DynamicOverlayEffect, typeof Image>;
+
+const IMAGE_FITS: { id: DynamicImageFit; label: string; description: string }[] = [
+  { id: 'cover', label: '覆盖裁剪', description: '铺满画面，必要时裁剪边缘' },
+  { id: 'contain', label: '完整适应', description: '完整显示图片，保留留白' },
+  { id: 'fill', label: '拉伸填满', description: '拉伸到整个画面尺寸' },
+  { id: 'scale-down', label: '智能缩小', description: '过大时缩小，避免放大原图' },
+  { id: 'none', label: '原始尺寸', description: '按图片原始像素居中显示' },
+  { id: 'repeat', label: '平铺重复', description: '以原始尺寸重复铺满画面' },
 ];
 
 function sourceLabel(type: DynamicBackgroundType): string {
@@ -41,6 +83,7 @@ export default function DynamicWallpaper() {
   const [display, setDisplay] = useState<DisplayResolution | null>(null);
   const [pending, setPending] = useState('');
   const polling = useRef(false);
+  const resolveRequest = useRef(0);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const [previewWidth, setPreviewWidth] = useState(0);
 
@@ -52,7 +95,7 @@ export default function DynamicWallpaper() {
 
   useEffect(() => {
     let cancelled = false;
-    getDynamicWallpaperScene().then((next) => !cancelled && setScene(next))
+    getDynamicWallpaperScene(true).then((next) => !cancelled && setScene(next))
       .catch((error: unknown) => toast.danger('动态场景加载失败', { description: error instanceof Error ? error.message : String(error) }));
     getDynamicWallpaperStatus().then((next) => !cancelled && setStatus(next))
       .catch((error: unknown) => toast.danger('动态服务状态读取失败', { description: error instanceof Error ? error.message : String(error) }));
@@ -87,9 +130,25 @@ export default function DynamicWallpaper() {
   }, [display?.width, display?.height, scene !== null, status !== null]);
 
   if (!scene || !status) return <div className="flex h-full items-center justify-center"><Spinner /></div>;
-  const updateBackground = (updates: Partial<DynamicWallpaperScene['background']>) => setScene((current) => (
-    current ? { ...current, background: { ...current.background, ...updates } } : current
-  ));
+  const updateBackground = (updates: Partial<DynamicWallpaperScene['background']>, resolvePreview = false) => {
+    const next = { ...scene, background: { ...scene.background, ...updates } };
+    setScene(next);
+    if (!resolvePreview) return;
+    if (next.background.type === 'slideshow' && next.background.source === 'favorites' && !next.background.folder_id) return;
+    const request = ++resolveRequest.current;
+    void resolveDynamicWallpaperScene(next).then((resolved) => {
+      if (request !== resolveRequest.current) return;
+      if (next.background.type !== 'slideshow') return;
+      setScene((current) => current ? {
+        ...current,
+        background: { ...current.background, items: resolved.background.items },
+      } : current);
+    }).catch((error: unknown) => {
+      if (request === resolveRequest.current) {
+        toast.warning('轮播预览加载失败', { description: error instanceof Error ? error.message : String(error) });
+      }
+    });
+  };
 
   const withLatestWidgets = async () => {
     const latest = await getDynamicWallpaperScene();
@@ -103,7 +162,7 @@ export default function DynamicWallpaper() {
       if (scene.background.type === 'video') path = await selectDynamicWallpaperMedia();
       else if (scene.background.type === 'image') path = await selectDynamicWallpaperImage();
       else if (scene.background.source === 'folder') path = await selectAutomationDirectory();
-      if (path) updateBackground({ path });
+      if (path) updateBackground({ path, items: [] }, true);
     } finally { setPending(''); }
   };
 
@@ -200,70 +259,181 @@ export default function DynamicWallpaper() {
 
         <Card className="min-w-0 gap-4 p-5">
           <Card.Header><Card.Title>底图</Card.Title><Card.Description>选择桌面场景的基础视觉层。</Card.Description></Card.Header>
-          <Card.Content className="min-w-0 space-y-5">
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                ['video', Video, '视频'], ['image', Image, '图片'], ['slideshow', Images, '轮播'],
-              ] as const).map(([type, Icon, label]) => (
-                <Button key={type} variant={scene.background.type === type ? 'primary' : 'secondary'} onPress={() => updateBackground({ type })}><Icon size={17} />{label}</Button>
-              ))}
-            </div>
-
-            {scene.background.type === 'slideshow' && (
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant={scene.background.source === 'folder' ? 'primary' : 'secondary'} onPress={() => updateBackground({ source: 'folder', folder_id: '' })}><FolderOpen size={16} />文件夹</Button>
-                <Button variant={scene.background.source === 'favorites' ? 'primary' : 'secondary'} onPress={() => updateBackground({ source: 'favorites', path: '' })}><Images size={16} />收藏夹</Button>
-              </div>
-            )}
-
-            {scene.background.type === 'slideshow' && scene.background.source === 'favorites' ? (
-              <Select className="min-w-0 w-full" value={scene.background.folder_id} onChange={(key) => updateBackground({ folder_id: String(key) })} placeholder={favoriteFolders.length ? '选择收藏夹' : '正在读取收藏夹...'}>
-                <Label>轮播收藏夹</Label>
-                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                <Select.Popover><ListBox>{favoriteFolders.map((folder) => <ListBox.Item key={folder.id} id={folder.id} textValue={folder.name}>{folder.name}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
-              </Select>
-            ) : (
-              <div className="space-y-2">
-                <Label>{scene.background.type === 'video' ? '视频文件' : scene.background.type === 'image' ? '图片文件' : '图片文件夹'}</Label>
-                <div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" variant="secondary" value={scene.background.path} readOnly placeholder="尚未选择" /><Button className="shrink-0" variant="secondary" onPress={selectSource} isPending={pending === 'pick'}><FolderOpen size={16} />浏览</Button></div>
-              </div>
-            )}
-
-            {scene.background.type === 'video' && (
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Switch isSelected={scene.background.muted} onChange={(muted) => updateBackground({ muted })}><Switch.Content><span className="text-sm font-medium">静音播放</span></Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
-                <Switch isSelected={scene.background.loop} onChange={(loop) => updateBackground({ loop })}><Switch.Content><span className="text-sm font-medium">循环播放</span></Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
-              </div>
-            )}
-
-            {scene.background.type === 'slideshow' && (
-              <>
+          <Card.Content className="min-w-0">
+            <Tabs
+              className="w-full"
+              selectedKey={scene.background.type}
+              onSelectionChange={(key) => {
+                const type = String(key) as DynamicBackgroundType;
+                updateBackground({ type, items: type === 'slideshow' ? [] : scene.background.items }, type === 'slideshow');
+              }}
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="底图类型" className="w-full">
+                  <Tabs.Tab id="video"><Video size={17} />视频<Tabs.Indicator /></Tabs.Tab>
+                  <Tabs.Tab id="image"><Image size={17} />图片<Tabs.Indicator /></Tabs.Tab>
+                  <Tabs.Tab id="slideshow"><Images size={17} />轮播<Tabs.Indicator /></Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+              <Tabs.Panel id="video" className="space-y-5 pt-5">
+                <div className="space-y-2"><Label>视频文件</Label><div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" variant="secondary" value={scene.background.path} readOnly placeholder="尚未选择" /><Button className="shrink-0" variant="secondary" onPress={selectSource} isPending={pending === 'pick'}><FolderOpen size={16} />浏览</Button></div></div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Switch isSelected={scene.background.muted} onChange={(muted) => updateBackground({ muted })}><Switch.Content><span className="text-sm font-medium">静音播放</span></Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                  <Switch isSelected={scene.background.loop} onChange={(loop) => updateBackground({ loop })}><Switch.Content><span className="text-sm font-medium">循环播放</span></Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                </div>
+                {!scene.background.muted && (
+                  <Slider
+                    value={scene.background.volume}
+                    minValue={0}
+                    maxValue={1}
+                    step={0.05}
+                    formatOptions={{ style: 'percent' }}
+                    onChange={(value) => updateBackground({ volume: Number(value) })}
+                  >
+                    <Label>播放音量</Label>
+                    <Slider.Output />
+                    <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                  </Slider>
+                )}
+              </Tabs.Panel>
+              <Tabs.Panel id="image" className="space-y-5 pt-5">
+                <div className="space-y-2"><Label>图片文件</Label><div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" variant="secondary" value={scene.background.path} readOnly placeholder="尚未选择" /><Button className="shrink-0" variant="secondary" onPress={selectSource} isPending={pending === 'pick'}><FolderOpen size={16} />浏览</Button></div></div>
+                <Select className="min-w-0 w-full" value={scene.background.image_fit} onChange={(key) => updateBackground({ image_fit: String(key) as DynamicImageFit })}>
+                  <Label>填充方式</Label>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {IMAGE_FITS.map((fit) => (
+                        <ListBox.Item key={fit.id} id={fit.id} textValue={fit.label}>
+                          <div className="flex min-w-0 flex-1 flex-col"><Label>{fit.label}</Label><span className="text-xs text-muted">{fit.description}</span></div>
+                          <ListBox.ItemIndicator />
+                        </ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+              </Tabs.Panel>
+              <Tabs.Panel id="slideshow" className="space-y-5 pt-5">
+                <TagGroup
+                  aria-label="轮播来源"
+                  selectionMode="single"
+                  selectedKeys={new Set([scene.background.source])}
+                  onSelectionChange={(keys) => {
+                    if (keys === 'all') return;
+                    const source = Array.from(keys)[0];
+                    if (source === 'folder') updateBackground({ source, folder_id: '', items: [] }, true);
+                    if (source === 'favorites') updateBackground({ source, path: '', items: [] }, true);
+                  }}
+                >
+                  <Label>轮播来源</Label>
+                  <TagGroup.List>
+                    <Tag id="folder"><FolderOpen size={15} />文件夹</Tag>
+                    <Tag id="favorites"><Images size={15} />收藏夹</Tag>
+                  </TagGroup.List>
+                </TagGroup>
+                {scene.background.source === 'favorites' ? (
+                  <Select
+                    className="min-w-0 w-full"
+                    value={scene.background.folder_id}
+                    onChange={(key) => updateBackground({ folder_id: String(key), items: [] }, true)}
+                    placeholder={favoriteFolders.length ? '选择收藏夹' : '正在读取收藏夹...'}
+                  >
+                    <Label>轮播收藏夹</Label>
+                    <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                    <Select.Popover>
+                      <ListBox>
+                        {favoriteFolders.map((folder) => (
+                          <ListBox.Item key={folder.id} id={folder.id} textValue={folder.name}>
+                            {folder.name}
+                            <ListBox.ItemIndicator />
+                          </ListBox.Item>
+                        ))}
+                      </ListBox>
+                    </Select.Popover>
+                  </Select>
+                ) : (
+                  <div className="space-y-2"><Label>图片文件夹</Label><div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" variant="secondary" value={scene.background.path} readOnly placeholder="尚未选择" /><Button className="shrink-0" variant="secondary" onPress={selectSource} isPending={pending === 'pick'}><FolderOpen size={16} />浏览</Button></div></div>
+                )}
                 <div className="grid min-w-0 grid-cols-1 gap-3 2xl:grid-cols-2">
                   <div className="min-w-0"><Label htmlFor="dynamic-interval">停留时间（秒）</Label><Input id="dynamic-interval" className="mt-2 min-w-0 w-full" variant="secondary" type="number" min="3" value={String(scene.background.interval_seconds)} onChange={(event) => updateBackground({ interval_seconds: Number(event.target.value) || 3 })} /></div>
                   <div className="min-w-0"><Label htmlFor="dynamic-duration">动画时长（毫秒）</Label><Input id="dynamic-duration" className="mt-2 min-w-0 w-full" variant="secondary" type="number" min="100" value={String(scene.background.transition_duration)} onChange={(event) => updateBackground({ transition_duration: Number(event.target.value) || 100 })} /></div>
                 </div>
                 <Switch isSelected={scene.background.shuffle} onChange={(shuffle) => updateBackground({ shuffle })}><Switch.Content><span className="text-sm font-medium">随机顺序</span><span className="text-xs text-muted">每次随机选择下一张图片</span></Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
-              </>
-            )}
+              </Tabs.Panel>
+            </Tabs>
           </Card.Content>
         </Card>
       </div>
 
+      {scene.background.type === 'image' && (
+        <Card className="gap-4 p-5">
+          <Card.Header className="flex-row items-center justify-between"><div><Card.Title>图片动画</Card.Title><Card.Description>在静态图片上叠加可暂停的环境动画。</Card.Description></div><Chip variant="soft">实时预览</Chip></Card.Header>
+          <Card.Content className="space-y-5">
+            <ListBox
+              aria-label="选择图片叠加动画"
+              className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3"
+              selectionMode="single"
+              selectedKeys={new Set([scene.background.overlay_effect])}
+              onSelectionChange={(keys) => {
+                if (keys === 'all') return;
+                const effect = Array.from(keys)[0] as DynamicOverlayEffect | undefined;
+                if (effect) updateBackground({ overlay_effect: effect });
+              }}
+            >
+              {OVERLAY_EFFECTS.map((effect) => {
+                const Icon = OVERLAY_ICONS[effect.id];
+                return (
+                  <ListBox.Item key={effect.id} id={effect.id} textValue={effect.label}>
+                    <Icon size={18} />
+                    <div className="flex min-w-0 flex-1 flex-col"><Label>{effect.label}</Label><span className="text-xs text-muted">{effect.description}</span></div>
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                );
+              })}
+            </ListBox>
+            {scene.background.overlay_effect !== 'none' && (
+              <div className="grid gap-5 md:grid-cols-2">
+                <Slider value={scene.background.overlay_density} minValue={8} maxValue={120} step={4} onChange={(value) => updateBackground({ overlay_density: Number(value) })}><Label>粒子数量</Label><Slider.Output /><Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track></Slider>
+                <Slider value={scene.background.overlay_speed} minValue={0.25} maxValue={3} step={0.25} onChange={(value) => updateBackground({ overlay_speed: Number(value) })}><Label>飘落速度</Label><Slider.Output /><Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track></Slider>
+                <Slider value={scene.background.overlay_size} minValue={0.5} maxValue={2} step={0.1} onChange={(value) => updateBackground({ overlay_size: Number(value) })}><Label>粒子大小</Label><Slider.Output /><Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track></Slider>
+                <Slider value={scene.background.overlay_opacity} minValue={0.1} maxValue={1} step={0.1} formatOptions={{ style: 'percent' }} onChange={(value) => updateBackground({ overlay_opacity: Number(value) })}><Label>不透明度</Label><Slider.Output /><Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track></Slider>
+              </div>
+            )}
+          </Card.Content>
+        </Card>
+      )}
+
       {scene.background.type === 'slideshow' && (
         <Card className="gap-4 p-5">
           <Card.Header className="flex-row items-center justify-between"><div><Card.Title>切换动画</Card.Title><Card.Description>轮播专用的场景过渡，与系统普通轮播互不影响。</Card.Description></div><Chip variant="soft">{TRANSITIONS.length} 个预设</Chip></Card.Header>
-          <Card.Content className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {TRANSITIONS.map((preset) => (
-              <Button key={preset.id} variant={scene.background.transition === preset.id ? 'primary' : 'secondary'} className="h-auto items-start justify-start px-4 py-3 text-left" onPress={() => updateBackground({ transition: preset.id })}>
-                <span><span className="block font-medium">{preset.label}</span><span className="mt-1 block text-xs opacity-65">{preset.description}</span></span>
-              </Button>
-            ))}
+          <Card.Content>
+            <ListBox
+              aria-label="选择轮播切换动画"
+              className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
+              selectionMode="single"
+              selectedKeys={new Set([scene.background.transition])}
+              onSelectionChange={(keys) => {
+                if (keys === 'all') return;
+                const transition = Array.from(keys)[0] as DynamicTransition | undefined;
+                if (transition) updateBackground({ transition });
+              }}
+            >
+              {TRANSITIONS.map((preset) => (
+                <ListBox.Item key={preset.id} id={preset.id} textValue={preset.label}>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <Label>{preset.label}</Label>
+                    <span className="text-xs text-muted">{preset.description}</span>
+                  </div>
+                  <ListBox.ItemIndicator />
+                </ListBox.Item>
+              ))}
+            </ListBox>
           </Card.Content>
         </Card>
       )}
 
       <div className="flex items-center justify-between rounded-xl bg-surface-secondary px-4 py-3">
-        <div className="flex items-center gap-3 text-sm text-muted"><MonitorPlay size={17} /><span>{status.windows_version.text || '桌面宿主待探测'}</span>{status.telemetry.paused && status.running && <Chip size="sm" variant="soft"><Pause size={12} />视频已暂停</Chip>}</div>
+        <div className="flex items-center gap-3 text-sm text-muted"><MonitorPlay size={17} /><span>{status.windows_version.text || '桌面宿主待探测'}</span>{status.running && status.telemetry.received && status.telemetry.paused && <Chip size="sm" variant="soft"><Pause size={12} />{status.dynamic_type === 'video' ? '视频已暂停' : status.dynamic_type === 'slideshow' ? '轮播已暂停' : '图片动画已暂停'}</Chip>}</div>
         <div className="flex gap-2"><Button isIconOnly variant="ghost" aria-label="刷新状态" onPress={refreshStatus}><RefreshCw size={16} /></Button><Button variant="secondary" onPress={save} isPending={pending === 'save'}>仅保存配置</Button></div>
       </div>
     </div>

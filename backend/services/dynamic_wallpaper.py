@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ MODERN_DESKTOP_BUILD = (26100, 1742)
 
 
 class WindowsDynamicWallpaperService:
-    """Experimental pywebview video host attached to Explorer's WorkerW."""
+    """Experimental LumiView video host attached to Explorer's WorkerW."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -31,12 +32,14 @@ class WindowsDynamicWallpaperService:
         self._scene_runtime_loaded = False
         self._base_url = ""
         self._api_token = ""
+        self._runtime_factory: Callable[..., Any] | None = None
         self._window: Any | None = None
         self._window_handle = 0
         self._workerw_handle = 0
         self._desktop_host_kind = ""
         self._runtime_type = ""
         self._runtime_mode = ""
+        self._runtime_revision = 0
         self._media_path = ""
         self._media_revision = 0
         self._media_paths: dict[int, str] = {}
@@ -78,48 +81,44 @@ class WindowsDynamicWallpaperService:
             "media_modified_at": "",
         }
 
-    def configure(self, base_url: str, api_token: str, host_window: Any | None = None) -> None:
+    def configure(
+        self,
+        base_url: str,
+        api_token: str,
+        runtime_factory: Callable[..., Any] | None = None,
+    ) -> None:
         with self._lock:
             self._base_url = base_url.rstrip("/")
             self._api_token = api_token
-            self._window = host_window
-            if host_window is not None:
-                host_window.events.before_show += self._on_host_before_show
-                host_window.events.closed += self._on_host_closed
+            self._runtime_factory = runtime_factory
+            if runtime_factory is not None:
+                self._host_ready.set()
             self._record("info", "动态壁纸运行时已就绪")
 
-    def _on_host_before_show(self, *_args: Any) -> None:
-        window = self._window
-        handle = self._native_handle(window) if window is not None else 0
-        with self._lock:
-            self._prepared_window_handle = handle
-            if handle:
-                self._host_ready.set()
-                self._record("info", f"预创建播放器宿主已就绪：0x{handle:08X}")
+    @staticmethod
+    def _log_window_task(task: Any, operation: str) -> None:
+        if task is None or not hasattr(task, "add_done_callback"):
+            return
 
-    def _on_host_closed(self, *_args: Any) -> None:
-        with self._lock:
-            self._host_ready.clear()
-            self._prepared_window_handle = 0
-            self._window_handle = 0
-            self._workerw_handle = 0
-            self._attached = False
+        def done(future: Any) -> None:
+            try:
+                error = future.exception()
+            except Exception as exc:
+                logger.warning("Dynamic wallpaper {} task failed: {}", operation, exc)
+                return
+            if error is not None:
+                logger.warning("Dynamic wallpaper {} task failed: {}", operation, error)
 
-    def _wait_for_host_handle(self, window: Any, timeout: float = 2.0) -> int:
-        deadline = time.monotonic() + max(0.0, timeout)
-        while time.monotonic() < deadline:
-            self._raise_if_stop_requested()
-            with self._lock:
-                handle = self._prepared_window_handle
-            if not handle:
-                handle = self._native_handle(window)
-            if handle:
-                with self._lock:
-                    self._prepared_window_handle = handle
-                    self._host_ready.set()
-                return handle
-            time.sleep(0.02)
-        raise RuntimeError("播放器宿主仍在初始化，请稍后重试")
+        task.add_done_callback(done)
+
+    @classmethod
+    def _load_window_url(cls, window: Any, url: str) -> None:
+        cls._log_window_task(window.load_url(url), "navigation")
+
+    @classmethod
+    def _evaluate_window_js(cls, window: Any, script: str) -> None:
+        method = getattr(window, "eval_js", None) or window.evaluate_js
+        cls._log_window_task(method(script), "JavaScript")
 
     def _record(self, level: str, message: str) -> None:
         entry = {
@@ -181,17 +180,6 @@ class WindowsDynamicWallpaperService:
     def scene_url(self, revision: int) -> str:
         route_query = urlencode({"revision": max(0, int(revision))})
         return f"{self._base_url}/?token={self._api_token}#/dynamic/runtime?{route_query}"
-
-    @staticmethod
-    def _native_handle(window: Any) -> int:
-        native = getattr(window, "native", None)
-        handle = getattr(native, "Handle", 0)
-        if hasattr(handle, "ToInt64"):
-            return int(handle.ToInt64())
-        try:
-            return int(handle)
-        except (TypeError, ValueError):
-            return 0
 
     @staticmethod
     def _get_windows_version() -> dict[str, Any]:
@@ -347,56 +335,6 @@ class WindowsDynamicWallpaperService:
         return topology
 
     @staticmethod
-    def _redraw_desktop_icons(def_view_handle: int) -> None:
-        if os.name != "nt" or not def_view_handle:
-            return
-        import win32con
-        import win32gui
-
-        # 24H2 keeps a transition snapshot over SHELLDLL_DefView. Toggling the
-        # layer forces every icon to repaint and reveals the child WorkerW below.
-        win32gui.ShowWindow(def_view_handle, win32con.SW_HIDE)
-        time.sleep(0)
-        win32gui.ShowWindow(def_view_handle, win32con.SW_SHOWNORMAL)
-
-    @staticmethod
-    def _attach_to_workerw(window_handle: int, workerw_handle: int) -> tuple[int, int]:
-        import win32con
-        import win32gui
-
-        style = int(win32gui.GetWindowLong(window_handle, win32con.GWL_STYLE))
-        style &= ~(
-            win32con.WS_POPUP
-            | win32con.WS_CAPTION
-            | win32con.WS_THICKFRAME
-            | win32con.WS_MINIMIZEBOX
-            | win32con.WS_MAXIMIZEBOX
-            | win32con.WS_SYSMENU
-        )
-        style |= win32con.WS_CHILD | win32con.WS_VISIBLE
-        win32gui.SetWindowLong(window_handle, win32con.GWL_STYLE, style)
-
-        exstyle = int(win32gui.GetWindowLong(window_handle, win32con.GWL_EXSTYLE))
-        exstyle &= ~win32con.WS_EX_APPWINDOW
-        exstyle |= win32con.WS_EX_TOOLWINDOW | win32con.WS_EX_NOACTIVATE
-        win32gui.SetWindowLong(window_handle, win32con.GWL_EXSTYLE, exstyle)
-        win32gui.SetParent(window_handle, workerw_handle)
-
-        left, top, right, bottom = win32gui.GetClientRect(workerw_handle)
-        width = max(1, int(right - left))
-        height = max(1, int(bottom - top))
-        win32gui.SetWindowPos(
-            window_handle,
-            win32con.HWND_BOTTOM,
-            0,
-            0,
-            width,
-            height,
-            win32con.SWP_FRAMECHANGED | win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW,
-        )
-        return width, height
-
-    @staticmethod
     def _empty_window_diagnostics() -> dict[str, Any]:
         return {
             "valid": False,
@@ -457,15 +395,9 @@ class WindowsDynamicWallpaperService:
             version = dict(probe["windows_version"])
             topology = dict(probe["topology"])
             prepared_handle = self._prepared_window_handle
-            window_handle = self._window_handle
             workerw_handle = self._workerw_handle
-            probe_matches_host = probe["prepared_window_handle"] == prepared_handle
-            host_window_valid = (
-                bool(probe["host_window_valid"])
-                if probe_matches_host
-                else bool(prepared_handle and self._host_ready.is_set())
-            )
-            running = bool(self._attached and host_window_valid and self._window_handle)
+            runtime_ready = bool(self._base_url and self._api_token and self._runtime_factory)
+            running = bool(self._attached and self._window is not None and workerw_handle)
             media = Path(self._media_path) if self._media_path else None
             probe_matches_media = probe["media_path"] == self._media_path
             media_exists = bool(probe["media_exists"]) if probe_matches_media else False
@@ -473,12 +405,9 @@ class WindowsDynamicWallpaperService:
             media_modified_at = str(probe["media_modified_at"]) if probe_matches_media else ""
             expected_structure = "modern_child" if version["modern_expected"] else "legacy_top_level"
             detected_structure = str(topology["structure"])
-            probed_window = probe["window"]
-            window_diagnostics = (
-                dict(probed_window)
-                if probe["window_handle"] == window_handle and probe["workerw_handle"] == workerw_handle
-                else self._empty_window_diagnostics()
-            )
+            window_diagnostics = self._empty_window_diagnostics()
+            if running:
+                window_diagnostics.update({"valid": True, "visible": True, "parent_matches": True})
             return {
                 "supported": os.name == "nt",
                 "platform": os.name,
@@ -488,8 +417,8 @@ class WindowsDynamicWallpaperService:
                 "structure_label": topology["label"],
                 "structure_reason": topology["reason"],
                 "structure_matches_version": detected_structure in {"not_initialized", expected_structure},
-                "runtime_ready": bool(self._base_url and self._api_token),
-                "host_window_ready": self._host_ready.is_set() and host_window_valid,
+                "runtime_ready": runtime_ready,
+                "host_window_ready": runtime_ready,
                 "prepared_window_handle": (f"0x{prepared_handle:08X}" if prepared_handle else ""),
                 "operation_busy": self._operation_lock.locked(),
                 "operation_phase": self._operation_phase,
@@ -502,11 +431,12 @@ class WindowsDynamicWallpaperService:
                     f"0x{(workerw_handle or topology['host']):08X}" if (workerw_handle or topology["host"]) else ""
                 ),
                 "desktop_host_kind": self._desktop_host_kind,
-                "window_handle": f"0x{window_handle:08X}" if window_handle else "",
+                "window_handle": "",
                 "window": window_diagnostics,
                 "running": running,
                 "dynamic_type": self._runtime_type,
                 "runtime_mode": self._runtime_mode,
+                "runtime_revision": self._runtime_revision,
                 "media_path": self._media_path,
                 "media_name": media.name if media else "",
                 "media_exists": media_exists,
@@ -546,19 +476,14 @@ class WindowsDynamicWallpaperService:
         try:
             with self._lock:
                 prepared_handle = self._prepared_window_handle
-                window_handle = self._window_handle
                 workerw_handle = self._workerw_handle
                 attached = self._attached
                 media_path = self._media_path
 
             version = self._get_windows_version()
             topology = self._find_desktop_host(spawn=False)
-            host_window_valid = False
-            if os.name == "nt" and prepared_handle:
-                import win32gui
-
-                host_window_valid = bool(win32gui.IsWindow(prepared_handle))
-            running = bool(attached and host_window_valid and window_handle)
+            host_window_valid = self._runtime_factory is not None
+            running = bool(attached and self._window is not None and workerw_handle)
             media = Path(media_path) if media_path else None
             try:
                 media_stat = media.stat() if media and media.is_file() else None
@@ -573,22 +498,17 @@ class WindowsDynamicWallpaperService:
                 media_exists = False
                 media_size = 0
                 media_modified_at = ""
-            window_diagnostics = self._window_diagnostics(window_handle, workerw_handle, running)
+            window_diagnostics = self._empty_window_diagnostics()
+            if running:
+                window_diagnostics.update({"valid": True, "visible": True, "parent_matches": True})
 
             with self._lock:
-                if self._prepared_window_handle == prepared_handle and prepared_handle and not host_window_valid:
-                    self._host_ready.clear()
-                    self._prepared_window_handle = 0
-                    self._window_handle = 0
-                    self._workerw_handle = 0
-                    self._desktop_host_kind = ""
-                    self._attached = False
                 self._diagnostic_probe = {
                     "windows_version": version,
                     "topology": topology,
                     "prepared_window_handle": prepared_handle,
                     "host_window_valid": host_window_valid,
-                    "window_handle": window_handle,
+                    "window_handle": 0,
                     "workerw_handle": workerw_handle,
                     "window": window_diagnostics,
                     "media_path": media_path,
@@ -609,6 +529,7 @@ class WindowsDynamicWallpaperService:
             self._operation_phase = "queued"
             self._operation_started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             self._last_error = ""
+        snapshot = self._status_snapshot()
         thread = threading.Thread(
             target=self._run_start,
             args=(path, muted, loop, playback_rate),
@@ -623,7 +544,7 @@ class WindowsDynamicWallpaperService:
                 self._operation_started_at = ""
             self._operation_lock.release()
             raise
-        return self._status_snapshot()
+        return snapshot
 
     def start_scene(self, revision: int, background_type: str = "image") -> dict[str, Any]:
         if not self._operation_lock.acquire(blocking=False):
@@ -639,6 +560,7 @@ class WindowsDynamicWallpaperService:
             self._operation_phase = "queued"
             self._operation_started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             self._last_error = ""
+        snapshot = self._status_snapshot()
         thread = threading.Thread(
             target=self._run_scene_start,
             args=(max(0, int(revision)), str(background_type)),
@@ -653,7 +575,7 @@ class WindowsDynamicWallpaperService:
                 self._operation_started_at = ""
             self._operation_lock.release()
             raise
-        return self._status_snapshot()
+        return snapshot
 
     def _run_scene_start(self, revision: int, background_type: str) -> None:
         window: Any | None = None
@@ -665,30 +587,23 @@ class WindowsDynamicWallpaperService:
                 if not self._base_url or not self._api_token:
                     raise RuntimeError("动态壁纸运行时尚未配置")
                 window = self._window
-                if window is None:
-                    raise RuntimeError("播放器宿主未预创建，请重启主程序")
-            handle = self._wait_for_host_handle(window)
-            with self._lock:
-                existing_running = self._attached
                 scene_url = self.scene_url(revision)
+                existing_running = self._attached and window is not None
 
             if existing_running:
                 self._set_operation_phase("switching")
                 self._raise_if_stop_requested()
+                self._load_window_url(window, scene_url)
                 with self._lock:
-                    scene_runtime_loaded = self._scene_runtime_loaded
-                if not scene_runtime_loaded:
-                    window.load_url(scene_url)
-                    self._raise_if_stop_requested()
-                    with self._lock:
-                        self._scene_runtime_loaded = True
-                with self._lock:
+                    self._scene_runtime_loaded = True
                     self._last_operation = "switch-scene"
                     self._runtime_type = background_type
                     self._runtime_mode = "scene"
+                    self._runtime_revision = revision
                     self._media_path = ""
                     self._media_paths.clear()
                     self._telemetry = self._empty_telemetry()
+                    self._telemetry["media_revision"] = revision
                 self._record("info", f"已应用动态场景修订 {revision}")
                 return
 
@@ -698,41 +613,34 @@ class WindowsDynamicWallpaperService:
             desktop_host = int(topology["host"])
             if not desktop_host:
                 raise RuntimeError("发送桌面切换消息后仍未找到可用 WorkerW")
-            self._set_operation_phase("loading-player")
-            with self._lock:
-                scene_runtime_loaded = self._scene_runtime_loaded
-            if not scene_runtime_loaded:
-                window.load_url(scene_url)
-                self._raise_if_stop_requested()
-                with self._lock:
-                    self._scene_runtime_loaded = True
-            self._set_operation_phase("attaching")
-            width, height = self._attach_to_workerw(handle, desktop_host)
+            self._set_operation_phase("creating-webview")
+            window, width, height = self._create_runtime(desktop_host, scene_url)
             self._raise_if_stop_requested()
-            if topology["structure"] == "modern_child":
-                self._redraw_desktop_icons(int(topology["def_view"]))
             with self._lock:
-                self._window_handle = handle
+                self._window = window
+                self._scene_runtime_loaded = True
+                self._prepared_window_handle = 0
+                self._window_handle = 0
                 self._workerw_handle = desktop_host
                 self._desktop_host_kind = str(topology["label"])
                 self._attached = True
                 self._runtime_type = background_type
                 self._runtime_mode = "scene"
+                self._runtime_revision = revision
+                self._telemetry = self._empty_telemetry()
+                self._telemetry["media_revision"] = revision
                 self._started_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self._last_operation = "start-scene"
-            self._record("info", f"动态场景已附着桌面，画布 {width} x {height}")
+            self._record("info", f"动态场景 WebView 已直接嵌入桌面，画布 {width} x {height}")
         except InterruptedError:
             self._record("info", "动态场景启动已取消")
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
                 attached = self._attached
-                handle = self._prepared_window_handle
-            if os.name == "nt" and handle and not attached:
-                import win32con
-                import win32gui
+            if window is not None and not attached:
                 with contextlib.suppress(Exception):
-                    win32gui.ShowWindow(handle, win32con.SW_HIDE)
+                    self._log_window_task(window.close(), "close")
             self._record("error", f"启动动态场景失败：{exc}")
         finally:
             with self._lock:
@@ -744,7 +652,6 @@ class WindowsDynamicWallpaperService:
 
     def _run_start(self, path: str, muted: bool, loop: bool, playback_rate: float) -> None:
         window: Any | None = None
-        player_loaded = False
         try:
             with self._lock:
                 self._operation_phase = "validating"
@@ -752,8 +659,6 @@ class WindowsDynamicWallpaperService:
                     raise OSError("动态壁纸调试宿主仅支持 Windows")
                 if not self._base_url or not self._api_token:
                     raise RuntimeError("动态壁纸运行时尚未配置")
-                if self._window is None:
-                    raise RuntimeError("播放器宿主未预创建，请重启主程序")
 
             media = Path(path).expanduser().resolve()
             if not media.is_file():
@@ -762,31 +667,28 @@ class WindowsDynamicWallpaperService:
                 raise ValueError("仅支持 MP4、WebM、MOV 和 M4V 视频")
             rate = max(0.25, min(4.0, float(playback_rate)))
 
-            handle = self._wait_for_host_handle(self._window)
-
             with self._lock:
                 window = self._window
-                if window is None or not handle:
-                    raise RuntimeError("播放器宿主原生窗口不可用")
                 self._last_error = ""
                 previous_path = self._media_path
                 previous_revision = self._media_revision
                 self._media_path = str(media)
                 self._media_revision += 1
                 revision = self._media_revision
+                self._runtime_revision = revision
                 self._media_paths[revision] = self._media_path
                 self._media_paths = dict(sorted(self._media_paths.items())[-4:])
                 self._telemetry = self._empty_telemetry()
                 self._telemetry["media_revision"] = revision
                 player_url = self._player_url(muted, loop, rate)
-                existing_running = self._attached
+                existing_running = self._attached and window is not None
 
             if existing_running:
                 self._set_operation_phase("switching")
                 self._record("info", f"正在热切换媒体：{media.name}")
                 try:
                     self._raise_if_stop_requested()
-                    window.load_url(player_url)
+                    self._load_window_url(window, player_url)
                     self._raise_if_stop_requested()
                 except Exception as exc:
                     with self._lock:
@@ -814,18 +716,13 @@ class WindowsDynamicWallpaperService:
                 raise RuntimeError("发送桌面切换消息后仍未找到可用 WorkerW")
             self._record("info", f"检测到{host_kind}：{topology['reason']}")
 
-            self._set_operation_phase("loading-player")
-            window.load_url(player_url)
-            player_loaded = True
+            self._set_operation_phase("creating-webview")
+            window, width, height = self._create_runtime(desktop_host, player_url)
             self._raise_if_stop_requested()
-            self._set_operation_phase("attaching")
-            width, height = self._attach_to_workerw(handle, desktop_host)
-            self._raise_if_stop_requested()
-            if topology["structure"] == "modern_child":
-                self._redraw_desktop_icons(int(topology["def_view"]))
-
             with self._lock:
-                self._window_handle = handle
+                self._window = window
+                self._prepared_window_handle = 0
+                self._window_handle = 0
                 self._workerw_handle = desktop_host
                 self._desktop_host_kind = host_kind
                 self._attached = True
@@ -834,22 +731,18 @@ class WindowsDynamicWallpaperService:
                 self._scene_runtime_loaded = False
                 self._started_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self._last_operation = "start"
-            self._record("info", f"已附着 {host_kind}，画布 {width} x {height}")
+            self._record("info", f"视频 WebView 已直接嵌入 {host_kind}，画布 {width} x {height}")
         except InterruptedError:
             self._record("info", "动态壁纸启动已取消")
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
-                handle = self._prepared_window_handle
                 attached = self._attached
                 if not attached:
                     self._clear_media_state()
-            if os.name == "nt" and handle and not attached:
-                import win32con
-                import win32gui
-
+            if window is not None and not attached:
                 with contextlib.suppress(Exception):
-                    win32gui.ShowWindow(handle, win32con.SW_HIDE)
+                    self._log_window_task(window.close(), "close")
             self._record("error", f"启动动态壁纸失败：{exc}")
         finally:
             with self._lock:
@@ -867,10 +760,67 @@ class WindowsDynamicWallpaperService:
         if self._stop_requested.is_set():
             raise InterruptedError("动态壁纸操作已取消")
 
+    @staticmethod
+    def _logical_runtime_bounds(
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        dpi: int,
+    ) -> tuple[int, int, int, int]:
+        scale = max(96, int(dpi or 96)) / 96
+        return (
+            round(x / scale),
+            round(y / scale),
+            max(1, round(width / scale)),
+            max(1, round(height / scale)),
+        )
+
+    def _create_runtime(self, desktop_host: int, url: str) -> tuple[Any, int, int]:
+        with self._lock:
+            factory = self._runtime_factory
+        if factory is None:
+            raise RuntimeError("嵌入式 WebView 运行时尚未配置")
+
+        import win32api
+        import win32con
+        import win32gui
+
+        monitor = win32api.MonitorFromPoint((0, 0), win32con.MONITOR_DEFAULTTOPRIMARY)
+        monitor_left, monitor_top, monitor_right, monitor_bottom = win32api.GetMonitorInfo(monitor)["Monitor"]
+        x, y = win32gui.ScreenToClient(desktop_host, (monitor_left, monitor_top))
+        x = int(x)
+        y = int(y)
+        physical_width = max(1, int(monitor_right - monitor_left))
+        physical_height = max(1, int(monitor_bottom - monitor_top))
+        try:
+            import ctypes
+
+            dpi = int(ctypes.windll.user32.GetDpiForWindow(desktop_host) or 96)
+        except (AttributeError, OSError):
+            dpi = 96
+        x, y, width, height = self._logical_runtime_bounds(
+            x,
+            y,
+            physical_width,
+            physical_height,
+            dpi,
+        )
+        try:
+            task = factory(desktop_host, width, height, url, x, y)
+        except TypeError:
+            # Keep custom runtime factories compatible while the production host
+            # accepts explicit positioning within a virtual-desktop WorkerW.
+            task = factory(desktop_host, width, height, url)
+        runtime = task.result(timeout=15) if hasattr(task, "result") else task
+        if runtime is None:
+            raise RuntimeError("创建嵌入式 WebView 失败")
+        return runtime, width, height
+
     def _stop_runtime(self) -> None:
         with self._lock:
             window = self._window
-            handle = self._prepared_window_handle
+            self._window = None
             self._window_handle = 0
             self._workerw_handle = 0
             self._desktop_host_kind = ""
@@ -878,23 +828,15 @@ class WindowsDynamicWallpaperService:
             self._runtime_mode = ""
             self._attached = False
             self._clear_media_state()
-        self._hide_native_host(handle)
+        if window is not None:
+            with contextlib.suppress(Exception):
+                self._log_window_task(window.close(), "close")
         with self._lock:
             self._last_operation = "stop"
             self._operation_phase = "idle"
             self._operation_started_at = ""
         self._stop_requested.clear()
-        self._record("info", "动态壁纸已停止并释放媒体资源，空白宿主保留待复用")
-
-    @staticmethod
-    def _hide_native_host(handle: int) -> None:
-        if os.name != "nt" or not handle:
-            return
-        import win32con
-        import win32gui
-
-        with contextlib.suppress(Exception):
-            win32gui.ShowWindow(handle, win32con.SW_HIDE)
+        self._record("info", "动态壁纸已停止并销毁嵌入式 WebView")
 
     def _finish_requested_stop(self) -> None:
         if not self._stop_requested.is_set() or not self._operation_lock.acquire(blocking=False):
@@ -934,7 +876,8 @@ class WindowsDynamicWallpaperService:
         if window is None:
             return
         with contextlib.suppress(Exception):
-            window.evaluate_js(
+            WindowsDynamicWallpaperService._evaluate_window_js(
+                window,
                 """(() => {
                     const video = document.getElementById('wallpaper');
                     if (video) {
@@ -945,10 +888,11 @@ class WindowsDynamicWallpaperService:
                     window.__ltwPlayer = undefined;
                     return true;
                 })()"""
-            )
+                )
         with contextlib.suppress(Exception):
-            window.evaluate_js(
-                "window.__ltwDynamicRuntime?.dispose?.(); window.__ltwDynamicRuntime = undefined; true"
+            WindowsDynamicWallpaperService._evaluate_window_js(
+                window,
+                "window.__ltwDynamicRuntime?.dispose?.(); window.__ltwDynamicRuntime = undefined; true",
             )
 
     def _clear_media_state(self) -> None:
@@ -958,6 +902,7 @@ class WindowsDynamicWallpaperService:
         self._started_at = ""
         self._runtime_type = ""
         self._runtime_mode = ""
+        self._runtime_revision = 0
         self._telemetry = self._empty_telemetry()
 
     def update_telemetry(self, payload: dict[str, Any]) -> None:
@@ -968,7 +913,7 @@ class WindowsDynamicWallpaperService:
                 revision = int(payload.get("media_revision", 0))
             except (TypeError, ValueError):
                 return
-            if not self._attached or revision != self._media_revision:
+            if not self._attached or revision != self._runtime_revision:
                 return
 
             event = str(payload.get("event") or "update")[:32]
@@ -1039,10 +984,10 @@ class WindowsDynamicWallpaperService:
                 self._operation_started_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 normalized = str(action or "").strip().lower()
                 scripts = {
-                    "play": "window.__ltwPlayer?.play?.() ?? window.__ltwDynamicRuntime?.play?.()",
-                    "pause": "window.__ltwPlayer?.pause?.() ?? window.__ltwDynamicRuntime?.pause?.()",
-                    "auto": "window.__ltwPlayer?.auto?.() ?? window.__ltwDynamicRuntime?.auto?.()",
-                    "reload": "window.__ltwPlayer?.reload?.() ?? window.__ltwDynamicRuntime?.reload?.()",
+                    "play": "window.__ltwPlayer ? window.__ltwPlayer.play() : window.__ltwDynamicRuntime?.play?.()",
+                    "pause": "window.__ltwPlayer ? window.__ltwPlayer.pause() : window.__ltwDynamicRuntime?.pause?.()",
+                    "auto": "window.__ltwPlayer ? window.__ltwPlayer.auto() : window.__ltwDynamicRuntime?.auto?.()",
+                    "reload": "window.__ltwPlayer ? window.__ltwPlayer.reload?.() : window.__ltwDynamicRuntime?.reload?.()",
                     "next": "window.__ltwDynamicRuntime?.next?.()",
                     "previous": "window.__ltwDynamicRuntime?.previous?.()",
                 }
@@ -1052,7 +997,7 @@ class WindowsDynamicWallpaperService:
                 if window is None or not self._attached:
                     raise RuntimeError("动态壁纸宿主未运行")
                 script = scripts[normalized]
-            window.evaluate_js(script)
+            self._evaluate_window_js(window, script)
             with self._lock:
                 self._last_operation = normalized
             self._record("info", f"已发送播放器操作：{normalized}")
@@ -1068,16 +1013,6 @@ class WindowsDynamicWallpaperService:
         self._stop_requested.set()
         with self._lock:
             self._pending_scene = None
-            handle = self._prepared_window_handle
-            self._attached = False
-            self._window_handle = 0
-            self._workerw_handle = 0
-            self._desktop_host_kind = ""
-            self._runtime_type = ""
-            self._runtime_mode = ""
-        # Always remove the wallpaper from the visible desktop first, even when
-        # a start/switch operation still owns the operation lock.
-        self._hide_native_host(handle)
         if not self._operation_lock.acquire(blocking=False):
             with self._lock:
                 self._operation_phase = "stopping"
@@ -1106,7 +1041,7 @@ class WindowsDynamicWallpaperService:
         self._stop_requested.set()
         with self._lock:
             window = self._window
-            handle = self._prepared_window_handle
+            self._window = None
             self._attached = False
             self._window_handle = 0
             self._workerw_handle = 0
@@ -1114,9 +1049,6 @@ class WindowsDynamicWallpaperService:
             self._runtime_type = ""
             self._runtime_mode = ""
             self._pending_scene = None
-        self._hide_native_host(handle)
-        # Give in-flight Win32 attachment code a short cancellation window, but
-        # never hold application exit hostage to a WebView navigation.
         self.wait_until_idle(timeout=0.5)
         with self._lock:
             self._window = None
@@ -1130,4 +1062,4 @@ class WindowsDynamicWallpaperService:
             self._clear_media_state()
         if window is not None:
             with contextlib.suppress(Exception):
-                window.destroy()
+                self._log_window_task(window.close(), "close")

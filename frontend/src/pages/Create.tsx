@@ -2238,7 +2238,7 @@ export default function Create() {
   );
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] min-h-[560px] flex-col overflow-clip rounded-lg border border-border bg-surface-secondary">
+    <div className="flex h-full min-h-0 flex-col overflow-clip rounded-lg border border-border bg-surface-secondary">
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-1 border-b border-border bg-background px-2 py-1.5 sm:px-3">
         <div className="mr-1 flex items-center gap-2 px-1"><div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground"><Frame size={16} /></div><div className="hidden lg:block"><div className="text-sm font-semibold leading-4">壁纸制作</div><div className="text-[10px] text-muted">创意画布</div></div></div>
         <Button isIconOnly size="sm" variant="ghost" className="xl:hidden" onPress={() => { setPanelsHidden(false); setMobilePanel(mobilePanel === 'tools' ? null : 'tools'); }} aria-label="打开素材面板"><PanelLeft size={17} /></Button>

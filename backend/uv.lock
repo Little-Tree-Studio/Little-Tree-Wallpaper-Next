@@ -174,12 +174,16 @@ wheels = [
 ]
 
 [[package]]
-name = "bottle"
-version = "0.13.4"
+name = "cattrs"
+version = "26.1.0"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/7a/71/cca6167c06d00c81375fd668719df245864076d284f7cb46a694cbeb5454/bottle-0.13.4.tar.gz", hash = "sha256:787e78327e12b227938de02248333d788cfe45987edca735f8f88e03472c3f47" }
+dependencies = [
+    { name = "attrs" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/a0/ec/ba18945e7d6e55a58364d9fb2e46049c1c2998b3d805f19b703f14e81057/cattrs-26.1.0.tar.gz", hash = "sha256:fa239e0f0ec0715ba34852ce813986dfed1e12117e209b816ab87401271cdd40" }
 wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/83/f6/b55ec74cfe68c6584163faa311503c20b0da4c09883a41e8e00d6726c954/bottle-0.13.4-py2.py3-none-any.whl", hash = "sha256:045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/80/56/60547f7801b97c67e97491dc3d9ade9fbccbd0325058fd3dfcb2f5d98d90/cattrs-26.1.0-py3-none-any.whl", hash = "sha256:d1e0804c42639494d469d08d4f26d6b9de9b8ab26b446db7b5f8c2e97f7c3096" },
 ]
 
 [[package]]
@@ -331,18 +335,6 @@ dependencies = [
 sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/9b/98/518d8e5081007684232226f475082b30087d0f585e8457db087298259f49/click-8.4.1.tar.gz", hash = "sha256:918b5633eddf6b41c32d4f454bf0de810065c74e3f7dbf8ee5452f8be88d3e96" }
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/c7/0d/67e5b4109ea4a837e80daa87c2c696711955e40449a97e8926672534def2/click-8.4.1-py3-none-any.whl", hash = "sha256:482be17c6991b8c19c5429a1e995d9b0efdbb63172824c41f99965dc0ade8ec2" },
-]
-
-[[package]]
-name = "clr-loader"
-version = "0.3.1"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "cffi" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/e4/46/7eea92b6aa2d68af78e049cbecec5f757f1aad44ecdecdc16bbad7eead51/clr_loader-0.3.1.tar.gz", hash = "sha256:2e073e9aaf49d1ae2f56ecba27987ad5fb68be4bcd9dd34a5bed8f0e4e128366" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/5e/da/ec1a6e36624000b6df0dd61183c42342ee5814c073315e802cadaad04d2f/clr_loader-0.3.1-py3-none-any.whl", hash = "sha256:cbad189de20d202a7d621956b0fc38049e13c9bf7ca2923441eff725cd121aa1" },
 ]
 
 [[package]]
@@ -617,12 +609,12 @@ dependencies = [
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "loguru" },
+    { name = "lumiview" },
     { name = "pillow" },
     { name = "platformdirs" },
     { name = "psutil" },
     { name = "pyperclip" },
     { name = "pystray" },
-    { name = "pywebview" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -647,12 +639,12 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fonttools", specifier = ">=4.60.0" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "lumiview", specifier = ">=0.1.0.dev0" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "platformdirs", specifier = ">=4.10.0" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pyperclip", specifier = ">=1.11.0" },
     { name = "pystray", specifier = ">=0.19.5" },
-    { name = "pywebview", specifier = ">=6.2.1" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "requests", specifier = ">=2.34.2" },
@@ -680,6 +672,23 @@ dependencies = [
 sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6" }
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/0c/29/0348de65b8cc732daa3e33e67806420b2ae89bdce2b04af740289c5c6c8c/loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c" },
+]
+
+[[package]]
+name = "lumiview"
+version = "0.1.0.dev0"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+dependencies = [
+    { name = "cattrs" },
+    { name = "typing-extensions" },
+    { name = "wryview" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/82/ce/e9f13bb25a5ba5d704072081658500411aa67992b8c14a14e543b47cc874/lumiview-0.1.0.dev0.tar.gz", hash = "sha256:c194a3d8d3dfc65f6b331b669a9f624fae7a24f25e7507df12ec8c0408469589" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d3/a7/7e8e4eff74e391238644455139d3e840035758f5baa0a9860d189026aff4/lumiview-0.1.0.dev0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:4d597b8ddd98eb3e7ca4251d53c049988b1dddfbca8831c32401a1f84027cfac" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/df/bf/e4f5fcd52c5ed89318e1bd1fda66bf8d6e80d461be353e0a3989147250ed/lumiview-0.1.0.dev0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:be48eb2fd3dc41120fa0856cc1df2181c412ee704836c4981dfcdb2e8862c16e" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/05/33/f82b3766b94e19727a5d1577904c43d510dc3ed14d91e4ea0cd072ba5a78/lumiview-0.1.0.dev0-cp310-abi3-manylinux_2_38_x86_64.whl", hash = "sha256:c0c49433e8cf0f41da69d7482063e170f335b40bf6257ff9a4258a90e99e6ced" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/13/30/93e3470e678d4597879695703e5553867a8b6ba152371f30370a0cb7debc/lumiview-0.1.0.dev0-cp310-abi3-win_amd64.whl", hash = "sha256:118b313656a8f8d5a3b08b0f7a775f3c6f7732f8994daf599fcc45fa4e2a0e2c" },
 ]
 
 [[package]]
@@ -993,12 +1002,6 @@ wheels = [
 ]
 
 [[package]]
-name = "proxy-tools"
-version = "0.1.0"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz", hash = "sha256:ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010" }
-
-[[package]]
 name = "psutil"
 version = "7.2.2"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
@@ -1227,57 +1230,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pyobjc-framework-security"
-version = "12.2"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/e3/3c/7778dd8e196373feabc54841b87e495148da3fe20d305f39397546afaaee/pyobjc_framework_security-12.2.tar.gz", hash = "sha256:ef4d2d852a09360929e284c6f355964d84ac88b170207de1ac299fa1e1c33e40" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/b5/72/be521a3961089017555936422be5b8a27c3cbceba84445bb1bdf7d602727/pyobjc_framework_security-12.2-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:817986dfa66e5a323ada063f4af52e699e7ac58aeea054a54344f2ad5af9683b" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/33/ea/20d93a62d2f3d54dccac9e3d9de617d27c229ccce42b8bd0d7f4bb4461aa/pyobjc_framework_security-12.2-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:703b8544d2623a854f438b13ef4561402e6228eacfb0f0b2cbf28d2704815f44" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/17/a7/9725d152c8f23c6f2d3bb7fc2c2c9bbcbc7908a91de935c80fc5ed54c6c5/pyobjc_framework_security-12.2-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:10f03ed38e915f823640cbc19d5a921ee29ae266f0d76a2910c53fcd7cd61447" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/75/39/6cf09f7d53a37dc9be7ff2215d067fead65229c54e7153885f1a2bdba57f/pyobjc_framework_security-12.2-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:a837738a85884518fa7d50de4b88c1df0fcc67241a05dec1b36272cb3aa37e22" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/59/3a/a479f9aa83d7b2f763afeb33f06f23d23948cfb81ce55e6ff04c91b514c1/pyobjc_framework_security-12.2-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:448b9658b59bcf56f4bcdf9345592fb719db711cb0f490f75cdffc82121b7c8f" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/b1/8c/a6024c130e82cf471fc1ea479fe9f387712ba22ff9d9db7b9450bcec3dd5/pyobjc_framework_security-12.2-cp315-cp315-macosx_10_15_universal2.whl", hash = "sha256:65845ed21358e07544b57adebcf0b18de80afcc51c9c1da705689e35aa33d9f9" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/55/1e/1ec868d695d173c6d44d5ed9b1f86b1398839a1539589ae545422548fbba/pyobjc_framework_security-12.2-cp315-cp315t-macosx_10_15_universal2.whl", hash = "sha256:e1ffef0aff259884e728cdf4105610c462eeb7f9f624a670c24ca47cb4744eef" },
-]
-
-[[package]]
-name = "pyobjc-framework-uniformtypeidentifiers"
-version = "12.2"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/64/54/e270da2b0b4ab1fb0dc7f4e616d1a6e141583f88409c0742f6ebfcf7a064/pyobjc_framework_uniformtypeidentifiers-12.2.tar.gz", hash = "sha256:19cc82f1bbf3bc0999597779711422f6c9d7340634d699ae64d9bc7c0d79f984" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/da/19/4f314697bc8f519fe6505afe51d83d7fdcae93239b7bab5941f4bebc1f9e/pyobjc_framework_uniformtypeidentifiers-12.2-py2.py3-none-any.whl", hash = "sha256:f140a378cfe6a8ca47ce3b04fd5a4c4bec1fcbedac8acc87e2c18985bb805203" },
-]
-
-[[package]]
-name = "pyobjc-framework-webkit"
-version = "12.2"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/06/ba/0e17f151d80854285a84b3c96f48d55b0c61ae683060a52cd50084ef4c64/pyobjc_framework_webkit-12.2.tar.gz", hash = "sha256:498353fe812006f7fe2829a679018fcff3ed2684aa31c08d8a8af929ee9283b6" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/8c/ae/0cfe909116627905542390c7d6a33a3090b6e7f2174b9d75f9c8a661d431/pyobjc_framework_webkit-12.2-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:bd1e0f6f340a5516c853aa59fde381e002f2c109ae64a05ad4e99a2b74375fcb" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/f7/32/bea045cf4e2c697ea9b68ed7d60b0e765a8b0e46d30a4eb26bf178be817c/pyobjc_framework_webkit-12.2-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:9fafcbf5a071cf9ad3fbc28155a99287ff9dc9efcaa41fe3ed3d79b6e5576450" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/bc/3e/d29fc44f6d346a5a97883ae76bfa030a5b6ff3b019bafd58ad8ea14588d2/pyobjc_framework_webkit-12.2-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:751f3138441c81fdddc555f0bd31f5f3ad3ec72ae2ed626af24925ce32054353" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/00/e1/12288f728e2862d7932a1b21aa5a059ae67708900e4f0873c88053edb761/pyobjc_framework_webkit-12.2-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:6cba6e76e33c62369d0fa8cb4b83959db4c53888173cb3546a15cd998c8e8aec" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/7f/98/6373d02bc5dd9653207f1f766e55c2659aa01b65bf94b9d00584e7142312/pyobjc_framework_webkit-12.2-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:43a18df9a8d6b6f1f003a732eee0a0fcd01c2d31566be2b2ba8ee732c1a32cf9" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/bb/22/22d4b3d39d41fa94aa8bb904ec546199d940edcdbc9594c4ad3517d49692/pyobjc_framework_webkit-12.2-cp315-cp315-macosx_10_15_universal2.whl", hash = "sha256:50dbd5210f80c7834b1af2b675712f6134217d713f2b2a8d9f96cf29be6ec8f0" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/22/1b/09cb42c5ede2a5025c4695b2beb37216a4d200511aa3eb4b9faadf1a517d/pyobjc_framework_webkit-12.2-cp315-cp315t-macosx_10_15_universal2.whl", hash = "sha256:e8895b2cbc8b5d4c1475a3094771d3b8e6dbbd19ec3200922b1cd91d649e8043" },
-]
-
-[[package]]
 name = "pyperclip"
 version = "1.11.0"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
@@ -1326,41 +1278,6 @@ dependencies = [
 sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/86/f5/8c0653e5bb54e0cbdfe27bf32d41f27bc4e12faa8742778c17f2a71be2c0/python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32" }
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/fc/b8/ff33610932e0ee81ae7f1269c890f697d56ff74b9f5b2ee5d9b7fa2c5355/python_xlib-0.33-py2.py3-none-any.whl", hash = "sha256:c3534038d42e0df2f1392a1b30a15a4ff5fdc2b86cfa94f072bf11b10a164398" },
-]
-
-[[package]]
-name = "pythonnet"
-version = "3.1.0"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "clr-loader" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/05/57/da1992e44663b71365c6e842c8d7fa453d4ec45fb99a68cfee5b7e944d3c/pythonnet-3.1.0.tar.gz", hash = "sha256:7b34c382905d10a371509ffafd64cae0416305c28817738a9cd138336f4e9991" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ac/4b/52414f442624d2589f5374a48c08d5ae94f24bea67fc13a20a752884e5b7/pythonnet-3.1.0-cp310.cp311.cp312.cp313.cp314-none-any.whl", hash = "sha256:698dd88edc198819ad63b624a6ebe76208c7b46e4fe13626f65e484f0358d6ba" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/db/67/031124fdcb937c266a3265118525bbf6dc13b8c79786d6a7290aecb6e7bb/pythonnet-3.1.0-cp310.cp311.cp312.cp313.cp314-none-win32.win_amd64.whl", hash = "sha256:7bdd4de03df3547a48122a3989265c8b31d5be0d19dadffa009eec7df8085e0b" },
-]
-
-[[package]]
-name = "pywebview"
-version = "6.2.1"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "bottle" },
-    { name = "proxy-tools" },
-    { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-security", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-uniformtypeidentifiers", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-webkit", marker = "sys_platform == 'darwin'" },
-    { name = "pythonnet", marker = "sys_platform == 'win32'" },
-    { name = "qtpy", marker = "sys_platform == 'openbsd6'" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/59/4a/05307135dafba67778669d194bd1a3822a7685ec9ee8a6d7e70856c1a551/pywebview-6.2.1.tar.gz", hash = "sha256:71b7136752e40824655304d938efb62014218d1a90bd8e87e1cbdb1ce9c466af" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/3d/25/9491695c22c4842c5b3903b4dc172e0eecf67a27c0af34a71512c9b76a0a/pywebview-6.2.1-py3-none-any.whl", hash = "sha256:9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46" },
 ]
 
 [[package]]
@@ -1435,18 +1352,6 @@ wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b" },
-]
-
-[[package]]
-name = "qtpy"
-version = "2.4.3"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "packaging" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/70/01/392eba83c8e47b946b929d7c46e0f04b35e9671f8bb6fc36b6f7945b4de8/qtpy-2.4.3.tar.gz", hash = "sha256:db744f7832e6d3da90568ba6ccbca3ee2b3b4a890c3d6fbbc63142f6e4cdf5bb" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/69/76/37c0ccd5ab968a6a438f9c623aeecc84c202ab2fabc6a8fd927580c15b5a/QtPy-2.4.3-py3-none-any.whl", hash = "sha256:72095afe13673e017946cc258b8d5da43314197b741ed2890e563cf384b51aa1" },
 ]
 
 [[package]]
@@ -1742,6 +1647,25 @@ wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/68/43/c81672457002908b8c0f1e4672db1d0b8885c2894c6768fe9b0162af9ee5/winrt_windows_ui_notifications-3.2.1-cp314-cp314-win32.whl", hash = "sha256:00a7579ca0870134c27def1418c259fb18efe5b88aa399de85b4712f1add1b55" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/17/d8/910a58698d722120f2401c3bfeb6018361d92f3b2814caae839f54693305/winrt_windows_ui_notifications-3.2.1-cp314-cp314-win_amd64.whl", hash = "sha256:943599c727abf710ae94644b1d521e11857bd568e080e894a8be11aa717e383a" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/b5/a3/1db0f2ec28a4eadd0876c0ac3a3d78514027c5afe35737b164e03c98b234/winrt_windows_ui_notifications-3.2.1-cp314-cp314-win_arm64.whl", hash = "sha256:2a496c7e796b537966df7b26753b20bc40c5c1fbe96b3b3051a1debc00b80f07" },
+]
+
+[[package]]
+name = "wryview"
+version = "0.5.1"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/a2/e3/3817e579de68c4b4d26db11623a486b42e7bb060b5c4c2ac4335e5fc202d/wryview-0.5.1.tar.gz", hash = "sha256:e8d28d2678cc9732dd57535c94ebe91462bb5eb0a4565e36be61a596f60831f4" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/6b/77/0eb82a29b0d8355038acd86fc7fe47467cd16fba436df9663f106d8b3147/wryview-0.5.1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:b9aa4b23972489445562fc60de889a6148724231e36c7615f737576c12851b73" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/fa/9e/39796c914cf7821a8c95304713ed9ad93bd0fb0ba866ddbc3015b3200967/wryview-0.5.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:0838de2f929db818d1b1cce8d1a9e39349f4cac2de7aae0c79b7346485a7e8b7" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/03/3f/edada787af91546d5a6a8050a1fa4411831c95299cef0ceef3d5c4823c63/wryview-0.5.1-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:1f82315626a46ebd438be44255f8f6a9220afae871209bcb7e9268c2ea81560a" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/91/b8/c5ceac5cf2378b8bc8633bab33a35654bfacaccf97b3469cc818796c7c76/wryview-0.5.1-cp312-cp312-win32.whl", hash = "sha256:d3412e744c3493f1065a0e053b085db4238aa0bd5e6f8a9fc324d4899734616a" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a7/dc/0c5cf2fd2a1ea1979445b70922f43efb34243e4fdb73b9474b6ecd53fe44/wryview-0.5.1-cp312-cp312-win_amd64.whl", hash = "sha256:2f96040411d247faad99db1a9e2fbcc438710b252bc52ecb5a76c50de86592b4" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/1a/5e/36946914b881bf03f8e10026b24ad889f07c50f44e897758f479045b0676/wryview-0.5.1-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:f6a56185a0930299281f20c6bfed274a400b7a53e1a8dc362e9c5a7e13085b52" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/c4/3e/36775e77e49411c741935141ef65c24434d0f2e45c75dd0557f9ca61c879/wryview-0.5.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:57bfb04c04c64bb0d5bfa9463d99a66b10c9d5a2d771ab43a166f3803275eb86" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/9b/cd/55e92bed7a4891d9e319e33f135ac7646442a312e245520af417e5538c53/wryview-0.5.1-cp313-cp313-win_amd64.whl", hash = "sha256:fda5c1600853a9913cd8a8263af343a3e0af1fb382b32222be4cacab469b754b" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a4/93/4cec8bf5f23eb04d0889aa54f3d83688fae4c55a676093b66310efc4fcb9/wryview-0.5.1-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:e69e26117c2d6f13870c45259452c132a493605f819e50b019c823e2101db75e" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/35/4e/a284b8a5fe89589287645a9fcba03dd589689b3ab4ee352b12d38604b382/wryview-0.5.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:c329f79f3dd969c5704d241d214503f167eb081e327cfebd11bd4987284b89dd" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/2e/34/211a272b9d2c705c9c92faec7acd2c29f3cd7bace7700036b6b526a1aac5/wryview-0.5.1-cp314-cp314-win_amd64.whl", hash = "sha256:76082bea52f0f4d42fed218fffc069b8705be272988b56accfda0dd103393cd7" },
 ]
 
 [[package]]
