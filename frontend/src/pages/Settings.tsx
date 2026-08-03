@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'wouter';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
   Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
@@ -1125,8 +1125,7 @@ function AboutPanel() {
                   <div className="grid grid-cols-2 gap-2">
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react@19.2.6 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-dom@19.2.6 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-router@7.16.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-router-dom@7.16.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">wouter@3.10.0 (Unlicense)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">scheduler@0.27.0 (MIT)</span>
                     <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">use-sync-external-store@1.6.0 (MIT)</span>
                   </div>

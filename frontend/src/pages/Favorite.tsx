@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import type { Key } from '@heroui/react';
 import {
   Card, Button, Input, Drawer, Spinner, Label, Chip,

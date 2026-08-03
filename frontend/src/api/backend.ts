@@ -1868,6 +1868,7 @@ export interface WallpaperSourceCreatorPayload {
 }
 
 export type WallpaperSourceExternalExportFormat = 'apicore_v1' | 'apicore_v2' | 'openapi_3_2';
+export type WallpaperSourceExportFormat = 'lwps_v4_1' | 'apicore_v2_1' | 'openapi_3_2';
 
 export interface WallpaperSourceExportOptions {
   openapi?: {
@@ -1908,8 +1909,12 @@ export async function updateWallpaperSource(sourceId: string, payload: Wallpaper
   return call('update_wallpaper_source', sourceId, payload);
 }
 
-export async function exportWallpaperSource(sourceId: string, suggestedName?: string): Promise<{ saved_path: string } | null> {
-  return call('export_wallpaper_source', sourceId, suggestedName);
+export async function exportWallpaperSource(
+  sourceId: string,
+  exportFormat: WallpaperSourceExportFormat = 'lwps_v4_1',
+  suggestedName?: string,
+): Promise<{ saved_path: string; format?: WallpaperSourceExportFormat; file_count?: number } | null> {
+  return call('export_wallpaper_source', sourceId, exportFormat, suggestedName);
 }
 
 export async function exportWallpaperSourcePayload(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { Alert, Button, Card, Chip, Label, ListBox, Select, Skeleton } from '@heroui/react';
 import { ArrowRight, RefreshCw } from 'lucide-react';
 import { queryCnuSelected, queryCnuWorks } from '@/api/backend';

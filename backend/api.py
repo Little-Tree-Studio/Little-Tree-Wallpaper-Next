@@ -2629,7 +2629,7 @@ class BackendAPI:
         try:
             path = self._show_file_dialog(
                 "open",
-                filetypes=[("Wallpaper Source", "*.ltws *.json *.toml *.yaml *.yml")],
+                filetypes=[("Wallpaper Source", "*.lwps *.ltws *.json *.toml *.yaml *.yml")],
             )
             if not path:
                 return None
@@ -2665,27 +2665,41 @@ class BackendAPI:
             logger.error(f"update_wallpaper_source error: {e}")
             return {"error": str(e)}
 
-    def export_wallpaper_source(self, source_id: str, suggested_name: str | None = None) -> dict[str, Any] | None:
+    def export_wallpaper_source(
+        self,
+        source_id: str,
+        export_format: str = "lwps_v4_1",
+        suggested_name: str | None = None,
+    ) -> dict[str, Any] | None:
         try:
             import re
 
+            normalized_format = str(export_format or "lwps_v4_1").strip().lower()
+            format_options = {
+                "lwps_v4_1": (".lwps", [("LWPS V4.1", "*.lwps")]),
+                "apicore_v2_1": (".zip", [("APICORE V2.1 bundle", "*.zip")]),
+                "openapi_3_2": (".yaml", [("OpenAPI 3.2", "*.yaml *.yml *.json")]),
+            }
+            if normalized_format not in format_options:
+                raise ValueError("不支持的壁纸源导出格式")
+            default_extension, filetypes = format_options[normalized_format]
             base_name = re.sub(r'[\\/:*?"<>|]+', "-", suggested_name or source_id).strip().strip(".")
             if not base_name:
                 base_name = "wallpaper-source"
-            if not base_name.lower().endswith(".ltws"):
-                base_name = f"{base_name}.ltws"
+            if not base_name.lower().endswith(default_extension):
+                base_name = f"{base_name}{default_extension}"
             path = self._show_file_dialog(
                 "save",
-                filetypes=[("Wallpaper Source Package", "*.ltws")],
-                defaultextension=".ltws",
+                filetypes=filetypes,
+                defaultextension=default_extension,
                 initialfile=base_name,
             )
             if not path:
                 return None
-            return self.ltws_service.export_source(source_id, path)
+            return self.ltws_service.export_source(source_id, path, normalized_format)
         except Exception as e:
             logger.error(f"export_wallpaper_source error: {e}")
-            return None
+            raise
 
     def export_wallpaper_source_payload(
         self,

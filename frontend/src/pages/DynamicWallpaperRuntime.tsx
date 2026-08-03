@@ -25,7 +25,7 @@ export default function DynamicWallpaperRuntime() {
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 10_000);
+    const timer = window.setInterval(() => void refresh(), 750);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
   if (!scene) return <div className="flex h-screen items-center justify-center bg-black"><Spinner /></div>;

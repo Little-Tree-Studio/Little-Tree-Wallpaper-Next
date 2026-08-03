@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'wouter';
+import { useNavigate } from '@/lib/router';
 import { Alert, Button, Card, Chip, Skeleton } from '@heroui/react';
 import { ArrowLeft, CalendarDays, ExternalLink, Images, UserRound, Bookmark, Eye } from 'lucide-react';
 import { getPixivelWork, openUrl } from '@/api/backend';

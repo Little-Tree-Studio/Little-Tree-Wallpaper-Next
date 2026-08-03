@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from '@/lib/router';
 import { AlertDialog, Button, Card, Chip, Description, Dropdown, Input, Kbd, Label, ListBox, Modal, ScrollShadow, Select, Switch, Tabs, TextArea, TextField, Tooltip, toast } from '@heroui/react';
 import { Blocks, Braces, ChevronLeft, ChevronRight, CircleStop, Clock3, Download, FileJson, FileOutput, FolderOpen, HelpCircle, Image, MousePointer2, Move, Play, Plus, Redo2, RefreshCw, Save, Settings2, Sparkles, StickyNote, Trash2, Undo2, Upload, Video } from 'lucide-react';
 import AutomationCanvas from '@/components/AutomationEditor/AutomationCanvas';

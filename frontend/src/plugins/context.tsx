@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { usePathname } from '@/lib/router';
 import {
   invokePluginAction,
   listPlugins,
@@ -122,7 +122,7 @@ function installContributionStyles(contributions: BoundPluginContributions): () 
 }
 
 export function PluginProvider({ children }: { children: React.ReactNode }) {
-  const location = useLocation();
+  const pathname = usePathname();
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -176,7 +176,7 @@ export function PluginProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('ltw:host-theme-applied', apply);
       cleanUp();
     };
-  }, [plugins, location.pathname]);
+  }, [plugins, pathname]);
 
   return (
     <PluginContext.Provider value={{ plugins, contributions, loading, error, refresh, invoke }}>

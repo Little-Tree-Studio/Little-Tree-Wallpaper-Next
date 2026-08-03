@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { usePathname } from '@/lib/router';
 import {
   activateThemeProfile,
   getActiveTheme,
@@ -267,7 +267,7 @@ function ThemeBackground({ theme, resolved, preview }: {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const location = useLocation();
+  const pathname = usePathname();
   const [theme, setThemeState] = useState<ThemeMode>('system');
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolve('system'));
   const [activeTheme, setActiveTheme] = useState<ThemeProfile>(DEFAULT_THEME);
@@ -299,7 +299,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const effectiveTheme = preview?.theme ?? activeTheme;
   const previewAssets = preview?.assets ?? {};
-  const pageId = pageIdFromPath(location.pathname);
+  const pageId = pageIdFromPath(pathname);
 
   useEffect(() => {
     applyTheme(effectiveTheme, resolvedTheme, previewAssets, pageId);

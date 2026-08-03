@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Chip, Input, Label, ListBox, Select, Slider, Spinner, Switch, Tag, TagGroup, Tabs, Tooltip, toast } from '@heroui/react';
 import { Bug, Circle, CloudRain, Flower2, FolderOpen, Image, Images, Leaf, MonitorPlay, Pause, Play, Puzzle, RefreshCw, Settings2, Snowflake, Sparkle, Sparkles, Square, SunDim, Video } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import DynamicDesktop, { DesktopPreviewOverlay } from '@/components/DynamicDesktop';
 import {
   applyDynamicWallpaperScene,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { HashRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { Route, Router, Switch } from 'wouter';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
 import Resource from '@/pages/Resource';
@@ -36,11 +36,12 @@ import PluginGlobalUI from '@/plugins/PluginGlobalUI';
 import StaticWallpaperGuardProvider from '@/components/StaticWallpaperGuardProvider';
 import TextContextMenu from '@/components/TextContextMenu';
 import WindowTitleBar from '@/components/WindowTitleBar';
+import { useHashRouterLocation, usePathname } from '@/lib/router';
 
 function AppContent() {
-  const location = useLocation();
-  const isWallpaperRuntime = location.pathname === '/dynamic/runtime';
-  const windowTitle = location.pathname === '/dynamic/editor' ? '小组件编辑器' : '小树壁纸 Next';
+  const pathname = usePathname();
+  const isWallpaperRuntime = pathname === '/dynamic/runtime';
+  const windowTitle = pathname === '/dynamic/editor' ? '小组件编辑器' : '小树壁纸 Next';
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,9 +69,7 @@ function AppContent() {
   if (isWallpaperRuntime) {
     return (
       <PluginProvider>
-        <Routes>
-          <Route path="/dynamic/runtime" element={<DynamicWallpaperRuntime />} />
-        </Routes>
+        <Route path="/dynamic/runtime" component={DynamicWallpaperRuntime} />
       </PluginProvider>
     );
   }
@@ -83,34 +82,34 @@ function AppContent() {
         <StaticWallpaperGuardProvider>
           <PluginProvider>
             <ImageViewerProvider>
-            <Routes>
-              <Route path="/" element={<Layout />}>
-                <Route index element={<Home />} />
-                <Route path="resource" element={<Resource />} />
-                <Route path="resource/cnu/:workId" element={<CnuWorkDetail />} />
-                <Route path="resource/pixivel/:workId" element={<PixivelWorkDetail />} />
-                <Route path="resource/source-management" element={<WallpaperSourceManagement />} />
-                <Route path="generate" element={<Generate />} />
-                <Route path="create" element={<Create />} />
-                <Route path="dynamic" element={<DynamicWallpaper />} />
-                <Route path="dynamic/editor" element={<DynamicWidgetEditor />} />
-                <Route path="dynamic/runtime" element={<DynamicWallpaperRuntime />} />
-                <Route path="automation" element={<Automation />} />
-                <Route path="search" element={<Search />} />
-                <Route path="sniff" element={<Sniff />} />
-                <Route path="favorite" element={<Favorite />} />
-                <Route path="tags" element={<Tags />} />
-                <Route path="store" element={<Store />} />
-                <Route path="settings" element={<Settings />} />
-                <Route path="settings/:tab" element={<Settings />} />
-                <Route path="help" element={<Help />} />
-                <Route path="history" element={<History />} />
-                <Route path="tools" element={<Tools />} />
-                <Route path="tools/color-palette" element={<ColorPalette />} />
-                <Route path="tools/dynamic-wallpaper" element={<DynamicWallpaperDebug />} />
-                <Route path="*" element={<PluginPage />} />
-              </Route>
-            </Routes>
+            <Layout>
+              <Switch>
+                <Route path="/" component={Home} />
+                <Route path="/resource" component={Resource} />
+                <Route path="/resource/cnu/:workId" component={CnuWorkDetail} />
+                <Route path="/resource/pixivel/:workId" component={PixivelWorkDetail} />
+                <Route path="/resource/source-management" component={WallpaperSourceManagement} />
+                <Route path="/generate" component={Generate} />
+                <Route path="/create" component={Create} />
+                <Route path="/dynamic" component={DynamicWallpaper} />
+                <Route path="/dynamic/editor" component={DynamicWidgetEditor} />
+                <Route path="/dynamic/runtime" component={DynamicWallpaperRuntime} />
+                <Route path="/automation" component={Automation} />
+                <Route path="/search" component={Search} />
+                <Route path="/sniff" component={Sniff} />
+                <Route path="/favorite" component={Favorite} />
+                <Route path="/tags" component={Tags} />
+                <Route path="/store" component={Store} />
+                <Route path="/settings" component={Settings} />
+                <Route path="/settings/:tab" component={Settings} />
+                <Route path="/help" component={Help} />
+                <Route path="/history" component={History} />
+                <Route path="/tools" component={Tools} />
+                <Route path="/tools/color-palette" component={ColorPalette} />
+                <Route path="/tools/dynamic-wallpaper" component={DynamicWallpaperDebug} />
+                <Route component={PluginPage} />
+              </Switch>
+            </Layout>
             <ImageViewer />
             {betaVersion !== null && (
               <BetaWarningModal
@@ -132,7 +131,7 @@ function AppContent() {
 }
 
 function App() {
-  return <HashRouter><AppContent /></HashRouter>;
+  return <Router hook={useHashRouterLocation}><AppContent /></Router>;
 }
 
 export default App;

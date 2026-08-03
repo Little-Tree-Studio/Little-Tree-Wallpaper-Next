@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from '@/lib/router';
 import {
   Card, Button, Tabs, Skeleton, Chip, ComboBox, Input, Label, ListBox,
 } from '@heroui/react';

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { Tag, ArrowLeft } from 'lucide-react';
 import { Button } from '@heroui/react';
 import TagManager from '@/components/TagManager';

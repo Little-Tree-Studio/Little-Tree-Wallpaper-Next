@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DateValue } from '@internationalized/date';
 import { parseDate, today } from '@internationalized/date';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { Alert, Button, Calendar, Card, DateField, DatePicker, Label, Skeleton } from '@heroui/react';
 import { ArrowRight, RefreshCw, Eye, Bookmark, Search } from 'lucide-react';
 import { queryPixivelRanking } from '@/api/backend';

@@ -5,7 +5,7 @@ import {
   Select, ListBox,
 } from '@heroui/react';
 import { ArrowLeft, Copy, Check } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 
 type ColorChannel = 'hue' | 'saturation' | 'brightness' | 'lightness' | 'red' | 'green' | 'blue';
 

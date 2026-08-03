@@ -6,11 +6,12 @@ import re
 import shutil
 import tarfile
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlsplit, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 import requests
 import rtoml
@@ -47,6 +48,8 @@ IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9_]+(?:\.[a-z0-9_]+)+$")
 VARIABLE_PATTERN = re.compile(r"\{\{([^{}]+)\}\}")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 OPENAPI_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
+LWPS_FORMAT_VERSION = "4.1"
+BINARY_RESPONSE_FORMATS = {"binary", "image_raw", "raw"}
 
 
 def _slugify_source_path(value: str) -> str:
@@ -301,7 +304,16 @@ class LTWSService:
         if self._is_ltws_source_path(source):
             if source.is_file() and source.name.lower() == "source.toml":
                 source = source.parent
-            if source.suffix == ".ltws":
+            if source.suffix.lower() == ".lwps":
+                destination = self.sources_dir / source.stem
+                if destination.exists():
+                    shutil.rmtree(destination)
+                destination.mkdir(parents=True, exist_ok=True)
+                self._extract_lwps_package(source, destination)
+                logger.info("Imported LWPS wallpaper source to {}", destination)
+                return self._load_source(destination)
+
+            if source.suffix.lower() == ".ltws":
                 destination = self.sources_dir / source.stem
                 if destination.exists():
                     shutil.rmtree(destination)
@@ -339,24 +351,150 @@ class LTWSService:
             return self._convert_openapi_to_payload(document, source)
 
         version = _stringify(document.get("APICORE_version"))
-        if version in {"1.0", "2.0"}:
+        if version in {"1.0", "2.0", "2.1"}:
             logger.info("Converting APICORE v{} document to wallpaper source payload", version)
             return self._convert_apicore_to_payload(document, source, version)
         logger.error("Unsupported import format for {}", import_path)
-        raise ValueError("不支持的导入格式，当前仅支持 LTWS、APICORE v1/v2 和 OpenAPI 3.2")
+        raise ValueError("不支持的导入格式，当前仅支持 LWPS、LTWS、APICORE v1/v2 和 OpenAPI 3.2")
 
-    def export_source(self, source_id: str, target_path: str) -> dict[str, Any]:
-        logger.info("Exporting wallpaper source {} to {}", source_id, target_path)
+    def export_source(
+        self,
+        source_id: str,
+        target_path: str,
+        export_format: str = "lwps_v4_1",
+    ) -> dict[str, Any]:
+        logger.info("Exporting wallpaper source {} as {} to {}", source_id, export_format, target_path)
         source_path = self._find_source_path(source_id)
+        normalized_format = _stringify(export_format).lower()
+        if normalized_format == "lwps_v4_1":
+            return self._export_lwps_package(source_path, target_path)
+
+        payload = self._source_to_export_payload(source_path)
+        if normalized_format == "apicore_v2_1":
+            return self._export_apicore_bundle(payload, target_path)
+        if normalized_format == "openapi_3_2":
+            return self.export_payload(payload, normalized_format, target_path)
+        raise ValueError("不支持的导出格式，当前仅支持 LWPS V4.1、APICORE V2.1 和 OpenAPI 3.2")
+
+    def _export_lwps_package(self, source_path: Path, target_path: str) -> dict[str, Any]:
         target = Path(target_path)
-        if target.suffix.lower() != ".ltws":
-            target = target.with_suffix(".ltws")
+        if target.suffix.lower() != ".lwps":
+            target = target.with_suffix(".lwps")
         target.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(target, "w") as archive:
-            for child in sorted(source_path.rglob("*")):
-                archive.add(child, arcname=str(child.relative_to(source_path)))
-        logger.info("Exported wallpaper source {} to {}", source_id, target)
-        return {"saved_path": str(target)}
+        files = [child for child in sorted(source_path.rglob("*")) if child.is_file()]
+        source_spec = rtoml.load(source_path / "source.toml")
+        manifest = {
+            "format": "LWPS",
+            "format_version": LWPS_FORMAT_VERSION,
+            "profile": "com.littletree.wallpaper-source",
+            "source": {
+                "identifier": _stringify(source_spec.get("identifier")),
+                "name": _stringify(source_spec.get("name")),
+                "version": _stringify(source_spec.get("version")),
+                "scheme": _stringify(source_spec.get("scheme")),
+            },
+            "files": [
+                {
+                    "path": child.relative_to(source_path).as_posix(),
+                    "size": child.stat().st_size,
+                    "sha256": hashlib.sha256(child.read_bytes()).hexdigest(),
+                }
+                for child in files
+            ],
+        }
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for child in files:
+                archive.write(child, child.relative_to(source_path).as_posix())
+        logger.info("Exported LWPS V{} wallpaper source to {}", LWPS_FORMAT_VERSION, target)
+        return {"saved_path": str(target), "format": "lwps_v4_1", "file_count": len(files)}
+
+    def _extract_lwps_package(self, source: Path, destination: Path) -> None:
+        with zipfile.ZipFile(source) as archive:
+            try:
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            except KeyError as exc:
+                raise ValueError("LWPS 包缺少 manifest.json") from exc
+            if manifest.get("format") != "LWPS" or _stringify(manifest.get("format_version")) != LWPS_FORMAT_VERSION:
+                raise ValueError("LWPS 包版本不受支持，当前仅支持 V4.1")
+
+            expected_files = {
+                _stringify(item.get("path")): _stringify(item.get("sha256"))
+                for item in manifest.get("files") or []
+                if isinstance(item, dict) and _stringify(item.get("path"))
+            }
+            for member in archive.infolist():
+                if member.filename == "manifest.json" or member.is_dir():
+                    continue
+                member_path = destination / member.filename
+                try:
+                    member_path.resolve().relative_to(destination.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"LWPS 包中包含不安全路径: {member.filename}") from exc
+                content = archive.read(member)
+                expected_hash = expected_files.get(member.filename)
+                if not expected_hash or hashlib.sha256(content).hexdigest() != expected_hash:
+                    raise ValueError(f"LWPS 包文件校验失败: {member.filename}")
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+                member_path.write_bytes(content)
+
+            archived_files = {
+                member.filename
+                for member in archive.infolist()
+                if not member.is_dir() and member.filename != "manifest.json"
+            }
+            missing_files = set(expected_files) - archived_files
+            if missing_files:
+                raise ValueError(f"LWPS 包缺少清单文件: {sorted(missing_files)[0]}")
+            undeclared_files = archived_files - set(expected_files)
+            if undeclared_files:
+                raise ValueError(f"LWPS 包包含未声明文件: {sorted(undeclared_files)[0]}")
+
+    def _source_to_export_payload(self, source_path: Path) -> dict[str, Any]:
+        source = self._load_source(source_path)
+        return {
+            "source": {
+                key: source.get(key)
+                for key in (
+                    "identifier",
+                    "name",
+                    "version",
+                    "description",
+                    "details",
+                    "logo",
+                    "footer_text",
+                    "merge",
+                )
+            },
+            "config": source.get("config") or {},
+            "categories": {
+                "categories": source.get("categories") or [],
+                "category_groups": source.get("category_groups") or [],
+            },
+            "apis": source.get("apis") or [],
+        }
+
+    def _export_apicore_bundle(self, payload: dict[str, Any], target_path: str) -> dict[str, Any]:
+        apis = [item for item in payload.get("apis") or [] if isinstance(item, dict)]
+        if not apis:
+            raise ValueError("导出前至少需要一个 API 配置")
+        target = Path(target_path)
+        if target.suffix.lower() != ".zip":
+            target = target.with_suffix(".zip")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        used_names: set[str] = set()
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for index, api in enumerate(apis, start=1):
+                api_payload = {**payload, "apis": [api]}
+                document = self._convert_payload_to_apicore(api_payload, "2.1")
+                base_name = _slugify_source_path(_stringify(api.get("name")) or f"api-{index}")
+                entry_name = f"{base_name}.api.json"
+                if entry_name in used_names:
+                    entry_name = f"{base_name}-{index}.api.json"
+                used_names.add(entry_name)
+                archive.writestr(entry_name, json.dumps(document, ensure_ascii=False, indent=2))
+        logger.info("Exported {} APICORE V2.1 configuration(s) to {}", len(apis), target)
+        return {"saved_path": str(target), "format": "apicore_v2_1", "file_count": len(apis)}
 
     def export_payload(
         self,
@@ -371,15 +509,15 @@ class LTWSService:
         if normalized_format == "apicore_v1":
             document = self._convert_payload_to_apicore(payload, "1.0")
             saved_path = self._write_external_document(document, target, ".json")
-        elif normalized_format == "apicore_v2":
-            document = self._convert_payload_to_apicore(payload, "2.0")
+        elif normalized_format in {"apicore_v2", "apicore_v2_1"}:
+            document = self._convert_payload_to_apicore(payload, "2.1")
             saved_path = self._write_external_document(document, target, ".json")
         elif normalized_format == "openapi_3_2":
             document = self._convert_payload_to_openapi(payload, export_options)
             saved_path = self._write_external_document(document, target, ".yaml")
         else:
             logger.error("Unsupported export format: {}", export_format)
-            raise ValueError("不支持的导出格式，当前仅支持 APICORE v1/v2 和 OpenAPI 3.2")
+            raise ValueError("不支持的导出格式，当前仅支持 APICORE v1/V2.1 和 OpenAPI 3.2")
         logger.info("Exported wallpaper source payload to {}", saved_path)
         return {"saved_path": str(saved_path)}
 
@@ -473,7 +611,7 @@ class LTWSService:
                 request_payload = api_payload.get("request") or {}
                 request_url = str(request_payload.get("url") or "").strip()
                 response_payload = api_payload.get("response") or {}
-                response_format = str(response_payload.get("format") or "json").strip() or "json"
+                response_format = str(response_payload.get("format") or "json").strip().lower() or "json"
                 if response_format == "raw":
                     response_format = "binary"
                 response_type = str(response_payload.get("type") or "multi").strip() or "multi"
@@ -501,9 +639,7 @@ class LTWSService:
                     item_mapping = _build_legacy_item_mapping(mapping_payload)
                 if response_format not in {
                     "image_url",
-                    "image_raw",
-                    "raw",
-                    "binary",
+                    *BINARY_RESPONSE_FORMATS,
                     "static_dict",
                     "static_list",
                 } and not _stringify(item_mapping.get("image")):
@@ -610,7 +746,7 @@ class LTWSService:
             request_payload = api_payload.get("request") or {}
             request_url = str(request_payload.get("url") or "").strip()
             response_payload = api_payload.get("response") or {}
-            response_format = str(response_payload.get("format") or "json").strip() or "json"
+            response_format = str(response_payload.get("format") or "json").strip().lower() or "json"
             if response_format == "raw":
                 response_format = "binary"
             response_type = str(response_payload.get("type") or "multi").strip() or "multi"
@@ -638,9 +774,7 @@ class LTWSService:
                 item_mapping = _build_legacy_item_mapping(mapping_payload)
             if response_format not in {
                 "image_url",
-                "image_raw",
-                "raw",
-                "binary",
+                *BINARY_RESPONSE_FORMATS,
                 "static_dict",
                 "static_list",
             } and not _stringify(item_mapping.get("image")):
@@ -1061,7 +1195,7 @@ class LTWSService:
                 if normalized_item:
                     items.append(normalized_item)
             document["static_dict"] = {"items": items}
-        elif response_format not in {"image_url", "image_raw", "raw", "binary"}:
+        elif response_format not in {"image_url", *BINARY_RESPONSE_FORMATS}:
             mapping_document: dict[str, Any] = {}
             items_path = _stringify(mapping_payload.get("items") or mapping_payload.get("items_path"))
             if response_type == "multi" and items_path:
@@ -1985,7 +2119,7 @@ class LTWSService:
         return refreshed or url
 
     def _is_ltws_source_path(self, source: Path) -> bool:
-        if source.suffix.lower() == ".ltws":
+        if source.suffix.lower() in {".ltws", ".lwps"}:
             return True
         if source.is_dir() and (source / "source.toml").exists():
             return True
@@ -2090,6 +2224,16 @@ class LTWSService:
             text,
         )
 
+    def _convert_payload_template_to_apicore(self, value: Any) -> str:
+        text = _stringify(value)
+        if not text:
+            return ""
+        return re.sub(
+            r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}",
+            r"{{parameters.\1}}",
+            text,
+        )
+
     def _convert_apicore_parameters(self, raw_parameters: Any) -> list[dict[str, Any]]:
         rows = raw_parameters if isinstance(raw_parameters, list) else []
         converted: list[dict[str, Any]] = []
@@ -2119,8 +2263,8 @@ class LTWSService:
                     "default": bool(default_value)
                     if source_type == "boolean"
                     else ("" if default_value is None else default_value),
-                    "choices": [str(value) for value in (item.get("friendly_value") or [])],
-                    "hidden": False,
+                    "choices": [str(value) for value in (item.get("options") or item.get("friendly_value") or [])],
+                    "hidden": item.get("enable") is False,
                     "description": _stringify(item.get("tooltip")),
                     "placeholder": _stringify(item.get("placeholder")),
                     "min_length": None,
@@ -2251,8 +2395,11 @@ class LTWSService:
 
     def _convert_apicore_response(self, response: Any) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
         response_data = response if isinstance(response, dict) else {}
-        image = response_data.get("image") if isinstance(response_data.get("image"), dict) else {}
+        media = response_data.get("media") if isinstance(response_data.get("media"), dict) else None
+        image = media or (response_data.get("image") if isinstance(response_data.get("image"), dict) else {})
         image_path = _stringify(image.get("path"))
+        if image_path == "$body":
+            image_path = ""
         content_type = _stringify(image.get("content_type") or "URL").upper() or "URL"
         is_list = bool(image.get("is_list"))
         response_payload = {"format": "json", "type": "multi" if is_list else "single"}
@@ -2321,7 +2468,7 @@ class LTWSService:
         response_payload, mapping_payload, post_process_payload = self._convert_apicore_response(
             document.get("response")
         )
-        retry_config = ((document.get("configs") or {}).get("retry") or {}) if version == "2.0" else {}
+        retry_config = ((document.get("configs") or {}).get("retry") or {}) if version in {"2.0", "2.1"} else {}
         base_payload = self._create_imported_source_payload(
             source_name=source_name,
             source=source,
@@ -2835,8 +2982,31 @@ class LTWSService:
             raise ValueError("导出前至少需要一个有效的 API 配置")
         return api
 
+    def _normalize_export_item_mapping(self, mapping_payload: dict[str, Any]) -> dict[str, str]:
+        item_mapping = _normalize_key_value_rows(mapping_payload.get("item_mapping"))
+        if not item_mapping:
+            item_mapping = _normalize_key_value_rows(mapping_payload.get("fields"))
+        if not item_mapping:
+            item_mapping = _build_legacy_item_mapping(mapping_payload)
+        for key in (
+            "image",
+            "title",
+            "copyright",
+            "description",
+            "preview",
+            "author",
+            "source_url",
+            "tags",
+            "width",
+            "height",
+        ):
+            value = _stringify(mapping_payload.get(key))
+            if value:
+                item_mapping.setdefault(key, value)
+        return item_mapping
+
     def _mapping_lookup(self, mapping_payload: dict[str, Any], key: str) -> str:
-        return _stringify(_normalize_key_value_rows(mapping_payload.get("item_mapping")).get(key))
+        return _stringify(self._normalize_export_item_mapping(mapping_payload).get(key))
 
     def _join_mapping_path(self, prefix: Any, path: Any) -> str:
         normalized_prefix = _stringify(prefix)
@@ -2862,22 +3032,28 @@ class LTWSService:
             "list": "list",
         }.get(parameter_type, "string")
         default_value = parameter.get("default")
+        choices = parameter.get("choices") or []
+        if exported_type == "enum" and not choices:
+            raise ValueError(f"APICORE V2.1 的枚举参数 {_stringify(parameter.get('key'))} 缺少可选值")
         exported = {
             "name": _stringify(parameter.get("key")),
             "friendly_name": _stringify(parameter.get("label") or parameter.get("key")),
             "type": exported_type,
             "value": default_value if default_value not in {None, ""} else None,
-            "friendly_value": parameter.get("choices") or [],
+            "enable": not bool(parameter.get("hidden")),
+            "options": choices,
             "tooltip": _stringify(parameter.get("description")),
             "placeholder": _stringify(parameter.get("placeholder")),
             "split_str": "," if exported_type == "list" else None,
         }
-        return _strip_empty_sections(exported)
+        normalized = _strip_empty_sections(exported)
+        normalized["value"] = default_value if default_value is not None else ""
+        return normalized
 
     def _convert_payload_to_apicore_response(self, api_payload: dict[str, Any]) -> dict[str, Any]:
         response_payload = api_payload.get("response") or {}
         mapping_payload = api_payload.get("mapping") or {}
-        response_format = _stringify(response_payload.get("format") or "json")
+        response_format = _stringify(response_payload.get("format") or "json").lower()
         response_type = _stringify(response_payload.get("type") or "single")
         if response_format in {"static_list", "static_dict"}:
             raise ValueError("APICORE 导出暂不支持 static_list 或 static_dict 响应")
@@ -2885,7 +3061,7 @@ class LTWSService:
         content_type = "URL"
         image_path = ""
         is_list = response_type == "multi"
-        if response_format == "image_raw":
+        if response_format in BINARY_RESPONSE_FORMATS:
             content_type = "BINARY"
             is_list = False
         elif response_format == "image_url":
@@ -2899,7 +3075,7 @@ class LTWSService:
             image_path = self._join_mapping_path(items_path, image_mapping)
 
         metadata_rows: list[dict[str, Any]] = []
-        for key, path in _normalize_key_value_rows(mapping_payload.get("item_mapping")).items():
+        for key, path in self._normalize_export_item_mapping(mapping_payload).items():
             if key == "image":
                 continue
             metadata_rows.append(
@@ -2909,14 +3085,17 @@ class LTWSService:
                 }
             )
 
+        media = {
+            "type": "image",
+            "content_type": content_type,
+            "path": image_path or "$body",
+            "is_list": is_list,
+            "is_base64": False,
+        }
         return _strip_empty_sections(
             {
-                "image": {
-                    "content_type": content_type,
-                    "path": image_path,
-                    "is_list": is_list,
-                    "is_base64": False,
-                },
+                "media": media,
+                "image": {key: value for key, value in media.items() if key != "type"},
                 "others": [
                     {
                         "friendly_name": "metadata",
@@ -2958,6 +3137,7 @@ class LTWSService:
                 {
                     "action": action,
                     "message": _stringify(row.get("message")),
+                    "count": 1 if action == "retry" else None,
                     "delay_ms": retry_after * 1000 if retry_after > 0 else None,
                 }
             )
@@ -2977,12 +3157,17 @@ class LTWSService:
             raise ValueError("APICORE 导出暂不支持 static_list 或 static_dict 响应")
 
         document: dict[str, Any] = {
-            "friendly_name": _stringify(source_payload.get("name") or api_payload.get("name")),
+            "$schema": "https://raw.githubusercontent.com/SRON-org/APICORE-2/refs/heads/main/APICORE.v2.Schema.json"
+            if version == "2.1"
+            else None,
+            "id": _stringify(source_payload.get("identifier")),
+            "version": _stringify(source_payload.get("version")),
+            "friendly_name": _stringify(api_payload.get("name") or source_payload.get("name")),
             "intro": _stringify(
-                source_payload.get("description") or source_payload.get("details") or api_payload.get("description")
+                api_payload.get("description") or source_payload.get("description") or source_payload.get("details")
             ),
-            "icon": _stringify(source_payload.get("logo") or api_payload.get("logo")),
-            "link": _stringify(request_payload.get("url")),
+            "icon": _stringify(api_payload.get("logo") or source_payload.get("logo")),
+            "link": self._convert_payload_template_to_apicore(request_payload.get("url")),
             "func": _stringify(request_payload.get("method") or "GET").upper() or "GET",
             "APICORE_version": version,
             "parameters": [
@@ -2993,22 +3178,37 @@ class LTWSService:
             "response": self._convert_payload_to_apicore_response(api_payload),
         }
 
-        if version == "2.0":
+        if version in {"2.0", "2.1"}:
             headers = {
-                **_normalize_key_value_rows(config_payload.get("headers")),
-                **_normalize_key_value_rows(request_payload.get("headers")),
+                **{
+                    key: self._convert_payload_template_to_apicore(value)
+                    for key, value in _normalize_key_value_rows(config_payload.get("headers")).items()
+                },
+                **{
+                    key: self._convert_payload_template_to_apicore(value)
+                    for key, value in _normalize_key_value_rows(request_payload.get("headers")).items()
+                },
             }
             retry_payload = config_payload.get("retry") or {}
             api_interval = request_payload.get("interval_seconds") or config_payload.get("global_interval_seconds")
+            request_config: dict[str, Any] = {
+                "headers": headers,
+                "timeout_ms": _coerce_int(
+                    request_payload.get("timeout_seconds") or config_payload.get("timeout_seconds"), 20, 1
+                )
+                * 1000,
+            }
+            body_template = self._convert_payload_template_to_apicore(request_payload.get("body"))
+            if body_template:
+                body_type = _stringify(request_payload.get("body_type") or "json")
+                request_config["body_type"] = {
+                    "form": "x-www-form-urlencoded",
+                    "form-data": "form-data",
+                }.get(body_type, body_type)
+                request_config["body_template"] = body_template
             document["configs"] = _strip_empty_sections(
                 {
-                    "request": {
-                        "headers": headers,
-                        "timeout_ms": _coerce_int(
-                            request_payload.get("timeout_seconds") or config_payload.get("timeout_seconds"), 20, 1
-                        )
-                        * 1000,
-                    },
+                    "request": _strip_empty_sections(request_config),
                     "retry": {
                         "count": _coerce_int(retry_payload.get("max_attempts"), 1, 1),
                         "delay_ms": _coerce_int(retry_payload.get("initial_delay_ms"), 0, 0),
@@ -3020,7 +3220,9 @@ class LTWSService:
             if handlers:
                 document["handlers"] = handlers
 
-        return _strip_empty_sections(document)
+        normalized_document = _strip_empty_sections(document)
+        normalized_document["parameters"] = document["parameters"]
+        return normalized_document
 
     def _convert_creator_parameter_to_openapi_schema(self, parameter: dict[str, Any]) -> dict[str, Any]:
         parameter_type = _stringify(parameter.get("type") or "text")
@@ -3058,9 +3260,9 @@ class LTWSService:
     def _build_openapi_response_content(self, api_payload: dict[str, Any]) -> dict[str, Any]:
         response_payload = api_payload.get("response") or {}
         mapping_payload = api_payload.get("mapping") or {}
-        response_format = _stringify(response_payload.get("format") or "json")
+        response_format = _stringify(response_payload.get("format") or "json").lower()
         response_type = _stringify(response_payload.get("type") or "single")
-        if response_format == "image_raw":
+        if response_format in BINARY_RESPONSE_FORMATS:
             return {
                 "image/*": {
                     "schema": {"type": "string", "format": "binary"},

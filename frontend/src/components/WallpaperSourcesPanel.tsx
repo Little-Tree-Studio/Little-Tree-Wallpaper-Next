@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Card, Button, Tabs, ComboBox, Input, Label, ListBox,
-  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, AlertDialog, SearchField, toast,
+  Drawer, Switch, TextArea, TextField, FieldError, Description, Accordion, Tooltip, Modal, AlertDialog, SearchField,
+  toast,
 } from '@heroui/react';
 import {
   Image as ImageIcon, Heart, Copy, RefreshCw,
@@ -21,7 +22,7 @@ import { logError } from '@/lib/log';
 import { safeNameForFile } from '@/lib/download';
 import type {
   WallpaperSource, WallpaperSourceApiParameter,
-  WallpaperSourceCreatorPayload, WallpaperSourceCategory,
+  WallpaperSourceCreatorPayload, WallpaperSourceCategory, WallpaperSourceExportFormat,
 } from '@/api/backend';
 
 interface WallpaperSourcesPanelProps {
@@ -656,6 +657,8 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WallpaperSource | null>(null);
   const [saving, setSaving] = useState(false);
+  const [exportTarget, setExportTarget] = useState<WallpaperSource | null>(null);
+  const [exportFormat, setExportFormat] = useState<WallpaperSourceExportFormat>('lwps_v4_1');
   const [exporting, setExporting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -1016,12 +1019,25 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
     setDeleteTarget(null);
   };
 
-  const handleExportSource = async (source: WallpaperSource) => {
+  const openExportDialog = (source: WallpaperSource) => {
+    setExportTarget(source);
+    setExportFormat('lwps_v4_1');
+  };
+
+  const handleExportSource = async () => {
+    const source = exportTarget;
+    if (!source) return;
     setExporting(true);
     try {
-      const result = await exportWallpaperSource(source.identifier, source.name);
-      if (result?.saved_path) toast.success(`已导出到 ${result.saved_path}`);
-    } catch (e) { logError('Export source failed', e); toast.danger('导出失败'); }
+      const result = await exportWallpaperSource(source.identifier, exportFormat, source.name);
+      if (result?.saved_path) {
+        toast.success(`已导出 ${source.name}`, { description: result.saved_path, timeout: 5000 });
+        setExportTarget(null);
+      }
+    } catch (e) {
+      logError('Export source failed', e);
+      toast.danger('导出失败', { description: e instanceof Error ? e.message : String(e), timeout: 5000 });
+    }
     finally { setExporting(false); }
   };
 
@@ -1184,7 +1200,7 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
 
       {validSources.length === 0 && invalidSources.length === 0 && !loading && (
         <div className="py-10 text-center text-muted">
-          {mode === 'management' ? '暂无壁纸源，点击"导入"添加 .ltws 文件' : '暂无壁纸源'}
+          {mode === 'management' ? '暂无壁纸源，点击"导入"添加 .lwps 或 .ltws 文件' : '暂无壁纸源'}
         </div>
       )}
 
@@ -1220,15 +1236,15 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                       <Switch isSelected={s.enabled !== false} onChange={() => handleToggleSource(s)}>
                         <Switch.Control><Switch.Thumb /></Switch.Control>
                       </Switch>
+                      <Button isIconOnly variant="ghost" size="sm" isDisabled={exporting}
+                        onPress={() => openExportDialog(s)} aria-label={`导出 ${s.name}`}
+                      >
+                        <Download size={14} />
+                      </Button>
                       {s.can_delete && (
                         <>
                           <Button isIconOnly variant="ghost" size="sm" onPress={() => startEdit(s)} aria-label="编辑">
                             <Pencil size={14} />
-                          </Button>
-                          <Button isIconOnly variant="ghost" size="sm" isDisabled={exporting}
-                            onPress={() => handleExportSource(s)} aria-label="导出"
-                          >
-                            <Download size={14} />
                           </Button>
                           <Button isIconOnly variant="ghost" size="sm" onPress={() => setDeleteTarget(s)}>
                             <Trash2 size={14} className="text-danger" />
@@ -2908,6 +2924,71 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
           </Drawer.Content>
         </Drawer.Backdrop>
       )}
+
+      {/* ═══════════ 壁纸源导出窗口 ═══════════ */}
+      <Modal.Backdrop
+        isOpen={!!exportTarget}
+        onOpenChange={(open) => !open && !exporting && setExportTarget(null)}
+      >
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Icon className="bg-accent-soft text-accent-soft-foreground">
+                <Download size={20} />
+              </Modal.Icon>
+              <Modal.Heading>导出壁纸源</Modal.Heading>
+              <p className="text-sm text-muted">
+                {exportTarget?.name || exportTarget?.identifier}
+              </p>
+            </Modal.Header>
+            <Modal.Body>
+              <div className="space-y-2">
+                <Label>导出格式</Label>
+                <Description className="block">LWPS 可完整备份；兼容格式会按目标协议转换。</Description>
+                <ListBox
+                  aria-label="导出格式"
+                  selectionMode="single"
+                  selectedKeys={new Set([exportFormat])}
+                  disabledKeys={exporting ? ['lwps_v4_1', 'openapi_3_2', 'apicore_v2_1'] : []}
+                  onSelectionChange={(keys) => {
+                    const selected = Array.from(keys)[0];
+                    if (selected) setExportFormat(String(selected) as WallpaperSourceExportFormat);
+                  }}
+                >
+                  <ListBox.Item id="lwps_v4_1" textValue="LWPS V4.1（推荐）">
+                    <div className="flex flex-col">
+                      <Label>LWPS V4.1（推荐）</Label>
+                      <Description>.lwps 完整包，包含源配置、清单和完整性校验，可重新导入。</Description>
+                    </div>
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                  <ListBox.Item id="openapi_3_2" textValue="OpenAPI 3.2">
+                    <div className="flex flex-col">
+                      <Label>OpenAPI 3.2</Label>
+                      <Description>.yaml 标准 API 文档；壁纸映射和缓存等能力通过 x-ltws 扩展保留。</Description>
+                    </div>
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                  <ListBox.Item id="apicore_v2_1" textValue="APICORE V2.1">
+                    <div className="flex flex-col">
+                      <Label>APICORE V2.1</Label>
+                      <Description>.zip 兼容包，每个接口生成一份 .api.json；分类和部分执行策略不会保留。</Description>
+                    </div>
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                </ListBox>
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="secondary" isDisabled={exporting} onPress={() => setExportTarget(null)}>取消</Button>
+              <Button isPending={exporting} onPress={handleExportSource}>
+                <Download size={14} /> 导出
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
       {/* ═══════════ 删除确认对话框 ═══════════ */}
       {deleteTarget && (

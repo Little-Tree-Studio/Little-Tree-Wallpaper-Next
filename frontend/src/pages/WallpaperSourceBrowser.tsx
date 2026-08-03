@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import {
   Card, Button, ComboBox, Input, Label, ListBox, Switch, TextField, Spinner, TagGroup, Tag, Description,
   SearchField, Autocomplete, EmptyState, useFilter,

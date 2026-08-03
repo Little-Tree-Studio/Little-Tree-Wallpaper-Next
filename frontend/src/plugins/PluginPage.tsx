@@ -1,13 +1,13 @@
 import { Card, Spinner } from '@heroui/react';
-import { useLocation } from 'react-router-dom';
+import { usePathname } from '@/lib/router';
 import PluginRenderer from './PluginRenderer';
 import { usePlugins } from './context';
 
 export default function PluginPage() {
-  const location = useLocation();
+  const pathname = usePathname();
   const { contributions, loading } = usePlugins();
   const page = [...contributions.pages, ...contributions.resource_pages]
-    .find((contribution) => contribution.route === location.pathname);
+    .find((contribution) => contribution.route === pathname);
 
   if (loading) {
     return (

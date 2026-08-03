@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { ArrowLeft, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@heroui/react';
 import WallpaperSourcesPanel from '@/components/WallpaperSourcesPanel';

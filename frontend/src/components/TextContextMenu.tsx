@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type Key } from 'react';
 import { createPortal } from 'react-dom';
-import { useLocation } from 'react-router-dom';
 import { Clipboard, Copy, Redo2, Scissors, TextSelect, Undo2 } from 'lucide-react';
 import { Kbd, Label, ListBox, Separator } from '@heroui/react';
 import { getClipboardText } from '@/api/backend';
+import { useHashSearch, usePathname } from '@/lib/router';
 
 type EditableElement = HTMLInputElement | HTMLTextAreaElement | HTMLElement;
 
@@ -67,11 +67,12 @@ function getSelectionState(target: EditableElement) {
 export default function TextContextMenu() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const location = useLocation();
+  const pathname = usePathname();
+  const search = useHashSearch();
 
   useEffect(() => {
     setMenu(null);
-  }, [location.key, location.pathname, location.search, location.hash]);
+  }, [pathname, search]);
 
   useEffect(() => {
     const openMenu = (event: MouseEvent) => {

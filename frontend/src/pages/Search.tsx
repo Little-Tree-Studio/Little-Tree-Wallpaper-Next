@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from '@/lib/router';
 import {
   Card, Button, Input, Spinner, Chip, Select, Label, ListBox, Tooltip, Checkbox, toast,
   Toolbar, ButtonGroup, Separator,
