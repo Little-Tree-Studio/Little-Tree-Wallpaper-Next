@@ -2479,6 +2479,9 @@ class BackendAPI:
         if incoming_autostart != bool(self.store.get("startup.auto_start", False)):
             raise ValueError("开机自启动必须通过专用系统接口修改")
         self.store.replace(settings)
+        self.dynamic_wallpaper_service.refresh_static_snapshot(
+            bool(self.store.get("wallpaper.dynamic.static_snapshot.enabled", False))
+        )
 
     def get_setting(self, key: str) -> Any:
         return self.store.get(key)

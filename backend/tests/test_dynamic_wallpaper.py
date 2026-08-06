@@ -279,6 +279,36 @@ class DynamicWallpaperServiceTests(unittest.TestCase):
 
         service._queue_static_snapshot.assert_called_once_with(STATIC_SNAPSHOT_SETTLE_SECONDS)
 
+    def test_snapshot_queue_keeps_every_slideshow_change(self) -> None:
+        service = WindowsDynamicWallpaperService(static_snapshot_enabled=lambda: True)
+        service._attached = True
+        service._window = FakeWindow()
+
+        service._queue_static_snapshot(1)
+        service._queue_static_snapshot(1)
+
+        self.assertEqual(len(service._static_snapshot_due_times), 2)
+
+    @patch("backend.services.dynamic_wallpaper.set_sys_wallpaper")
+    @patch("backend.services.dynamic_wallpaper.os.name", "nt")
+    def test_snapshot_files_alternate_to_refresh_windows_cache(self, set_system: MagicMock) -> None:
+        with TemporaryDirectory() as directory:
+            service = WindowsDynamicWallpaperService(
+                static_snapshot_enabled=lambda: True,
+                static_snapshot_path=Path(directory) / "snapshot.jpg",
+            )
+            service._attached = True
+            service._window = FakeWindow()
+            service._workerw_handle = 1
+            service._capture_runtime_window = MagicMock()
+
+            service._capture_static_snapshot("periodic")
+            service._capture_static_snapshot("slideshow")
+
+        captured_paths = [call.args[1].name for call in service._capture_runtime_window.call_args_list]
+        self.assertEqual(captured_paths, ["snapshot-0.jpg", "snapshot-1.jpg"])
+        self.assertEqual(set_system.call_count, 2)
+
     def test_performance_action_uses_strongest_active_policy(self) -> None:
         conditions = {
             "other_application_focused": True,
@@ -296,6 +326,27 @@ class DynamicWallpaperServiceTests(unittest.TestCase):
         action = WindowsDynamicWallpaperService._resolve_performance_action(conditions, settings)
 
         self.assertEqual(action, "stop")
+
+    @patch.object(WindowsDynamicWallpaperService, "_using_battery", return_value=True)
+    @patch.object(WindowsDynamicWallpaperService, "_other_application_playing_audio", return_value=True)
+    @patch.object(
+        WindowsDynamicWallpaperService,
+        "_detect_foreground_conditions",
+        side_effect=AttributeError("unsupported foreground API"),
+    )
+    def test_condition_probe_failure_does_not_disable_other_conditions(
+        self,
+        _foreground: MagicMock,
+        _audio: MagicMock,
+        _battery: MagicMock,
+    ) -> None:
+        conditions = WindowsDynamicWallpaperService._detect_performance_conditions()
+
+        self.assertFalse(conditions["other_application_focused"])
+        self.assertFalse(conditions["other_application_maximized"])
+        self.assertFalse(conditions["other_application_fullscreen"])
+        self.assertTrue(conditions["other_application_audio"])
+        self.assertTrue(conditions["on_battery"])
 
     def test_performance_action_ignores_inactive_conditions(self) -> None:
         conditions = dict.fromkeys(

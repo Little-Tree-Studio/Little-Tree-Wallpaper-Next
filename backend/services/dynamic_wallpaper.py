@@ -61,6 +61,7 @@ class WindowsDynamicWallpaperService:
         self._static_snapshot_due_times: deque[float] = deque()
         self._last_static_snapshot_at = ""
         self._last_static_snapshot_error = ""
+        self._static_snapshot_generation = 0
         self._last_slideshow_sequence = -1
         self._performance_monitor_stop = threading.Event()
         self._performance_monitor_thread: threading.Thread | None = None
@@ -204,11 +205,15 @@ class WindowsDynamicWallpaperService:
                 workerw_handle = self._workerw_handle
             if not workerw_handle:
                 return
-            path = self._static_snapshot_path
+            suffix = self._static_snapshot_path.suffix or ".jpg"
+            path = self._static_snapshot_path.with_name(
+                f"{self._static_snapshot_path.stem}-{self._static_snapshot_generation % 2}{suffix}"
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
             self._capture_runtime_window(workerw_handle, path)
             set_sys_wallpaper(str(path))
             with self._lock:
+                self._static_snapshot_generation += 1
                 self._last_static_snapshot_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self._last_static_snapshot_error = ""
             self._record("info", f"已将动态壁纸截图同步为系统静态壁纸（{reason}）")
@@ -251,7 +256,7 @@ class WindowsDynamicWallpaperService:
         memory_dc = window_dc.CreateCompatibleDC()
         bitmap = win32ui.CreateBitmap()
         bitmap.CreateCompatibleBitmap(window_dc, width, height)
-        memory_dc.SelectObject(bitmap)
+        previous_bitmap = memory_dc.SelectObject(bitmap)
         try:
             rendered = ctypes.windll.user32.PrintWindow(target, memory_dc.GetSafeHdc(), 2)
             if not rendered:
@@ -259,6 +264,7 @@ class WindowsDynamicWallpaperService:
             image = Image.frombuffer("RGB", (width, height), bitmap.GetBitmapBits(True), "raw", "BGRX", 0, 1)
             image.save(path, "JPEG", quality=92)
         finally:
+            memory_dc.SelectObject(previous_bitmap)
             memory_dc.DeleteDC()
             window_dc.DeleteDC()
             win32gui.ReleaseDC(target, window_dc_handle)
@@ -371,7 +377,7 @@ class WindowsDynamicWallpaperService:
             and right >= monitor_right - tolerance
             and bottom >= monitor_bottom - tolerance
         )
-        maximized = bool(win32gui.IsZoomed(window)) and not fullscreen
+        maximized = bool(ctypes.windll.user32.IsZoomed(window)) and not fullscreen
         return True, maximized, fullscreen
 
     @classmethod
@@ -420,13 +426,27 @@ class WindowsDynamicWallpaperService:
 
     @classmethod
     def _detect_performance_conditions(cls) -> dict[str, bool]:
-        focused, maximized, fullscreen = cls._detect_foreground_conditions()
+        try:
+            focused, maximized, fullscreen = cls._detect_foreground_conditions()
+        except Exception as exc:
+            logger.debug("Reading foreground window state failed: {}", exc)
+            focused, maximized, fullscreen = False, False, False
+        try:
+            audio = cls._other_application_playing_audio()
+        except Exception as exc:
+            logger.debug("Reading application audio state failed: {}", exc)
+            audio = False
+        try:
+            on_battery = cls._using_battery()
+        except Exception as exc:
+            logger.debug("Reading battery state failed: {}", exc)
+            on_battery = False
         return {
             "other_application_focused": focused,
             "other_application_maximized": maximized,
             "other_application_fullscreen": fullscreen,
-            "other_application_audio": cls._other_application_playing_audio(),
-            "on_battery": cls._using_battery(),
+            "other_application_audio": audio,
+            "on_battery": on_battery,
         }
 
     def _apply_performance_action(self, action: str, conditions: dict[str, bool]) -> None:
@@ -1288,6 +1308,7 @@ class WindowsDynamicWallpaperService:
             self._runtime_type = ""
             self._runtime_mode = ""
             self._attached = False
+            self._static_snapshot_due_times.clear()
             self._clear_media_state()
         if window is not None:
             with contextlib.suppress(Exception):
@@ -1531,6 +1552,8 @@ class WindowsDynamicWallpaperService:
         if static_snapshot_thread is not None and static_snapshot_thread is not threading.current_thread():
             static_snapshot_thread.join(timeout=2)
         self._static_snapshot_thread = None
+        if self._static_snapshot_enabled():
+            self._capture_static_snapshot("exit")
         with self._lock:
             window = self._window
             self._window = None

@@ -156,7 +156,7 @@ export default function Settings() {
   };
 
   if (settingsLoading && !settings) return (
-    <div className={`mx-auto space-y-4 ${activeTab === 'appearance' ? 'max-w-6xl' : activeTab === 'plugins' ? 'max-w-5xl' : 'max-w-3xl'}`}>
+    <div className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-bold">设置</h1>
       <Card className="flex flex-col items-center justify-center gap-3 py-20">
         <Spinner size="sm" />
@@ -166,7 +166,7 @@ export default function Settings() {
   );
 
   if (!settings) return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-bold">设置</h1>
       <Card className="flex flex-col items-center justify-center gap-3 py-20 text-center">
         <p className="text-danger">设置加载失败</p>
@@ -179,7 +179,7 @@ export default function Settings() {
   );
 
   return (
-    <div className={`mx-auto space-y-4 ${activeTab === 'appearance' ? 'max-w-6xl' : activeTab === 'plugins' ? 'max-w-5xl' : 'max-w-3xl'}`}>
+    <div className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-bold">设置</h1>
 
       <Tabs

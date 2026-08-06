@@ -111,6 +111,8 @@ function Background({
   });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const slideshowTimerRef = useRef<number | null>(null);
+  const slideshowReportTimersRef = useRef(new Set<number>());
+  const reportedSlideshowSequencesRef = useRef(new Set<number>());
   const motionPausedRef = useRef(false);
   const policyMutedRef = useRef(false);
   const policyWasPlayingRef = useRef(false);
@@ -184,6 +186,11 @@ function Background({
     return () => { runtimeWindow.__ltwDynamicRuntime = undefined; };
   }, [background.type, background.muted, items.join('\n')]);
 
+  useEffect(() => () => {
+    slideshowReportTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    slideshowReportTimersRef.current.clear();
+  }, []);
+
   useEffect(() => {
     if (background.type !== 'video') {
       onPlaybackStateChange?.(motionPaused, motionPaused ? 'pause' : 'playing');
@@ -221,11 +228,6 @@ function Background({
       if (slideshowTimerRef.current === timer) slideshowTimerRef.current = null;
     };
   }, [background.type, background.interval_seconds, background.shuffle, motionPaused, items.join('\n')]);
-
-  useEffect(() => {
-    if (background.type !== 'slideshow' || slideshowFrame.sequence === 0) return;
-    onPlaybackStateChange?.(motionPaused, 'slideshow-change', false, slideshowFrame.sequence);
-  }, [background.type, motionPaused, onPlaybackStateChange, slideshowFrame.sequence]);
 
   if (background.type === 'video' && background.path) {
     return (
@@ -284,9 +286,26 @@ function Background({
           objectFit: imageFit,
           objectPosition: '50% 50%',
         }}
-        onAnimationEnd={() => setSlideshowFrame((latest) => latest.sequence === slideshowFrame.sequence
-          ? { ...latest, previous: null }
-          : latest)}
+        onLoad={() => {
+          if (background.type !== 'slideshow' || slideshowFrame.sequence === 0) return;
+          const sequence = slideshowFrame.sequence;
+          const timer = window.setTimeout(() => {
+            slideshowReportTimersRef.current.delete(timer);
+            if (reportedSlideshowSequencesRef.current.has(sequence)) return;
+            reportedSlideshowSequencesRef.current.add(sequence);
+            onPlaybackStateChange?.(motionPaused, 'slideshow-change', false, sequence);
+          }, background.transition_duration + 100);
+          slideshowReportTimersRef.current.add(timer);
+        }}
+        onAnimationEnd={() => {
+          const sequence = slideshowFrame.sequence;
+          setSlideshowFrame((latest) => latest.sequence === sequence
+            ? { ...latest, previous: null }
+            : latest);
+          if (background.type !== 'slideshow' || sequence === 0 || reportedSlideshowSequencesRef.current.has(sequence)) return;
+          reportedSlideshowSequencesRef.current.add(sequence);
+          onPlaybackStateChange?.(motionPaused, 'slideshow-change', false, sequence);
+        }}
       />
         </>
       )}
