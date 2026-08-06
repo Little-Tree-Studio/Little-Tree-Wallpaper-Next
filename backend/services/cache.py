@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import time
 from datetime import datetime
 from pathlib import Path
@@ -32,13 +34,25 @@ class ResponseCache:
 
     @staticmethod
     def _safe(key: str) -> str:
-        return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in key)
+        prefix = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in key)[:80]
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        return f"{prefix or 'key'}-{digest}"
 
     def _path(self, key: str) -> Path:
         return self.dir / f"{self._safe(key)}.json"
 
     def _mem_key(self, key: str) -> str:
         return f"{self.namespace}:{key}"
+
+    @staticmethod
+    def _read_payload(path: Path) -> tuple[float, Any]:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("cache payload must be an object")
+        cached_at = float(payload.get("cached_at", ""))
+        if not math.isfinite(cached_at):
+            raise ValueError("cache timestamp must be finite")
+        return cached_at, payload.get("data")
 
     def get(self, key: str, ttl: float | None = None) -> Any | None:
         """Return cached data if fresh within ttl, otherwise None.
@@ -60,14 +74,12 @@ class ResponseCache:
         if not path.exists():
             return None
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            cached_at, data = self._read_payload(path)
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning("Cache read failed for {}: {}", self._mem_key(key), exc)
             return None
-        cached_at = float(payload.get("cached_at", 0))
         if effective_ttl >= 0 and (time.time() - cached_at) > effective_ttl:
             return None
-        data = payload.get("data")
         with self._memory_lock:
             self._memory[mem_key] = (cached_at, data)
         return data
@@ -101,16 +113,19 @@ class ResponseCache:
         if not path.exists():
             return None
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            cached_at, data = self._read_payload(path)
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning("Cache read failed for {}: {}", self._mem_key(key), exc)
             return None
-        cached_at = float(payload.get("cached_at", 0))
-        if datetime.fromtimestamp(cached_at).date() < today:
+        try:
+            cached_date = datetime.fromtimestamp(cached_at).date()
+        except (OSError, OverflowError, ValueError) as exc:
+            logger.warning("Cache timestamp failed for {}: {}", self._mem_key(key), exc)
+            return None
+        if cached_date < today:
             return None
         if effective_ttl >= 0 and (time.time() - cached_at) > effective_ttl:
             return None
-        data = payload.get("data")
         with self._memory_lock:
             self._memory[mem_key] = (cached_at, data)
         return data

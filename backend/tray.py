@@ -149,10 +149,10 @@ class ApplicationTray:
         draw.rectangle((29, 32, 35, 56), fill=(255, 255, 255, 255))
         return image
 
-    def start(self) -> None:
+    def start(self) -> bool:
         if not bool(self._api.store.get("ui.minimize_to_tray", True)):
             logger.info("System tray disabled by settings")
-            return
+            return False
         try:
             import pystray
 
@@ -178,8 +178,10 @@ class ApplicationTray:
                 self._tray_icon = icon
             icon.run_detached()
             logger.info("System tray started")
+            return True
         except Exception as exc:
             logger.error("System tray could not start: {}", exc)
+            return False
 
     def quit(self, *_args: Any) -> None:
         with self._lock:

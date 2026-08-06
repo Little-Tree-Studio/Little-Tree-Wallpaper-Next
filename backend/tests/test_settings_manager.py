@@ -24,8 +24,45 @@ class SettingsStoreMigrationTests(unittest.TestCase):
             self.assertTrue(store.get("ui.hide_on_close"))
             self.assertTrue(store.get("ui.minimize_to_tray"))
             self.assertFalse(store.get("ui.release_webview_on_close"))
+            self.assertFalse(store.get("startup.auto_start"))
+            self.assertTrue(store.get("startup.hide_on_launch"))
             self.assertEqual(store.get("wallpaper.dynamic.background.type"), "image")
             self.assertEqual(store.get("wallpaper.dynamic.widgets"), [])
+            self.assertFalse(store.get("wallpaper.dynamic.static_snapshot.enabled"))
+            self.assertEqual(
+                store.get("wallpaper.dynamic.performance"),
+                {
+                    "other_application_focused": "keep_running",
+                    "other_application_maximized": "keep_running",
+                    "other_application_fullscreen": "keep_running",
+                    "other_application_audio": "keep_running",
+                    "on_battery": "keep_running",
+                },
+            )
+
+    def test_invalid_dynamic_performance_action_is_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({"wallpaper": {"dynamic": {"performance": {"on_battery": "destroy"}}}}),
+                encoding="utf-8",
+            )
+
+            store = SettingsStore(path)
+
+            self.assertEqual(store.get("wallpaper.dynamic.performance.on_battery"), "keep_running")
+
+    def test_stop_dynamic_performance_action_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({"wallpaper": {"dynamic": {"performance": {"on_battery": "stop"}}}}),
+                encoding="utf-8",
+            )
+
+            store = SettingsStore(path)
+
+            self.assertEqual(store.get("wallpaper.dynamic.performance.on_battery"), "stop")
 
     def test_invalid_legacy_mirror_is_migrated_without_losing_custom_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

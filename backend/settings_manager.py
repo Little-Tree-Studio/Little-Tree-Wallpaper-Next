@@ -76,6 +76,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "sources": {"merge_display": True},
         "pixiv": {"include_artwork_tags_in_favorites": True},
         "dynamic": {
+            "static_snapshot": {"enabled": False},
+            "performance": {
+                "other_application_focused": "keep_running",
+                "other_application_maximized": "keep_running",
+                "other_application_fullscreen": "keep_running",
+                "other_application_audio": "keep_running",
+                "on_battery": "keep_running",
+            },
             "background": {
                 "type": "image",
                 "path": "",
@@ -205,6 +213,11 @@ class SettingsStore:
 
         if data["im"].get("mirror_preference") not in {"auto", "github", "jsdelivr", "ghproxy"}:
             data["im"]["mirror_preference"] = "auto"
+
+        performance = data["wallpaper"]["dynamic"]["performance"]
+        for condition, action in performance.items():
+            if action not in {"keep_running", "mute", "pause", "stop"}:
+                performance[condition] = "keep_running"
 
         generate = data["generate"]
         configured = generate.get("providers")

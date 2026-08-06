@@ -377,7 +377,7 @@ export default function ImageViewer() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-black/95"
+      className="fixed inset-x-0 bottom-0 top-11 z-50 flex flex-col bg-black/95"
       onClick={handleBackdropClick}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}

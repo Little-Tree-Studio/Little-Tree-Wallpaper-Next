@@ -100,7 +100,7 @@ function Background({
   onPlaybackStateChange,
 }: {
   scene: DynamicWallpaperScene;
-  onPlaybackStateChange?: (paused: boolean, event: string, ended?: boolean) => void;
+  onPlaybackStateChange?: (paused: boolean, event: string, ended?: boolean, slideshowSequence?: number) => void;
 }) {
   const { background } = scene;
   const [motionPaused, setMotionPaused] = useState(false);
@@ -111,10 +111,17 @@ function Background({
   });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const slideshowTimerRef = useRef<number | null>(null);
+  const motionPausedRef = useRef(false);
+  const policyMutedRef = useRef(false);
+  const policyWasPlayingRef = useRef(false);
   const items = background.type === 'slideshow' ? background.items : background.path ? [background.path] : [];
 
+  useEffect(() => { motionPausedRef.current = motionPaused; }, [motionPaused]);
+
   useEffect(() => {
-    const runtimeWindow = window as typeof window & { __ltwDynamicRuntime?: Record<string, () => unknown> };
+    const runtimeWindow = window as typeof window & {
+      __ltwDynamicRuntime?: Record<string, (...args: unknown[]) => unknown>;
+    };
     const move = (offset: number) => setSlideshowFrame((current) => {
       if (!items.length) return { index: 0, sequence: current.sequence, previous: null };
       const nextIndex = (current.index + offset + items.length) % items.length;
@@ -132,6 +139,33 @@ function Background({
         ? videoRef.current.paused ? videoRef.current.play() : videoRef.current.pause()
         : setMotionPaused((paused) => !paused),
       reload: () => { videoRef.current?.load(); return videoRef.current?.play(); },
+      setPolicyMuted: (value: unknown) => {
+        policyMutedRef.current = Boolean(value);
+        if (videoRef.current) videoRef.current.muted = background.muted || policyMutedRef.current;
+        return videoRef.current?.muted ?? true;
+      },
+      setPolicyPaused: (value: unknown) => {
+        const paused = Boolean(value);
+        const video = videoRef.current;
+        if (video) {
+          if (paused) {
+            policyWasPlayingRef.current ||= !video.paused;
+            video.pause();
+          } else if (policyWasPlayingRef.current) {
+            policyWasPlayingRef.current = false;
+            return video.play();
+          }
+          return true;
+        }
+        if (paused) {
+          policyWasPlayingRef.current ||= !motionPausedRef.current;
+          setMotionPaused(true);
+        } else if (policyWasPlayingRef.current) {
+          policyWasPlayingRef.current = false;
+          setMotionPaused(false);
+        }
+        return true;
+      },
       next: () => move(1),
       previous: () => move(-1),
       dispose: () => {
@@ -148,7 +182,7 @@ function Background({
       },
     };
     return () => { runtimeWindow.__ltwDynamicRuntime = undefined; };
-  }, [background.type, items.join('\n')]);
+  }, [background.type, background.muted, items.join('\n')]);
 
   useEffect(() => {
     if (background.type !== 'video') {
@@ -157,8 +191,11 @@ function Background({
   }, [background.type, motionPaused, onPlaybackStateChange]);
 
   useEffect(() => {
-    if (videoRef.current) videoRef.current.volume = background.volume;
-  }, [background.volume]);
+    if (videoRef.current) {
+      videoRef.current.volume = background.volume;
+      videoRef.current.muted = background.muted || policyMutedRef.current;
+    }
+  }, [background.muted, background.volume]);
 
   useEffect(() => {
     setSlideshowFrame((current) => current.index === 0 && current.previous === null
@@ -184,6 +221,11 @@ function Background({
       if (slideshowTimerRef.current === timer) slideshowTimerRef.current = null;
     };
   }, [background.type, background.interval_seconds, background.shuffle, motionPaused, items.join('\n')]);
+
+  useEffect(() => {
+    if (background.type !== 'slideshow' || slideshowFrame.sequence === 0) return;
+    onPlaybackStateChange?.(motionPaused, 'slideshow-change', false, slideshowFrame.sequence);
+  }, [background.type, motionPaused, onPlaybackStateChange, slideshowFrame.sequence]);
 
   if (background.type === 'video' && background.path) {
     return (
@@ -420,7 +462,7 @@ function WidgetContent({ widget }: { widget: DynamicWidgetInstance }) {
 
 interface DynamicDesktopProps {
   scene: DynamicWallpaperScene;
-  onPlaybackStateChange?: (paused: boolean, event: string, ended?: boolean) => void;
+  onPlaybackStateChange?: (paused: boolean, event: string, ended?: boolean, slideshowSequence?: number) => void;
   editing?: boolean;
   editingScale?: number;
   selectedId?: string | null;

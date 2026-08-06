@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import mimetypes
 import os
 import threading
@@ -14,15 +15,32 @@ from urllib.parse import urlencode
 
 from loguru import logger
 
+from backend.services.sys_wallpaper import set_wallpaper as set_sys_wallpaper
+
 SUPPORTED_VIDEO_SUFFIXES = frozenset({".m4v", ".mov", ".mp4", ".webm"})
 SUPPORTED_IMAGE_SUFFIXES = frozenset({".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
 MODERN_DESKTOP_BUILD = (26100, 1742)
+PERFORMANCE_ACTIONS = frozenset({"keep_running", "mute", "pause", "stop"})
+PERFORMANCE_CONDITIONS = (
+    "other_application_focused",
+    "other_application_maximized",
+    "other_application_fullscreen",
+    "other_application_audio",
+    "on_battery",
+)
+STATIC_SNAPSHOT_INTERVAL_SECONDS = 5 * 60
+STATIC_SNAPSHOT_SETTLE_SECONDS = 1.0
 
 
 class WindowsDynamicWallpaperService:
     """Experimental LumiView video host attached to Explorer's WorkerW."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        performance_settings: Callable[[], dict[str, Any]] | None = None,
+        static_snapshot_enabled: Callable[[], bool] | None = None,
+        static_snapshot_path: Path | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._operation_lock = threading.Lock()
         self._diagnostic_lock = threading.Lock()
@@ -33,6 +51,23 @@ class WindowsDynamicWallpaperService:
         self._base_url = ""
         self._api_token = ""
         self._runtime_factory: Callable[..., Any] | None = None
+        self._performance_settings = performance_settings or (lambda: {})
+        self._static_snapshot_enabled = static_snapshot_enabled or (lambda: False)
+        self._static_snapshot_path = static_snapshot_path
+        self._static_snapshot_stop = threading.Event()
+        self._static_snapshot_wakeup = threading.Event()
+        self._static_snapshot_lock = threading.Lock()
+        self._static_snapshot_thread: threading.Thread | None = None
+        self._static_snapshot_due_times: deque[float] = deque()
+        self._last_static_snapshot_at = ""
+        self._last_static_snapshot_error = ""
+        self._last_slideshow_sequence = -1
+        self._performance_monitor_stop = threading.Event()
+        self._performance_monitor_thread: threading.Thread | None = None
+        self._performance_action = "keep_running"
+        self._performance_conditions: dict[str, bool] = dict.fromkeys(PERFORMANCE_CONDITIONS, False)
+        self._performance_resume: tuple[Any, ...] | None = None
+        self._performance_restore_in_progress = False
         self._window: Any | None = None
         self._window_handle = 0
         self._workerw_handle = 0
@@ -43,6 +78,9 @@ class WindowsDynamicWallpaperService:
         self._media_path = ""
         self._media_revision = 0
         self._media_paths: dict[int, str] = {}
+        self._video_muted = True
+        self._video_loop = True
+        self._video_playback_rate = 1.0
         self._started_at = ""
         self._last_error = ""
         self._last_operation = ""
@@ -94,6 +132,393 @@ class WindowsDynamicWallpaperService:
             if runtime_factory is not None:
                 self._host_ready.set()
             self._record("info", "动态壁纸运行时已就绪")
+        self._start_performance_monitor()
+        self._start_static_snapshot_monitor()
+
+    def _start_static_snapshot_monitor(self) -> None:
+        with self._lock:
+            if self._static_snapshot_thread is not None and self._static_snapshot_thread.is_alive():
+                return
+            self._static_snapshot_stop.clear()
+            thread = threading.Thread(
+                target=self._run_static_snapshot_monitor,
+                name="dynamic-wallpaper-static-snapshot",
+                daemon=True,
+            )
+            self._static_snapshot_thread = thread
+        thread.start()
+
+    def _run_static_snapshot_monitor(self) -> None:
+        next_periodic = time.monotonic() + STATIC_SNAPSHOT_INTERVAL_SECONDS
+        while not self._static_snapshot_stop.is_set():
+            now = time.monotonic()
+            with self._lock:
+                due_at = self._static_snapshot_due_times[0] if self._static_snapshot_due_times else None
+            timeout = max(0.05, min(next_periodic, due_at if due_at is not None else next_periodic) - now)
+            self._static_snapshot_wakeup.wait(timeout)
+            self._static_snapshot_wakeup.clear()
+            if self._static_snapshot_stop.is_set():
+                break
+            now = time.monotonic()
+            with self._lock:
+                due_at = self._static_snapshot_due_times[0] if self._static_snapshot_due_times else None
+                force_due = due_at is not None and now >= due_at
+                periodic_due = now >= next_periodic
+                if force_due:
+                    self._static_snapshot_due_times.popleft()
+            if not force_due and not periodic_due:
+                continue
+            if periodic_due:
+                next_periodic = now + STATIC_SNAPSHOT_INTERVAL_SECONDS
+            if not self._static_snapshot_enabled():
+                continue
+            self._capture_static_snapshot("slideshow" if force_due else "periodic")
+
+    def refresh_static_snapshot(self, enabled: bool) -> None:
+        if not enabled:
+            with self._lock:
+                self._static_snapshot_due_times.clear()
+            self._static_snapshot_wakeup.set()
+            return
+        self._queue_static_snapshot(STATIC_SNAPSHOT_SETTLE_SECONDS)
+
+    def _queue_static_snapshot(self, delay: float) -> None:
+        if not self._static_snapshot_enabled():
+            return
+        due_at = time.monotonic() + max(0.0, delay)
+        with self._lock:
+            if not self._attached or self._window is None:
+                return
+            self._static_snapshot_due_times.append(due_at)
+        self._static_snapshot_wakeup.set()
+
+    def _capture_static_snapshot(self, reason: str) -> None:
+        if os.name != "nt" or self._static_snapshot_path is None:
+            return
+        if not self._static_snapshot_lock.acquire(blocking=False):
+            return
+        try:
+            with self._lock:
+                if not self._attached or self._window is None:
+                    return
+                workerw_handle = self._workerw_handle
+            if not workerw_handle:
+                return
+            path = self._static_snapshot_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._capture_runtime_window(workerw_handle, path)
+            set_sys_wallpaper(str(path))
+            with self._lock:
+                self._last_static_snapshot_at = datetime.now().astimezone().isoformat(timespec="seconds")
+                self._last_static_snapshot_error = ""
+            self._record("info", f"已将动态壁纸截图同步为系统静态壁纸（{reason}）")
+        except Exception as exc:
+            with self._lock:
+                self._last_static_snapshot_error = str(exc)
+            self._record("warning", f"同步动态壁纸截图失败：{exc}")
+        finally:
+            self._static_snapshot_lock.release()
+
+    @staticmethod
+    def _capture_runtime_window(workerw_handle: int, path: Path) -> None:
+        import win32con
+        import win32gui
+        import win32ui
+        from PIL import Image
+
+        target = int(workerw_handle)
+        largest_area = 0
+
+        def find_largest_child(window: int, _lparam: int) -> bool:
+            nonlocal target, largest_area
+            if not win32gui.IsWindowVisible(window):
+                return True
+            left, top, right, bottom = win32gui.GetWindowRect(window)
+            area = max(0, right - left) * max(0, bottom - top)
+            if area > largest_area:
+                target = int(window)
+                largest_area = area
+            return True
+
+        win32gui.EnumChildWindows(workerw_handle, find_largest_child, 0)
+        left, top, right, bottom = win32gui.GetClientRect(target)
+        width = int(right - left)
+        height = int(bottom - top)
+        if width <= 0 or height <= 0:
+            raise RuntimeError("无法获取动态壁纸画布尺寸")
+        window_dc_handle = win32gui.GetWindowDC(target)
+        window_dc = win32ui.CreateDCFromHandle(window_dc_handle)
+        memory_dc = window_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(window_dc, width, height)
+        memory_dc.SelectObject(bitmap)
+        try:
+            rendered = ctypes.windll.user32.PrintWindow(target, memory_dc.GetSafeHdc(), 2)
+            if not rendered:
+                memory_dc.BitBlt((0, 0), (width, height), window_dc, (0, 0), win32con.SRCCOPY)
+            image = Image.frombuffer("RGB", (width, height), bitmap.GetBitmapBits(True), "raw", "BGRX", 0, 1)
+            image.save(path, "JPEG", quality=92)
+        finally:
+            memory_dc.DeleteDC()
+            window_dc.DeleteDC()
+            win32gui.ReleaseDC(target, window_dc_handle)
+            win32gui.DeleteObject(bitmap.GetHandle())
+
+    def _start_performance_monitor(self) -> None:
+        with self._lock:
+            if self._performance_monitor_thread is not None and self._performance_monitor_thread.is_alive():
+                return
+            self._performance_monitor_stop.clear()
+            thread = threading.Thread(
+                target=self._run_performance_monitor,
+                name="dynamic-wallpaper-performance",
+                daemon=True,
+            )
+            self._performance_monitor_thread = thread
+        thread.start()
+
+    def _run_performance_monitor(self) -> None:
+        com_initialized = False
+        if os.name == "nt":
+            try:
+                import pythoncom
+
+                pythoncom.CoInitialize()
+                com_initialized = True
+            except ImportError:
+                pass
+        try:
+            while not self._performance_monitor_stop.wait(1.0):
+                try:
+                    with self._lock:
+                        running = self._attached and self._window is not None
+                        performance_stopped = self._performance_resume is not None
+                    if not running and not performance_stopped:
+                        self._apply_performance_action("keep_running", dict.fromkeys(PERFORMANCE_CONDITIONS, False))
+                        continue
+                    conditions = self._detect_performance_conditions()
+                    settings = self._performance_settings()
+                    action = self._resolve_performance_action(conditions, settings)
+                    self._apply_performance_action(action, conditions)
+                except Exception as exc:
+                    logger.debug("Dynamic wallpaper performance probe failed: {}", exc)
+        finally:
+            if com_initialized:
+                import pythoncom
+
+                pythoncom.CoUninitialize()
+
+    @staticmethod
+    def _resolve_performance_action(conditions: dict[str, bool], settings: Any) -> str:
+        configured = settings if isinstance(settings, dict) else {}
+        active_actions = {
+            str(configured.get(condition, "keep_running"))
+            for condition, active in conditions.items()
+            if active
+        }
+        if "stop" in active_actions:
+            return "stop"
+        if "pause" in active_actions:
+            return "pause"
+        if "mute" in active_actions:
+            return "mute"
+        return "keep_running"
+
+    @staticmethod
+    def _is_own_process(process_id: int) -> bool:
+        if process_id <= 0:
+            return False
+        try:
+            import psutil
+
+            process = psutil.Process(process_id)
+            current_pid = os.getpid()
+            while process is not None:
+                if process.pid == current_pid:
+                    return True
+                process = process.parent()
+        except Exception:
+            return process_id == os.getpid()
+        return False
+
+    @classmethod
+    def _detect_foreground_conditions(cls) -> tuple[bool, bool, bool]:
+        if os.name != "nt":
+            return False, False, False
+        import win32api
+        import win32con
+        import win32gui
+        import win32process
+
+        window = int(win32gui.GetForegroundWindow() or 0)
+        if not window or not win32gui.IsWindowVisible(window):
+            return False, False, False
+        class_name = str(win32gui.GetClassName(window) or "")
+        if class_name in {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}:
+            return False, False, False
+        _, process_id = win32process.GetWindowThreadProcessId(window)
+        if cls._is_own_process(int(process_id)):
+            return False, False, False
+
+        left, top, right, bottom = win32gui.GetWindowRect(window)
+        monitor = win32api.MonitorFromWindow(window, win32con.MONITOR_DEFAULTTONEAREST)
+        monitor_left, monitor_top, monitor_right, monitor_bottom = win32api.GetMonitorInfo(monitor)["Monitor"]
+        tolerance = 2
+        style = int(win32gui.GetWindowLong(window, win32con.GWL_STYLE))
+        fullscreen = not bool(style & win32con.WS_CAPTION) and (
+            left <= monitor_left + tolerance
+            and top <= monitor_top + tolerance
+            and right >= monitor_right - tolerance
+            and bottom >= monitor_bottom - tolerance
+        )
+        maximized = bool(win32gui.IsZoomed(window)) and not fullscreen
+        return True, maximized, fullscreen
+
+    @classmethod
+    def _other_application_playing_audio(cls) -> bool:
+        if os.name != "nt":
+            return False
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+
+            for session in AudioUtilities.GetAllSessions():
+                try:
+                    if session.State != 1:
+                        continue
+                    process = session.Process
+                    if process is None or cls._is_own_process(int(process.pid)):
+                        continue
+                    meter = session._ctl.QueryInterface(IAudioMeterInformation)
+                    if float(meter.GetPeakValue()) > 0.001:
+                        return True
+                except Exception:
+                    continue
+        except ImportError:
+            return False
+        except Exception as exc:
+            logger.debug("Reading Windows audio sessions failed: {}", exc)
+        return False
+
+    @staticmethod
+    def _using_battery() -> bool:
+        if os.name != "nt":
+            return False
+        import ctypes
+
+        class SystemPowerStatus(ctypes.Structure):
+            _fields_ = [
+                ("ac_line_status", ctypes.c_ubyte),
+                ("battery_flag", ctypes.c_ubyte),
+                ("battery_life_percent", ctypes.c_ubyte),
+                ("system_status_flag", ctypes.c_ubyte),
+                ("battery_life_time", ctypes.c_ulong),
+                ("battery_full_life_time", ctypes.c_ulong),
+            ]
+
+        status = SystemPowerStatus()
+        return bool(ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status))) and status.ac_line_status == 0
+
+    @classmethod
+    def _detect_performance_conditions(cls) -> dict[str, bool]:
+        focused, maximized, fullscreen = cls._detect_foreground_conditions()
+        return {
+            "other_application_focused": focused,
+            "other_application_maximized": maximized,
+            "other_application_fullscreen": fullscreen,
+            "other_application_audio": cls._other_application_playing_audio(),
+            "on_battery": cls._using_battery(),
+        }
+
+    def _apply_performance_action(self, action: str, conditions: dict[str, bool]) -> None:
+        normalized = action if action in PERFORMANCE_ACTIONS else "keep_running"
+        with self._lock:
+            previous = self._performance_action
+            self._performance_conditions = dict(conditions)
+            window = self._window if self._attached else None
+            self._performance_action = normalized
+            performance_stopped = self._performance_resume is not None
+        if normalized == "stop":
+            if window is not None:
+                self._stop_for_performance()
+            return
+        if performance_stopped:
+            self._restore_performance_runtime()
+            return
+        if window is None:
+            return
+        self._evaluate_window_js(
+            window,
+            f"window.__ltwPlayer?.setPolicyMuted?.({str(normalized == 'mute').lower()}) ?? "
+            f"window.__ltwDynamicRuntime?.setPolicyMuted?.({str(normalized == 'mute').lower()})",
+        )
+        self._evaluate_window_js(
+            window,
+            f"window.__ltwPlayer?.setPolicyPaused?.({str(normalized == 'pause').lower()}) ?? "
+            f"window.__ltwDynamicRuntime?.setPolicyPaused?.({str(normalized == 'pause').lower()})",
+        )
+        if previous != normalized:
+            self._record("info", f"性能策略已切换为：{normalized}")
+
+    def _stop_for_performance(self) -> None:
+        if not self._operation_lock.acquire(blocking=False):
+            return
+        try:
+            with self._lock:
+                if self._performance_resume is not None or not self._attached or self._window is None:
+                    return
+                if self._runtime_mode == "scene":
+                    resume: tuple[Any, ...] = ("scene", self._runtime_revision, self._runtime_type)
+                elif self._runtime_mode == "raw-video" and self._media_path:
+                    resume = (
+                        "video",
+                        self._media_path,
+                        self._video_muted,
+                        self._video_loop,
+                        self._video_playback_rate,
+                    )
+                else:
+                    return
+                self._performance_resume = resume
+                self._performance_restore_in_progress = False
+            self._stop_runtime()
+            with self._lock:
+                self._performance_action = "stop"
+                self._last_operation = "performance-stop"
+            self._record("info", "性能策略已停止动态壁纸并释放资源")
+        finally:
+            self._operation_lock.release()
+
+    def _restore_performance_runtime(self) -> None:
+        with self._lock:
+            resume = self._performance_resume
+            if resume is None or self._performance_restore_in_progress:
+                return
+            self._performance_restore_in_progress = True
+        try:
+            if resume[0] == "scene":
+                self.start_scene(int(resume[1]), str(resume[2]))
+            else:
+                self.start(str(resume[1]), bool(resume[2]), bool(resume[3]), float(resume[4]))
+            self._record("info", "性能条件已解除，正在重新创建动态壁纸")
+        except Exception:
+            with self._lock:
+                self._performance_restore_in_progress = False
+
+    def _complete_performance_restore(self) -> None:
+        with self._lock:
+            if not self._performance_restore_in_progress:
+                return
+            self._performance_resume = None
+            self._performance_restore_in_progress = False
+            action = self._performance_action
+            conditions = dict(self._performance_conditions)
+        self._record("info", "动态壁纸已在性能条件解除后重新创建")
+        self._apply_performance_action(action, conditions)
+
+    def _fail_performance_restore(self) -> None:
+        with self._lock:
+            if self._performance_restore_in_progress:
+                self._performance_restore_in_progress = False
 
     @staticmethod
     def _log_window_task(task: Any, operation: str) -> None:
@@ -447,6 +872,17 @@ class WindowsDynamicWallpaperService:
                 "started_at": self._started_at,
                 "last_error": self._last_error,
                 "last_operation": self._last_operation,
+                "performance": {
+                    "action": self._performance_action,
+                    "conditions": dict(self._performance_conditions),
+                    "stopped": self._performance_resume is not None,
+                },
+                "static_snapshot": {
+                    "enabled": bool(self._static_snapshot_enabled()),
+                    "interval_seconds": STATIC_SNAPSHOT_INTERVAL_SECONDS,
+                    "last_updated_at": self._last_static_snapshot_at,
+                    "last_error": self._last_static_snapshot_error,
+                },
                 "telemetry": dict(self._telemetry),
                 "supported_extensions": sorted(SUPPORTED_VIDEO_SUFFIXES),
                 "events": list(self._events),
@@ -526,6 +962,9 @@ class WindowsDynamicWallpaperService:
             raise RuntimeError("动态壁纸操作正在进行，请稍候")
         self._stop_requested.clear()
         with self._lock:
+            if not self._performance_restore_in_progress:
+                self._performance_resume = None
+                self._performance_action = "keep_running"
             self._operation_phase = "queued"
             self._operation_started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             self._last_error = ""
@@ -539,6 +978,7 @@ class WindowsDynamicWallpaperService:
         try:
             thread.start()
         except Exception:
+            self._fail_performance_restore()
             with self._lock:
                 self._operation_phase = "idle"
                 self._operation_started_at = ""
@@ -556,7 +996,9 @@ class WindowsDynamicWallpaperService:
         self._stop_requested.clear()
         with self._lock:
             self._pending_scene = None
-        with self._lock:
+            if not self._performance_restore_in_progress:
+                self._performance_resume = None
+                self._performance_action = "keep_running"
             self._operation_phase = "queued"
             self._operation_started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             self._last_error = ""
@@ -570,6 +1012,7 @@ class WindowsDynamicWallpaperService:
         try:
             thread.start()
         except Exception:
+            self._fail_performance_restore()
             with self._lock:
                 self._operation_phase = "idle"
                 self._operation_started_at = ""
@@ -600,11 +1043,14 @@ class WindowsDynamicWallpaperService:
                     self._runtime_type = background_type
                     self._runtime_mode = "scene"
                     self._runtime_revision = revision
+                    self._last_slideshow_sequence = -1
                     self._media_path = ""
                     self._media_paths.clear()
                     self._telemetry = self._empty_telemetry()
                     self._telemetry["media_revision"] = revision
+                self._complete_performance_restore()
                 self._record("info", f"已应用动态场景修订 {revision}")
+                self._queue_static_snapshot(STATIC_SNAPSHOT_SETTLE_SECONDS)
                 return
 
             self._set_operation_phase("finding-desktop")
@@ -627,14 +1073,18 @@ class WindowsDynamicWallpaperService:
                 self._runtime_type = background_type
                 self._runtime_mode = "scene"
                 self._runtime_revision = revision
+                self._last_slideshow_sequence = -1
                 self._telemetry = self._empty_telemetry()
                 self._telemetry["media_revision"] = revision
                 self._started_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self._last_operation = "start-scene"
+            self._complete_performance_restore()
             self._record("info", f"动态场景 WebView 已直接嵌入桌面，画布 {width} x {height}")
+            self._queue_static_snapshot(STATIC_SNAPSHOT_SETTLE_SECONDS)
         except InterruptedError:
             self._record("info", "动态场景启动已取消")
         except Exception as exc:
+            self._fail_performance_restore()
             with self._lock:
                 self._last_error = str(exc)
                 attached = self._attached
@@ -672,14 +1122,19 @@ class WindowsDynamicWallpaperService:
                 self._last_error = ""
                 previous_path = self._media_path
                 previous_revision = self._media_revision
+                previous_video_settings = (self._video_muted, self._video_loop, self._video_playback_rate)
                 self._media_path = str(media)
                 self._media_revision += 1
                 revision = self._media_revision
                 self._runtime_revision = revision
+                self._last_slideshow_sequence = -1
                 self._media_paths[revision] = self._media_path
                 self._media_paths = dict(sorted(self._media_paths.items())[-4:])
                 self._telemetry = self._empty_telemetry()
                 self._telemetry["media_revision"] = revision
+                self._video_muted = bool(muted)
+                self._video_loop = bool(loop)
+                self._video_playback_rate = rate
                 player_url = self._player_url(muted, loop, rate)
                 existing_running = self._attached and window is not None
 
@@ -695,6 +1150,7 @@ class WindowsDynamicWallpaperService:
                         self._media_paths.pop(revision, None)
                         self._media_path = previous_path
                         self._media_revision = previous_revision
+                        self._video_muted, self._video_loop, self._video_playback_rate = previous_video_settings
                         self._last_error = str(exc)
                     self._record("error", f"热切换媒体失败：{exc}")
                     raise
@@ -703,7 +1159,9 @@ class WindowsDynamicWallpaperService:
                     self._runtime_type = "video"
                     self._runtime_mode = "raw-video"
                     self._scene_runtime_loaded = False
+                self._complete_performance_restore()
                 self._record("info", f"已向现有宿主发送媒体修订 {revision}")
+                self._queue_static_snapshot(STATIC_SNAPSHOT_SETTLE_SECONDS)
                 return
 
             self._set_operation_phase("finding-desktop")
@@ -731,10 +1189,13 @@ class WindowsDynamicWallpaperService:
                 self._scene_runtime_loaded = False
                 self._started_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self._last_operation = "start"
+            self._complete_performance_restore()
             self._record("info", f"视频 WebView 已直接嵌入 {host_kind}，画布 {width} x {height}")
+            self._queue_static_snapshot(STATIC_SNAPSHOT_SETTLE_SECONDS)
         except InterruptedError:
             self._record("info", "动态壁纸启动已取消")
         except Exception as exc:
+            self._fail_performance_restore()
             with self._lock:
                 self._last_error = str(exc)
                 attached = self._attached
@@ -863,7 +1324,7 @@ class WindowsDynamicWallpaperService:
     def requires_static_wallpaper_confirmation(self) -> bool:
         """Return whether switching to a static wallpaper interrupts active work."""
         with self._lock:
-            return self._attached or self._operation_lock.locked()
+            return self._attached or self._performance_resume is not None or self._operation_lock.locked()
 
     def wait_until_idle(self, timeout: float = 10.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -906,6 +1367,7 @@ class WindowsDynamicWallpaperService:
         self._telemetry = self._empty_telemetry()
 
     def update_telemetry(self, payload: dict[str, Any]) -> None:
+        queue_slideshow_snapshot = False
         with self._lock:
             if not isinstance(payload, dict):
                 return
@@ -958,6 +1420,15 @@ class WindowsDynamicWallpaperService:
                 telemetry["player_loaded_at"] = telemetry["updated_at"]
             self._telemetry = telemetry
 
+            if event == "slideshow-change":
+                try:
+                    sequence = int(payload.get("slideshow_sequence", -1))
+                except (TypeError, ValueError):
+                    sequence = -1
+                if sequence > self._last_slideshow_sequence:
+                    self._last_slideshow_sequence = sequence
+                    queue_slideshow_snapshot = True
+
             significant_events = {
                 "loadedmetadata",
                 "playing",
@@ -974,6 +1445,8 @@ class WindowsDynamicWallpaperService:
                     message += f" ({telemetry['error_message']})"
                     self._last_error = telemetry["error_message"]
                 self._record("error" if event == "error" else "info", message)
+        if queue_slideshow_snapshot:
+            self._queue_static_snapshot(STATIC_SNAPSHOT_SETTLE_SECONDS)
 
     def control(self, action: str) -> dict[str, Any]:
         if not self._operation_lock.acquire(blocking=False):
@@ -996,7 +1469,12 @@ class WindowsDynamicWallpaperService:
                 window = self._window
                 if window is None or not self._attached:
                     raise RuntimeError("动态壁纸宿主未运行")
-                script = scripts[normalized]
+                script = (
+                    "window.__ltwPlayer?.setPolicyPaused?.(true) ?? "
+                    "window.__ltwDynamicRuntime?.setPolicyPaused?.(true)"
+                    if self._performance_action == "pause" and normalized in {"play", "auto"}
+                    else scripts[normalized]
+                )
             self._evaluate_window_js(window, script)
             with self._lock:
                 self._last_operation = normalized
@@ -1013,6 +1491,9 @@ class WindowsDynamicWallpaperService:
         self._stop_requested.set()
         with self._lock:
             self._pending_scene = None
+            self._performance_resume = None
+            self._performance_restore_in_progress = False
+            self._performance_action = "keep_running"
         if not self._operation_lock.acquire(blocking=False):
             with self._lock:
                 self._operation_phase = "stopping"
@@ -1039,6 +1520,17 @@ class WindowsDynamicWallpaperService:
 
     def shutdown(self) -> None:
         self._stop_requested.set()
+        self._performance_monitor_stop.set()
+        self._static_snapshot_stop.set()
+        self._static_snapshot_wakeup.set()
+        performance_thread = self._performance_monitor_thread
+        if performance_thread is not None and performance_thread is not threading.current_thread():
+            performance_thread.join(timeout=2)
+        self._performance_monitor_thread = None
+        static_snapshot_thread = self._static_snapshot_thread
+        if static_snapshot_thread is not None and static_snapshot_thread is not threading.current_thread():
+            static_snapshot_thread.join(timeout=2)
+        self._static_snapshot_thread = None
         with self._lock:
             window = self._window
             self._window = None
@@ -1049,6 +1541,8 @@ class WindowsDynamicWallpaperService:
             self._runtime_type = ""
             self._runtime_mode = ""
             self._pending_scene = None
+            self._performance_resume = None
+            self._performance_restore_in_progress = False
         self.wait_until_idle(timeout=0.5)
         with self._lock:
             self._window = None

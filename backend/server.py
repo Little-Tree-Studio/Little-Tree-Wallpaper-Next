@@ -297,8 +297,32 @@ def _host_is_allowed(raw_host: str) -> bool:
     Handles IPv4 (``127.0.0.1:port``), bracketed IPv6 (``[::1]:port``) and bare
     hostnames (``localhost``).
     """
+    if not raw_host or raw_host != raw_host.strip():
+        return False
     host = raw_host.lower()
-    return any(host == h or host.startswith(f"{h}:") or host.startswith(f"[{h}]") for h in _ALLOWED_HOSTS)
+    if host in _ALLOWED_HOSTS:
+        return True
+
+    if host.startswith("["):
+        closing_bracket = host.find("]")
+        if closing_bracket < 0:
+            return False
+        hostname = host[1:closing_bracket]
+        suffix = host[closing_bracket + 1 :]
+    else:
+        if host.count(":") != 1:
+            return False
+        hostname, port_text = host.rsplit(":", 1)
+        suffix = f":{port_text}"
+
+    if hostname not in _ALLOWED_HOSTS:
+        return False
+    if not suffix:
+        return True
+    if not suffix.startswith(":") or not suffix[1:].isdigit():
+        return False
+    port = int(suffix[1:])
+    return 1 <= port <= 65535
 
 
 class HostCheckMiddleware(BaseHTTPMiddleware):
@@ -411,6 +435,7 @@ let frameCount=0;
 let frameSampleStarted=performance.now();
 let previousTotalFrames=0;
 let previousFrameTime=performance.now();
+let policyWasPlaying=false;
 function finite(value) {{ return Number.isFinite(value) ? value : 0; }}
 function report(event, force=false) {{
   const now=Date.now();
@@ -446,7 +471,14 @@ video.addEventListener('progress', () => report('progress'));
 document.addEventListener('visibilitychange', () => report('visibilitychange', true));
 window.__ltwPlayer={{
   play:()=>video.play(), pause:()=>video.pause(), auto:()=>video.paused?video.play():(video.pause(),true),
-  reload:()=>{{video.load();return video.play();}}, snapshot:()=>{{report('snapshot',true);return true;}}
+  reload:()=>{{video.load();return video.play();}},
+  setPolicyMuted:(value)=>{{video.muted={muted_json}||Boolean(value);return video.muted;}},
+  setPolicyPaused:(value)=>{{
+    if (value) {{ policyWasPlaying=policyWasPlaying||!video.paused; video.pause(); }}
+    else if (policyWasPlaying) {{ policyWasPlaying=false; return video.play(); }}
+    return true;
+  }},
+  snapshot:()=>{{report('snapshot',true);return true;}}
 }};
 if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {{
   fpsSource='requestVideoFrameCallback';

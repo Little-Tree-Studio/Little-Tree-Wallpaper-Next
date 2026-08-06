@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from loguru import logger
 
 from backend.app_meta import (
+    APP_NAME,
     VERSION,
     get_app_info,
     get_build_info,
@@ -34,6 +35,7 @@ from backend.paths import ensure_dirs, get_cache_dir, get_config_dir, get_data_d
 from backend.plugins import PluginManager
 from backend.plugins.validation import SAFE_IMAGE_SUFFIXES
 from backend.services.automation import AutomationService
+from backend.services.autostart import AutostartService
 from backend.services.bing import BingService
 from backend.services.cnu import CNUService
 from backend.services.download import (
@@ -89,6 +91,7 @@ def _storage_references_transaction(method: Any) -> Any:
 class BackendAPI:
     def __init__(self) -> None:
         self.store = get_settings_store()
+        self._autostart_service = AutostartService(APP_NAME)
         self.plugin_manager = PluginManager()
         self.bing_service = BingService()
         self.cnu_service = CNUService()
@@ -97,7 +100,11 @@ class BackendAPI:
         self.spotlight_service = SpotlightService()
         self.sniff_service = SniffService()
         self.timeline_service = TimelineService()
-        self.dynamic_wallpaper_service = WindowsDynamicWallpaperService()
+        self.dynamic_wallpaper_service = WindowsDynamicWallpaperService(
+            lambda: self.store.get("wallpaper.dynamic.performance", {}),
+            lambda: bool(self.store.get("wallpaper.dynamic.static_snapshot.enabled", False)),
+            get_data_dir() / "dynamic_wallpaper" / "static_snapshot.jpg",
+        )
         self.theme_service = ThemeService(get_config_dir() / "themes")
         self.im_service = IntelligentMarketService(
             cache_dir=get_cache_dir(),
@@ -2363,6 +2370,27 @@ class BackendAPI:
     def get_settings(self) -> dict[str, Any]:
         return self.store.as_dict()
 
+    def get_autostart_status(self) -> dict[str, Any]:
+        status = self._autostart_service.status()
+        status["preference_enabled"] = bool(self.store.get("startup.auto_start", False))
+        return status
+
+    def set_autostart_enabled(self, enabled: bool) -> dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise ValueError("开机自启动状态必须是布尔值")
+        snapshot = self._autostart_service.capture()
+        try:
+            status = self._autostart_service.set_enabled(enabled)
+            self.store.set("startup.auto_start", enabled)
+        except Exception:
+            try:
+                self._autostart_service.restore(snapshot)
+            except Exception as rollback_error:  # noqa: BLE001 - preserve original failure
+                logger.error("Failed to restore autostart entry: {}", rollback_error)
+            raise
+        status["preference_enabled"] = enabled
+        return status
+
     def list_themes(self) -> list[dict[str, Any]]:
         return self.theme_service.list_themes()
 
@@ -2444,6 +2472,12 @@ class BackendAPI:
         for key in ("download_directory", "favorites_directory"):
             if incoming_storage.get(key, "") != current_storage.get(key, ""):
                 raise ValueError("存储位置必须通过专用迁移接口修改")
+        incoming_startup = settings.get("startup")
+        if not isinstance(incoming_startup, dict):
+            raise ValueError("启动设置格式无效")
+        incoming_autostart = incoming_startup.get("auto_start", False)
+        if incoming_autostart != bool(self.store.get("startup.auto_start", False)):
+            raise ValueError("开机自启动必须通过专用系统接口修改")
         self.store.replace(settings)
 
     def get_setting(self, key: str) -> Any:
@@ -2453,7 +2487,11 @@ class BackendAPI:
     def set_setting(self, key: str, value: Any) -> None:
         if key == "storage" or key in {"storage.download_directory", "storage.favorites_directory"}:
             raise ValueError("存储位置必须通过专用迁移接口修改")
+        if key == "startup.auto_start":
+            raise ValueError("开机自启动必须通过专用系统接口修改")
         self.store.set(key, value)
+        if key == "wallpaper.dynamic.static_snapshot.enabled":
+            self.dynamic_wallpaper_service.refresh_static_snapshot(bool(value))
 
     def get_history(self, max_preview_items: int | None = None) -> list[dict[str, Any]]:
         stored_history = self._load_history()
@@ -2976,7 +3014,10 @@ class BackendAPI:
             )
             stored_scene = self._normalize_dynamic_scene(scene)
             stored_scene["background"]["items"] = []
-            self.store.set("wallpaper.dynamic", stored_scene)
+            dynamic_settings = self.store.get("wallpaper.dynamic", {})
+            if not isinstance(dynamic_settings, dict):
+                dynamic_settings = {}
+            self.store.set("wallpaper.dynamic", {**dynamic_settings, **stored_scene})
         return self.get_dynamic_wallpaper_scene(resolve_items=True)
 
     def start_dynamic_wallpaper_scene(self, value: Any | None = None) -> dict[str, Any]:

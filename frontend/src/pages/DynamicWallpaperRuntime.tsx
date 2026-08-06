@@ -33,8 +33,8 @@ export default function DynamicWallpaperRuntime() {
     <div className="h-screen w-screen overflow-hidden">
       <DynamicDesktop
         scene={scene}
-        onPlaybackStateChange={(paused, event, ended) => {
-          const payload = { media_revision: scene.revision, event, paused, ended };
+        onPlaybackStateChange={(paused, event, ended, slideshowSequence) => {
+          const payload = { media_revision: scene.revision, event, paused, ended, slideshow_sequence: slideshowSequence };
           void reportDynamicWallpaperTelemetry(payload).catch(() => undefined);
           window.setTimeout(() => void reportDynamicWallpaperTelemetry(payload).catch(() => undefined), 750);
         }}

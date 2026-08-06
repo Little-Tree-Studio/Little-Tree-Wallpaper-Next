@@ -33,10 +33,11 @@ from lumiview import CloseBehavior
 from backend.api import BackendAPI  # noqa: E402
 from backend.app_meta import APP_NAME, BUILD_TIME, GIT_COMMIT, VERSION  # noqa: E402
 from backend.logging_setup import LOG_DIR  # noqa: E402
-from backend.logging_setup import configure as configure_logging
+from backend.logging_setup import configure as configure_logging  # noqa: E402
 from backend.lumiview_host import LumiViewHost  # noqa: E402
 from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir  # noqa: E402
 from backend.server import create_app  # noqa: E402
+from backend.services.autostart import is_autostart_launch, should_start_hidden  # noqa: E402
 from backend.tray import ApplicationTray  # noqa: E402
 
 ensure_dirs()
@@ -253,6 +254,13 @@ def main() -> None:
 
     api = BackendAPI()
     api.set_api_token(token)
+    autostart_launch = is_autostart_launch(sys.argv[1:])
+    start_hidden = should_start_hidden(
+        autostart_launch=autostart_launch,
+        hide_on_launch=bool(api.store.get("startup.hide_on_launch", True)),
+        tray_enabled=bool(api.store.get("ui.minimize_to_tray", True)),
+    )
+    logger.info("Launch source: {}; main window hidden: {}", "autostart" if autostart_launch else "manual", start_hidden)
     server: uvicorn.Server | None = None
     try:
         server = _start_backend(api, token, port)
@@ -281,6 +289,8 @@ def main() -> None:
                         width=1200,
                         height=800,
                         min_size=(800, 600),
+                        hidden=start_hidden,
+                        focus=not start_hidden,
                         icon=icon_path,
                         devtools=True,
                         frameless=True,
@@ -332,7 +342,11 @@ def main() -> None:
                     api._configure_desktop_notifications(tray.notify)
                     tray.attach_main_window(main_window)
                     api.start_automation_runtime()
-                    tray.start()
+                    tray_started = tray.start()
+                    if start_hidden and not tray_started:
+                        logger.warning("Hidden launch requested but the system tray is unavailable; showing the main window")
+                        main_window.show()
+                        main_window.minimize(False)
                 except BaseException as exc:
                     logger.exception("LumiView runtime initialization failed: {}", exc)
                     runtime_error.append(exc)

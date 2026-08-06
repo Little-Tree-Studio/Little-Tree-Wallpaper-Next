@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import unittest
 import time
+import unittest
 from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,7 +9,7 @@ from threading import Event, RLock
 from unittest.mock import MagicMock, patch
 
 from backend.api import BackendAPI
-from backend.services.dynamic_wallpaper import WindowsDynamicWallpaperService
+from backend.services.dynamic_wallpaper import STATIC_SNAPSHOT_SETTLE_SECONDS, WindowsDynamicWallpaperService
 from backend.settings_manager import SettingsStore
 
 
@@ -261,6 +261,141 @@ class DynamicWallpaperServiceTests(unittest.TestCase):
         self.assertTrue(service._telemetry["received"])
         self.assertFalse(service._telemetry["paused"])
 
+    def test_slideshow_change_queues_one_snapshot_per_sequence(self) -> None:
+        service = WindowsDynamicWallpaperService(static_snapshot_enabled=lambda: True)
+        service._attached = True
+        service._window = FakeWindow()
+        service._runtime_revision = 17
+        service._queue_static_snapshot = MagicMock()
+
+        payload = {
+            "media_revision": 17,
+            "event": "slideshow-change",
+            "paused": False,
+            "slideshow_sequence": 2,
+        }
+        service.update_telemetry(payload)
+        service.update_telemetry(payload)
+
+        service._queue_static_snapshot.assert_called_once_with(STATIC_SNAPSHOT_SETTLE_SECONDS)
+
+    def test_performance_action_uses_strongest_active_policy(self) -> None:
+        conditions = {
+            "other_application_focused": True,
+            "other_application_maximized": False,
+            "other_application_fullscreen": True,
+            "other_application_audio": True,
+            "on_battery": False,
+        }
+        settings = {
+            "other_application_focused": "keep_running",
+            "other_application_fullscreen": "mute",
+            "other_application_audio": "stop",
+        }
+
+        action = WindowsDynamicWallpaperService._resolve_performance_action(conditions, settings)
+
+        self.assertEqual(action, "stop")
+
+    def test_performance_action_ignores_inactive_conditions(self) -> None:
+        conditions = dict.fromkeys(
+            (
+                "other_application_focused",
+                "other_application_maximized",
+                "other_application_fullscreen",
+                "other_application_audio",
+                "on_battery",
+            ),
+            False,
+        )
+
+        action = WindowsDynamicWallpaperService._resolve_performance_action(
+            conditions,
+            {"on_battery": "pause"},
+        )
+
+        self.assertEqual(action, "keep_running")
+
+    def test_performance_policy_controls_mute_and_pause_independently(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        window = FakeWindow()
+        service._window = window
+        service._attached = True
+
+        service._apply_performance_action("pause", {"on_battery": True})
+        service._apply_performance_action("mute", {"on_battery": False, "other_application_audio": True})
+
+        self.assertIn("setPolicyMuted?.(false)", window.scripts[0])
+        self.assertIn("setPolicyPaused?.(true)", window.scripts[1])
+        self.assertIn("setPolicyMuted?.(true)", window.scripts[2])
+        self.assertIn("setPolicyPaused?.(false)", window.scripts[3])
+
+    def test_pause_policy_blocks_manual_resume(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        window = FakeWindow()
+        service._window = window
+        service._attached = True
+        service._performance_action = "pause"
+
+        service.control("play")
+
+        self.assertIn("setPolicyPaused?.(true)", window.scripts[0])
+
+    def test_stop_policy_releases_scene_runtime_and_remembers_it(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        window = FakeWindow()
+        window.close = MagicMock()
+        service._window = window
+        service._attached = True
+        service._runtime_mode = "scene"
+        service._runtime_type = "slideshow"
+        service._runtime_revision = 42
+
+        service._apply_performance_action("stop", {"on_battery": True})
+
+        self.assertFalse(service._attached)
+        self.assertEqual(service._performance_resume, ("scene", 42, "slideshow"))
+        self.assertEqual(service._performance_action, "stop")
+        self.assertTrue(service.requires_static_wallpaper_confirmation())
+        window.close.assert_called_once_with()
+
+    def test_stop_policy_remembers_raw_video_settings(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        service._window = FakeWindow()
+        service._attached = True
+        service._runtime_mode = "raw-video"
+        service._runtime_type = "video"
+        service._media_path = "C:/wallpaper.mp4"
+        service._video_muted = False
+        service._video_loop = False
+        service._video_playback_rate = 1.5
+
+        service._apply_performance_action("stop", {"other_application_fullscreen": True})
+
+        self.assertEqual(service._performance_resume, ("video", "C:/wallpaper.mp4", False, False, 1.5))
+
+    def test_cleared_stop_policy_restarts_remembered_scene(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        service._performance_resume = ("scene", 19, "image")
+        service._performance_action = "stop"
+        service.start_scene = MagicMock(return_value={})
+
+        service._apply_performance_action("keep_running", {"on_battery": False})
+
+        service.start_scene.assert_called_once_with(19, "image")
+        self.assertTrue(service._performance_restore_in_progress)
+
+    def test_manual_stop_cancels_performance_restart(self) -> None:
+        service = WindowsDynamicWallpaperService()
+        service._performance_resume = ("scene", 19, "image")
+        service._performance_action = "stop"
+
+        service.stop()
+
+        self.assertIsNone(service._performance_resume)
+        self.assertEqual(service._performance_action, "keep_running")
+        self.assertFalse(service.requires_static_wallpaper_confirmation())
+
 
 class BackgroundWallpaperConfirmationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -481,6 +616,7 @@ class DynamicWallpaperWindowLifecycleTests(unittest.TestCase):
             root = Path(directory)
             (root / "first.jpg").write_bytes(b"image")
             api.store = SettingsStore(root / "config.json")
+            api.store.set("wallpaper.dynamic.static_snapshot.enabled", True)
 
             saved = api.save_dynamic_wallpaper_scene({
                 "background": {
@@ -495,6 +631,7 @@ class DynamicWallpaperWindowLifecycleTests(unittest.TestCase):
 
         self.assertEqual(saved["background"]["items"], [str((root / "first.jpg").resolve())])
         self.assertEqual(persisted["background"]["items"], [])
+        self.assertTrue(persisted["static_snapshot"]["enabled"])
 
     def test_save_advances_from_persisted_revision(self) -> None:
         api = BackendAPI.__new__(BackendAPI)

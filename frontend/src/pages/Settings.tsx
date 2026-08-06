@@ -10,12 +10,19 @@ import {
   Plus, Trash2, Wand2, ChevronDown, Heart, Package,
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download, RefreshCw,
 } from 'lucide-react';
-import { getSettings, setSetting, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
+import { getSettings, setSetting, getAutostartStatus, setAutostartEnabled, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
 import StorageSettingsPanel from '@/components/StorageSettingsPanel';
 import ThemeSettingsPanel from '@/components/ThemeSettingsPanel';
 import PluginSettingsPanel from '@/components/PluginSettingsPanel';
 import { requestNavigation } from '@/lib/navigationGuard';
-import type { AppSettings, ImageProviderConfig, CustomSentence, StorageOverview } from '@/types';
+import type {
+  AppSettings,
+  AutostartStatus,
+  CustomSentence,
+  DynamicWallpaperPerformanceAction,
+  ImageProviderConfig,
+  StorageOverview,
+} from '@/types';
 import {
   fetchImageProviders,
   parseProviderFromModelsDev,
@@ -52,6 +59,8 @@ export default function Settings() {
   const [storageOverview, setStorageOverview] = useState<StorageOverview | null | undefined>(undefined);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [autostartStatus, setAutostartStatus] = useState<AutostartStatus | null>(null);
+  const [autostartBusy, setAutostartBusy] = useState(false);
   const settingsRequestId = useRef(0);
   const settingsController = useRef<AbortController | null>(null);
   const [nsfwDialogOpen, setNsfwDialogOpen] = useState(false);
@@ -78,9 +87,12 @@ export default function Settings() {
     setSettingsLoading(true);
     setSettingsError(null);
     const timeoutId = window.setTimeout(() => controller.abort(), 15000);
-    getSettings(controller.signal)
-      .then((s) => {
-        if (requestId === settingsRequestId.current) setLocalSettings(s as AppSettings);
+    Promise.all([getSettings(controller.signal), getAutostartStatus(controller.signal)])
+      .then(([s, status]) => {
+        if (requestId === settingsRequestId.current) {
+          setLocalSettings(s as AppSettings);
+          setAutostartStatus(status);
+        }
       })
       .catch((error: unknown) => {
         if (requestId !== settingsRequestId.current) return;
@@ -121,6 +133,26 @@ export default function Settings() {
         timeout: 0,
       });
     });
+  };
+
+  const updateAutostart = async (enabled: boolean) => {
+    if (autostartBusy) return;
+    setAutostartBusy(true);
+    try {
+      const status = await setAutostartEnabled(enabled);
+      setAutostartStatus(status);
+      setLocalSettings((currentSettings) => currentSettings
+        ? setNestedValue(currentSettings, 'startup.auto_start', enabled)
+        : currentSettings);
+      toast.success(enabled ? '已启用开机自启动' : '已关闭开机自启动');
+    } catch (error: unknown) {
+      toast.danger(enabled ? '无法启用开机自启动' : '无法关闭开机自启动', {
+        description: error instanceof Error ? error.message : '请检查系统权限后重试',
+        timeout: 0,
+      });
+    } finally {
+      setAutostartBusy(false);
+    }
   };
 
   if (settingsLoading && !settings) return (
@@ -181,6 +213,24 @@ export default function Settings() {
               <p className="text-xs text-muted">释放主界面后，自动化和动态壁纸继续在后台运行；从托盘打开时会重新创建界面。托盘开关重启程序后生效。</p>
             </Section>
             <Separator />
+            <Section title="开机与后台">
+              <Row label="开机自启动">
+                <Switch
+                  aria-label="开机自启动"
+                  isSelected={autostartStatus?.enabled ?? false}
+                  isDisabled={!autostartStatus?.supported || autostartBusy}
+                  onChange={(enabled) => void updateAutostart(enabled)}
+                ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="自启动时隐藏主界面"><Switch aria-label="自启动时隐藏主界面" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                {autostartStatus?.platform && <Chip size="sm" variant="soft">{autostartStatus.platform}</Chip>}
+                {autostartStatus?.mechanism && <span>通过 {autostartStatus.mechanism} 注册，仅对当前用户生效。</span>}
+              </div>
+              {autostartStatus?.reason && <p className="text-xs text-warning">{autostartStatus.reason}</p>}
+              <p className="text-xs text-muted">隐藏启动需要系统托盘可用；如果托盘未启用或启动失败，主界面会自动显示。</p>
+            </Section>
+            <Separator />
             <HomePagePanel settings={settings} onUpdate={update} onReload={async () => {
               const s = await getSettings();
               setLocalSettings(s as AppSettings);
@@ -210,6 +260,27 @@ export default function Settings() {
 
         <Tabs.Panel id="wallpaper">
           <Card className="space-y-4 p-4">
+            <Section title="动态壁纸性能">
+              <p className="text-sm text-muted">检测到以下系统状态时，自动调整动态壁纸的运行方式。</p>
+              <PerformanceActionRow label="其他应用程序成为焦点时" value={settings.wallpaper.dynamic.performance.other_application_focused} onChange={(value) => update('wallpaper.dynamic.performance.other_application_focused', value)} />
+              <PerformanceActionRow label="其他应用程序最大化时" value={settings.wallpaper.dynamic.performance.other_application_maximized} onChange={(value) => update('wallpaper.dynamic.performance.other_application_maximized', value)} />
+              <PerformanceActionRow label="其他应用程序全屏时" value={settings.wallpaper.dynamic.performance.other_application_fullscreen} onChange={(value) => update('wallpaper.dynamic.performance.other_application_fullscreen', value)} />
+              <PerformanceActionRow label="其他应用程序播放音频时" value={settings.wallpaper.dynamic.performance.other_application_audio} onChange={(value) => update('wallpaper.dynamic.performance.other_application_audio', value)} />
+              <PerformanceActionRow label="笔记本电脑使用电池时" value={settings.wallpaper.dynamic.performance.on_battery} onChange={(value) => update('wallpaper.dynamic.performance.on_battery', value)} />
+              <p className="text-xs text-muted">多个条件同时满足时，优先级为停止、暂停、静音、保持运行。停止会释放动态壁纸资源，条件解除后自动重新创建。</p>
+            </Section>
+            <Separator />
+            <Section title="退出后保留画面">
+              <Row label="同步动态壁纸截图">
+                <Switch
+                  aria-label="同步动态壁纸截图"
+                  isSelected={settings.wallpaper.dynamic.static_snapshot.enabled}
+                  onChange={(enabled) => update('wallpaper.dynamic.static_snapshot.enabled', enabled)}
+                ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <p className="text-xs text-muted">开启后每 5 分钟将当前动态壁纸画面设为 Windows 静态壁纸；图片轮播每次切换后也会立即同步。周期固定，程序退出后仍可看到最近一次画面。</p>
+            </Section>
+            <Separator />
             <Section title="历史记录">
               <Row label="最多保留记录">
                 <Input aria-label="最多保留壁纸历史记录" type="number" min={10} max={2000} className="w-full sm:w-28" value={String(settings.wallpaper.history.max_items)} onChange={(event) => update('wallpaper.history.max_items', Math.max(10, Math.min(2000, Number(event.target.value) || 10)))} />
@@ -348,6 +419,49 @@ export default function Settings() {
         </Modal.Container>
       </Modal.Backdrop>
     </div>
+  );
+}
+
+const PERFORMANCE_ACTIONS: { id: DynamicWallpaperPerformanceAction; label: string }[] = [
+  { id: 'keep_running', label: '保持运行' },
+  { id: 'mute', label: '静音' },
+  { id: 'pause', label: '暂停' },
+  { id: 'stop', label: '停止（释放资源）' },
+];
+
+function PerformanceActionRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: DynamicWallpaperPerformanceAction;
+  onChange: (value: DynamicWallpaperPerformanceAction) => void;
+}) {
+  return (
+    <Row label={label}>
+      <ComboBox
+        aria-label={label}
+        className="w-full sm:w-40"
+        selectedKey={value}
+        onSelectionChange={(key) => {
+          const selected = String(key) as DynamicWallpaperPerformanceAction;
+          if (PERFORMANCE_ACTIONS.some((action) => action.id === selected)) onChange(selected);
+        }}
+      >
+        <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+        <ComboBox.Popover>
+          <ListBox>
+            {PERFORMANCE_ACTIONS.map((action) => (
+              <ListBox.Item key={action.id} id={action.id} textValue={action.label}>
+                {action.label}
+                <ListBox.ItemIndicator />
+              </ListBox.Item>
+            ))}
+          </ListBox>
+        </ComboBox.Popover>
+      </ComboBox>
+    </Row>
   );
 }
 

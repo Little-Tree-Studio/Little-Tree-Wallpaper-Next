@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import socket
 import tempfile
 import unittest
+from ipaddress import ip_address
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.server import (
     _CONTROL_RPC_LIMITER,
     _DATA_RPC_LIMITER,
     _QUIET_RPC_METHODS,
+    _host_is_allowed,
     _rpc_limiter_for_method,
+    _validate_public_http_url,
+    _validate_referer,
     create_app,
 )
 from fastapi.testclient import TestClient
@@ -33,6 +39,60 @@ class _API:
 
 
 class ServerIsolationTests(unittest.TestCase):
+    def test_host_allowlist_accepts_only_exact_loopback_authorities(self) -> None:
+        allowed = ["127.0.0.1", "127.0.0.1:49152", "localhost", "LOCALHOST:80", "::1", "[::1]", "[::1]:443"]
+        rejected = [
+            "",
+            "example.com",
+            "localhost.evil",
+            "127.0.0.1.evil",
+            "127.0.0.1:invalid",
+            "127.0.0.1:65536",
+            "[::1].evil",
+            "[::1]:invalid",
+            " [::1]",
+        ]
+        for host in allowed:
+            with self.subTest(host=host):
+                self.assertTrue(_host_is_allowed(host))
+        for host in rejected:
+            with self.subTest(host=host):
+                self.assertFalse(_host_is_allowed(host))
+
+    def test_public_url_validation_rejects_private_or_mixed_dns_results(self) -> None:
+        public_result = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch("backend.server.socket.getaddrinfo", return_value=public_result):
+            self.assertEqual(
+                _validate_public_http_url("https://example.com/image.jpg"),
+                ("https://example.com/image.jpg", "example.com", 443),
+            )
+
+        mixed_result = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (str(ip_address("93.184.216.34")), 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (str(ip_address("127.0.0.1")), 443)),
+        ]
+        with (
+            patch("backend.server.socket.getaddrinfo", return_value=mixed_result),
+            self.assertRaisesRegex(ValueError, "non-public"),
+        ):
+            _validate_public_http_url("https://example.com/image.jpg")
+
+    def test_public_url_and_referer_validation_rejects_credentials_and_invalid_schemes(self) -> None:
+        invalid_urls = [
+            "file:///tmp/image.png",
+            "https://user:secret@example.com/image.png",
+            "https://example.com:invalid/image.png",
+            "https:///image.png",
+        ]
+        for value in invalid_urls:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                _validate_public_http_url(value)
+
+        self.assertEqual(_validate_referer(" https://example.com/gallery "), "https://example.com/gallery")
+        for value in ["file:///tmp", "https://user:secret@example.com", "x" * 2049]:
+            with self.subTest(referer=value), self.assertRaises(ValueError):
+                _validate_referer(value)
+
     def test_dynamic_scene_reads_are_quiet(self) -> None:
         self.assertIn("get_dynamic_wallpaper_scene", _QUIET_RPC_METHODS)
 

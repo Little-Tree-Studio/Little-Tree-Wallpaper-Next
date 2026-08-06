@@ -17,6 +17,7 @@ import type {
   SniffedImage,
   StoreResource,
   AppSettings,
+  AutostartStatus,
   CustomSentence,
   IntelligentMarketSource,
   IntelligentMarketHealthUpdate,
@@ -854,6 +855,14 @@ export async function setSettings(settings: AppSettings): Promise<void> {
   return call('set_settings', settings);
 }
 
+export async function getAutostartStatus(signal?: AbortSignal): Promise<AutostartStatus> {
+  return callRequest('get_autostart_status', [], signal);
+}
+
+export async function setAutostartEnabled(enabled: boolean): Promise<AutostartStatus> {
+  return call('set_autostart_enabled', enabled);
+}
+
 export async function listThemes(): Promise<ThemeSummary[]> {
   return call('list_themes');
 }
@@ -1077,6 +1086,17 @@ export interface DynamicWallpaperStatus {
   started_at: string;
   last_error: string;
   last_operation: string;
+  performance: {
+    action: 'keep_running' | 'mute' | 'pause' | 'stop';
+    stopped: boolean;
+    conditions: Record<string, boolean>;
+  };
+  static_snapshot: {
+    enabled: boolean;
+    interval_seconds: number;
+    last_updated_at: string;
+    last_error: string;
+  };
   telemetry: {
     received: boolean;
     event: string;
@@ -1227,6 +1247,7 @@ export async function reportDynamicWallpaperTelemetry(payload: {
   event: string;
   paused: boolean;
   ended?: boolean;
+  slideshow_sequence?: number;
 }): Promise<void> {
   await waitForApi();
   const response = await fetch('/api/dynamic-wallpaper/telemetry', {

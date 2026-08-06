@@ -90,6 +90,17 @@ const EMPTY_STATUS: DynamicWallpaperStatus = {
   started_at: '',
   last_error: '',
   last_operation: '',
+  performance: {
+    action: 'keep_running',
+    conditions: {},
+    stopped: false,
+  },
+  static_snapshot: {
+    enabled: false,
+    interval_seconds: 300,
+    last_updated_at: '',
+    last_error: '',
+  },
   telemetry: {
     received: false,
     event: 'idle',

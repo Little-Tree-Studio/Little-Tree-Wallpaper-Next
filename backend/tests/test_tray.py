@@ -20,6 +20,11 @@ class ApplicationTrayTests(unittest.TestCase):
     def test_notification_api_is_available(self) -> None:
         self.assertTrue(callable(self.tray.notify))
 
+    def test_start_returns_false_when_tray_is_disabled(self) -> None:
+        self.tray._api.store.get.return_value = False
+
+        self.assertFalse(self.tray.start())
+
     @patch("backend.tray.sys.platform", "linux")
     def test_notification_falls_back_to_tray_icon(self) -> None:
         icon = MagicMock()

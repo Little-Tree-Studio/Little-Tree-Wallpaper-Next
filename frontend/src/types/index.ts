@@ -242,6 +242,10 @@ export interface AppSettings {
     history: { max_items: number; preview_items: number };
     sources: { merge_display: boolean };
     pixiv?: { include_artwork_tags_in_favorites: boolean };
+    dynamic: {
+      static_snapshot: { enabled: boolean };
+      performance: DynamicWallpaperPerformanceSettings;
+    };
   };
   home_page: HomePageSettings;
   startup: {
@@ -292,6 +296,27 @@ export interface AppSettings {
     show_disclaimer?: boolean;
     auto_health_check?: boolean;
   };
+}
+
+export type DynamicWallpaperPerformanceAction = 'keep_running' | 'mute' | 'pause' | 'stop';
+
+export interface DynamicWallpaperPerformanceSettings {
+  other_application_focused: DynamicWallpaperPerformanceAction;
+  other_application_maximized: DynamicWallpaperPerformanceAction;
+  other_application_fullscreen: DynamicWallpaperPerformanceAction;
+  other_application_audio: DynamicWallpaperPerformanceAction;
+  on_battery: DynamicWallpaperPerformanceAction;
+}
+
+export interface AutostartStatus {
+  supported: boolean;
+  enabled: boolean;
+  registered: boolean;
+  command_matches: boolean;
+  preference_enabled: boolean;
+  platform: string;
+  mechanism: string;
+  reason: string;
 }
 
 export type StorageAction = 'none' | 'safe' | 'confirm' | 'risk';

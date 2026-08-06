@@ -112,6 +112,7 @@ uv run --project backend --no-sync python -m backend.main
 
 ```powershell
 npm run dev --prefix frontend
+npm run test:ci --prefix frontend
 npm run build --prefix frontend
 npm run preview --prefix frontend
 ```

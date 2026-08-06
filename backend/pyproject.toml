@@ -34,6 +34,7 @@ dependencies = [
     "pillow>=12.2.0",
     "platformdirs>=4.10.0",
     "psutil>=7.2.2",
+    "pycaw>=20240210; platform_system=='Windows'",
     "pyperclip>=1.11.0",
     "pystray>=0.19.5",
     "pywin32>=306; platform_system=='Windows'",
@@ -42,7 +43,7 @@ dependencies = [
     "PyYAML>=6.0.2",
     "uvicorn>=0.32.0",
     "windows-toasts>=1.3.1; platform_system=='Windows'",
-    "lumiview>=0.1.0.dev0",
+    "lumiview==0.1.0.dev0",
 ]
 
 [project.scripts]

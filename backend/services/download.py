@@ -45,8 +45,12 @@ class WriteResult:
 
 def sanitize_filename(name: str) -> str:
     """Reduce ``name`` to a safe basename (no path traversal)."""
-    base = Path(name or "").name
+    # Treat both path separator styles consistently on every host platform.
+    base = Path((name or "").replace("\\", "/")).name
     base = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", base).strip(" .")
+    reserved_stem = base.split(".", 1)[0].upper()
+    if reserved_stem in {"CON", "PRN", "AUX", "NUL"} or re.fullmatch(r"(?:COM|LPT)[1-9]", reserved_stem):
+        base = f"_{base}"
     return base or "download"
 
 
