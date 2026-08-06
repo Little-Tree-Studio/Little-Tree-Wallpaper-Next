@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 import os
+import platform
 import random
 import re
 import shutil
@@ -31,7 +32,7 @@ from backend.app_meta import (
     get_build_info,
     get_metadata,
 )
-from backend.paths import ensure_dirs, get_cache_dir, get_config_dir, get_data_dir
+from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir, get_config_dir, get_data_dir
 from backend.plugins import PluginManager
 from backend.plugins.validation import SAFE_IMAGE_SUFFIXES
 from backend.services.automation import AutomationService
@@ -66,8 +67,53 @@ from backend.services.timeline import TimelineService
 from backend.settings_manager import get_settings_store
 
 AUTOMATION_IMAGE_SUFFIXES = SAFE_IMAGE_SUFFIXES | {".avif", ".bmp"}
+UPDATE_API_ROOT = "https://wallpaper.api.zsxiaoshu.cn/core/update"
+UPDATE_CHANNELS_URL = f"{UPDATE_API_ROOT}/channel.json"
+MAX_UPDATE_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
+_UPDATE_DOWNLOAD_LOCK = threading.Lock()
 
 ensure_dirs()
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """Return numeric version segments for natural version ordering."""
+    parts = [int(part) for part in re.findall(r"\d+", str(version))]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def _create_file_dialog_root() -> Any:
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    root.title(APP_NAME)
+    icon_directories = (
+        BASE_DIR / "frontend" / "dist",
+        BASE_DIR / "frontend" / "public",
+    )
+    try:
+        if sys.platform == "win32":
+            icon = next(
+                (directory / "logo.ico" for directory in icon_directories if (directory / "logo.ico").is_file()),
+                None,
+            )
+            if icon:
+                root.iconbitmap(str(icon))
+        else:
+            icon = next(
+                (directory / "logo.png" for directory in icon_directories if (directory / "logo.png").is_file()),
+                None,
+            )
+            if icon:
+                image = tk.PhotoImage(file=str(icon))
+                root.iconphoto(True, image)
+                root._dialog_icon = image
+    except Exception as exc:
+        logger.debug("File dialog icon setup failed: {}", exc)
+    root.update_idletasks()
+    return root
 
 
 def _favorites_transaction(method: Any) -> Any:
@@ -505,13 +551,11 @@ class BackendAPI:
 
     @staticmethod
     def select_automation_directory() -> str | None:
-        import tkinter as tk
         from tkinter import filedialog
 
-        root = tk.Tk()
-        root.withdraw()
+        root = _create_file_dialog_root()
         try:
-            path = filedialog.askdirectory()
+            path = filedialog.askdirectory(parent=root)
             return path if path else None
         finally:
             root.destroy()
@@ -724,16 +768,14 @@ class BackendAPI:
         defaultextension: str | None = None,
         initialfile: str | None = None,
     ) -> str | None:
-        import tkinter as tk
         from tkinter import filedialog
 
-        root = tk.Tk()
-        root.withdraw()
+        root = _create_file_dialog_root()
         try:
             if dialog_type == "open":
-                path = filedialog.askopenfilename(filetypes=filetypes)
+                path = filedialog.askopenfilename(parent=root, filetypes=filetypes)
             elif dialog_type == "save":
-                kwargs: dict[str, Any] = {"filetypes": filetypes}
+                kwargs: dict[str, Any] = {"parent": root, "filetypes": filetypes}
                 if defaultextension:
                     kwargs["defaultextension"] = defaultextension
                 if initialfile:
@@ -1878,14 +1920,13 @@ class BackendAPI:
 
     def _pick_save_path(self, suggested_name: str) -> str | None:
         """Open a native Save dialog and return the chosen path (or None)."""
-        import tkinter as tk
         from tkinter import filedialog
 
-        root = tk.Tk()
-        root.withdraw()
+        root = _create_file_dialog_root()
         try:
             is_project = suggested_name.lower().endswith(".ltwp")
             path = filedialog.asksaveasfilename(
+                parent=root,
                 defaultextension=".ltwp" if is_project else ".jpg",
                 initialfile=suggested_name,
                 filetypes=(
@@ -2610,8 +2651,166 @@ class BackendAPI:
                         logger.warning("Failed to delete generated image file {}: {}", path, exc)
         self._save_generated_images([])
 
-    def check_for_updates(self) -> dict[str, Any] | None:
-        return None
+    def check_for_updates(self, channel: str | None = None) -> dict[str, Any]:
+        import requests
+
+        response = requests.get(UPDATE_CHANNELS_URL, timeout=15)
+        response.raise_for_status()
+        channels_payload = response.json()
+        if not isinstance(channels_payload, list):
+            raise RuntimeError("更新渠道数据格式无效")
+
+        channels = sorted(
+            (
+                {
+                    "id": str(item["id"]),
+                    "name": str(item.get("name") or item["id"]),
+                    "description": str(item.get("description") or ""),
+                    "order": int(item.get("order", 0)),
+                }
+                for item in channels_payload
+                if isinstance(item, dict) and re.fullmatch(r"[a-zA-Z0-9_-]+", str(item.get("id", "")))
+            ),
+            key=lambda item: (item["order"], item["name"]),
+        )
+        if not channels:
+            raise RuntimeError("没有可用的更新渠道")
+
+        available_channels = {item["id"] for item in channels}
+        requested_channel = str(channel or self.store.get("updates.channel", "stable"))
+        selected_channel = requested_channel if requested_channel in available_channels else channels[0]["id"]
+
+        manifest_response = requests.get(f"{UPDATE_API_ROOT}/{selected_channel}/update.json", timeout=15)
+        manifest_response.raise_for_status()
+        manifest = manifest_response.json()
+        if not isinstance(manifest, dict) or not str(manifest.get("version", "")).strip():
+            raise RuntimeError("更新信息格式无效")
+
+        system_id = {"win32": "windows", "linux": "linux", "darwin": "macos"}.get(sys.platform, sys.platform)
+        machine = platform.machine().lower()
+        architecture = "arm64" if machine in {"arm64", "aarch64"} else "x64" if machine in {"amd64", "x86_64"} else machine
+        platforms = manifest.get("platforms") if isinstance(manifest.get("platforms"), dict) else {}
+        system_packages = platforms.get(system_id) if isinstance(platforms.get(system_id), dict) else {}
+        package = system_packages.get(architecture) if isinstance(system_packages.get(architecture), dict) else None
+
+        latest_version = str(manifest["version"]).strip()
+        return {
+            "has_update": _version_key(latest_version) > _version_key(VERSION),
+            "current_version": VERSION,
+            "latest_version": latest_version,
+            "selected_channel": selected_channel,
+            "channels": channels,
+            "release_notes_url": str(manifest.get("release_notes_url") or ""),
+            "release_note": str(manifest.get("release_note") or ""),
+            "release_date": str(manifest.get("release_date") or ""),
+            "force_update": bool(manifest.get("force_update", False)),
+            "minimum_supported_version": str(manifest.get("minimum_supported_version") or ""),
+            "platform": system_id,
+            "architecture": architecture,
+            "package": {
+                "download_url": str(package.get("download_url") or ""),
+                "size_bytes": int(package.get("size_bytes") or 0),
+                "sha256": str(package.get("sha256") or ""),
+            } if package else None,
+        }
+
+    def download_update_package(
+        self,
+        version: str,
+        url: str,
+        sha256: str,
+        size_bytes: int = 0,
+    ) -> dict[str, Any]:
+        import requests
+
+        parsed = urlparse(str(url))
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise RuntimeError("更新安装包必须使用有效的 HTTPS 地址")
+
+        expected_sha256 = str(sha256).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise RuntimeError("更新安装包缺少有效的 SHA-256 校验值")
+
+        expected_size = int(size_bytes or 0)
+        if expected_size < 0 or expected_size > MAX_UPDATE_PACKAGE_BYTES:
+            raise RuntimeError("更新安装包大小无效")
+
+        remote_name = Path(parsed.path).name
+        filename = _shared_sanitize_filename(remote_name or f"LittleTreeWallpaper-{version}.bin")
+        destination = self._downloads_dir() / "updates" / filename
+        partial = destination.with_name(f"{destination.name}.part")
+
+        def file_matches(path: Path) -> bool:
+            if not path.is_file():
+                return False
+            if expected_size and path.stat().st_size != expected_size:
+                return False
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest() == expected_sha256
+
+        with _UPDATE_DOWNLOAD_LOCK:
+            if file_matches(destination):
+                return {
+                    "path": str(destination),
+                    "filename": filename,
+                    "size_bytes": destination.stat().st_size,
+                    "already_downloaded": True,
+                }
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            received = 0
+            digest = hashlib.sha256()
+            response = None
+            try:
+                response = requests.get(url, timeout=(10, 300), stream=True, allow_redirects=True)
+                response.raise_for_status()
+                final_url = urlparse(str(response.url))
+                if final_url.scheme != "https":
+                    raise RuntimeError("更新安装包重定向到了非 HTTPS 地址")
+
+                content_length = response.headers.get("Content-Length", "")
+                response_size = int(content_length) if content_length.isdigit() else 0
+                if response_size > MAX_UPDATE_PACKAGE_BYTES:
+                    raise RuntimeError("更新安装包超过允许的大小")
+                if expected_size and response_size and response_size != expected_size:
+                    raise RuntimeError("更新安装包大小与公告不一致")
+
+                with partial.open("wb") as output:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        received += len(chunk)
+                        if received > MAX_UPDATE_PACKAGE_BYTES:
+                            raise RuntimeError("更新安装包超过允许的大小")
+                        digest.update(chunk)
+                        output.write(chunk)
+                    output.flush()
+                    with contextlib.suppress(OSError):
+                        os.fsync(output.fileno())
+
+                if expected_size and received != expected_size:
+                    raise RuntimeError("更新安装包下载不完整")
+                if digest.hexdigest() != expected_sha256:
+                    raise RuntimeError("更新安装包 SHA-256 校验失败")
+                os.replace(partial, destination)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    partial.unlink()
+                raise
+            finally:
+                if response is not None:
+                    response.close()
+
+            logger.info("Downloaded update package v{} ({} bytes) -> {}", version, received, destination)
+            return {
+                "path": str(destination),
+                "filename": filename,
+                "size_bytes": received,
+                "already_downloaded": False,
+            }
 
     def open_folder(self, path: str) -> None:
         # Spawn the OS handler with an argument list (never a shell) so a
@@ -2779,14 +2978,17 @@ class BackendAPI:
 
     def select_local_image(self) -> str | None:
         try:
-            import tkinter as tk
             from tkinter import filedialog
 
-            root = tk.Tk()
-            root.withdraw()
-            path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif")])
-            root.destroy()
-            return path or None
+            root = _create_file_dialog_root()
+            try:
+                path = filedialog.askopenfilename(
+                    parent=root,
+                    filetypes=[("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.gif")],
+                )
+                return path or None
+            finally:
+                root.destroy()
         except Exception:
             return None
 
@@ -2855,8 +3057,8 @@ class BackendAPI:
                 instance_id = f"widget-{index}-{uuid.uuid4().hex[:8]}"
             seen_ids.add(instance_id)
             settings_raw = item.get("settings") if isinstance(item.get("settings"), dict) else {}
-            def widget_text(key: str, default: str, limit: int) -> str:
-                value = settings_raw.get(key, default)
+            def widget_text(key: str, default: str, limit: int, source: dict[str, Any] = settings_raw) -> str:
+                value = source.get(key, default)
                 return str(default if value is None else value)[:limit]
 
             settings: dict[str, Any] = {}
@@ -3770,13 +3972,13 @@ class BackendAPI:
     @staticmethod
     def _pick_directory(title: str) -> dict[str, str] | None:
         try:
-            import tkinter as tk
             from tkinter import filedialog
 
-            root = tk.Tk()
-            root.withdraw()
-            path = filedialog.askdirectory(title=title)
-            root.destroy()
+            root = _create_file_dialog_root()
+            try:
+                path = filedialog.askdirectory(parent=root, title=title)
+            finally:
+                root.destroy()
             if path:
                 return {"path": path}
         except Exception as e:

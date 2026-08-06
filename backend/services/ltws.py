@@ -158,9 +158,7 @@ def _apicore_path_to_internal(path: str) -> str:
             raw_token = path[index + 1 : end_index].strip()
             if raw_token == "*":
                 tokens.append("*")
-            elif raw_token.isdigit():
-                tokens.append(raw_token)
-            elif ":" in raw_token:
+            elif raw_token.isdigit() or ":" in raw_token:
                 tokens.append(raw_token)
             else:
                 tokens.append(raw_token)
@@ -184,9 +182,7 @@ def _internal_path_to_apicore(path: str) -> str:
     for segment in segments:
         if segment == "*":
             result += "[*]"
-        elif segment.isdigit():
-            result += f"[{segment}]"
-        elif ":" in segment:
+        elif segment.isdigit() or ":" in segment:
             result += f"[{segment}]"
         else:
             if result:
@@ -323,8 +319,8 @@ class LTWSService:
                         member_path = destination / member.name
                         try:
                             member_path.resolve().relative_to(destination.resolve())
-                        except ValueError:
-                            raise ValueError(f"壁纸源包中包含不安全路径: {member.name}")
+                        except ValueError as exc:
+                            raise ValueError(f"壁纸源包中包含不安全路径: {member.name}") from exc
                     if hasattr(tarfile, "data_filter"):
                         archive.extractall(destination, filter="data")
                     else:
@@ -1134,7 +1130,6 @@ class LTWSService:
         response_type: str,
     ) -> dict[str, Any]:
         request_payload = api_payload.get("request") or {}
-        response_payload = api_payload.get("response") or {}
         mapping_payload = api_payload.get("mapping") or {}
         validation_payload = api_payload.get("validation") or {}
         error_handling_payload = api_payload.get("error_handling") or {}
@@ -1408,7 +1403,7 @@ class LTWSService:
                 changed = False
                 for key, value in custom_variables.items():
                     rendered = VARIABLE_PATTERN.sub(
-                        lambda match: current.get(match.group(1), match.group(0)),
+                        lambda match, values=current: values.get(match.group(1), match.group(0)),
                         str(value),
                     )
                     if resolved_custom.get(key) != rendered:
@@ -1422,7 +1417,7 @@ class LTWSService:
             expression = match.group(1)
             if expression.startswith("random_string:"):
                 length = max(1, int(expression.split(":", 1)[1]))
-                return hashlib.sha1(f"{datetime.utcnow().isoformat()}|{length}".encode("utf-8")).hexdigest()[:length]
+                return hashlib.sha1(f"{datetime.utcnow().isoformat()}|{length}".encode()).hexdigest()[:length]
             if expression.startswith("random_hex:"):
                 length = max(1, int(expression.split(":", 1)[1]))
                 return hashlib.md5(datetime.utcnow().isoformat().encode("utf-8")).hexdigest()[:length]
@@ -1472,10 +1467,7 @@ class LTWSService:
                 )
             ]
 
-        if format_name == "toml":
-            payload = rtoml.loads(response_text)
-        else:
-            payload = json.loads(response_text)
+        payload = rtoml.loads(response_text) if format_name == "toml" else json.loads(response_text)
 
         if response_type == "single":
             mapped = self._map_item(mapping_spec, payload)
@@ -1622,7 +1614,7 @@ class LTWSService:
         image_url = self._proxy_local_image_url(image_url)
         preview_url = self._proxy_local_image_url(preview_url)
         wallpaper = WallpaperItem(
-            id=item.get("id") or hashlib.sha1(f"{source_id}|{api_name}|{image_url}".encode("utf-8")).hexdigest(),
+            id=item.get("id") or hashlib.sha1(f"{source_id}|{api_name}|{image_url}".encode()).hexdigest(),
             source_id=source_id,
             source_name=source_name,
             title=item.get("title") or api_name,
@@ -2022,8 +2014,8 @@ class LTWSService:
         cache_file = self.cache_dir / f"{key}.json"
         try:
             cache_file.resolve().relative_to(self.cache_dir.resolve())
-        except ValueError:
-            raise ValueError(f"不安全的缓存键: {key}")
+        except ValueError as exc:
+            raise ValueError(f"不安全的缓存键: {key}") from exc
         return cache_file
 
     def _load_cache(
@@ -2694,7 +2686,7 @@ class LTWSService:
         }
         rows: list[dict[str, str]] = []
         for target_key, aliases in candidates.items():
-            for property_name in properties.keys():
+            for property_name in properties:
                 if str(property_name).lower() not in aliases:
                     continue
                 rows.append({"key": target_key, "value": prefix + property_name if prefix else property_name})
@@ -3393,9 +3385,7 @@ class LTWSService:
                     elif key in query_bindings:
                         location = "query"
                         name = query_bindings[key]
-                    elif token_pattern.search(body_template):
-                        location = "body"
-                    elif method not in {"get", "head", "delete", "options"} and body_template:
+                    elif token_pattern.search(body_template) or method not in {"get", "head", "delete", "options"} and body_template:
                         location = "body"
 
                 if location == "body":
@@ -3407,7 +3397,7 @@ class LTWSService:
                         {
                             "name": name,
                             "in": location,
-                            "required": True if location == "path" else False,
+                            "required": location == "path",
                             "description": description,
                             "schema": schema,
                         }

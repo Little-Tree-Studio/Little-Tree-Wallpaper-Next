@@ -13,8 +13,8 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 import aiohttp
-from loguru import logger
 from aiohttp import ClientResponseError
+from loguru import logger
 from PIL import Image
 
 
@@ -504,7 +504,6 @@ class IntelligentMarketService:
                     response.raise_for_status()
                     content_type = response.headers.get("Content-Type", "")
                     if "text/html" in content_type:
-                        html = await response.text()
                         return await self._fetch_jsdelivr_html_tree(session, tree_url)
                     return await response.json(content_type=None)
             except Exception as exc:
@@ -661,7 +660,7 @@ class IntelligentMarketService:
     def _build_health_probe_request(self, source: dict[str, Any]) -> dict[str, Any]:
         try:
             request_info = self._build_request(source, {})
-        except ValueError:
+        except ValueError as exc:
             missing_defaults = []
             for param in source.get("parameters") or []:
                 if not bool(param.get("required", False)):
@@ -672,9 +671,7 @@ class IntelligentMarketService:
                         str(param.get("friendly_name") or param.get("name") or param.get("key") or "参数")
                     )
             if missing_defaults:
-                raise ValueError(
-                    "需手动填写必填参数后才能检测"
-                )
+                raise ValueError("需手动填写必填参数后才能检测") from exc
             raise
         return request_info
 
@@ -997,7 +994,7 @@ class IntelligentMarketService:
         image_count: int,
         others: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        contexts = [dict() for _ in range(max(1, image_count))]
+        contexts = [{} for _ in range(max(1, image_count))]
         for group in others:
             if not isinstance(group, dict):
                 continue

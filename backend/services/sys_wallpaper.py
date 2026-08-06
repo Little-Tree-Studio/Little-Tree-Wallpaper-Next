@@ -639,11 +639,10 @@ def set_wallpaper(path: str) -> None:
             logger.debug("LXQt 壁纸已通过 pcmanfm 设置")
             return
 
-    if "lxde" in desktops:
-        if shutil.which("pcmanfm"):
-            subprocess.run(["pcmanfm", "--set-wallpaper", path], check=False)
-            logger.debug("LXDE 壁纸已设置")
-            return
+    if "lxde" in desktops and shutil.which("pcmanfm"):
+        subprocess.run(["pcmanfm", "--set-wallpaper", path], check=False)
+        logger.debug("LXDE 壁纸已设置")
+        return
 
     if "hyprland" in desktops:
         r = subprocess.run(

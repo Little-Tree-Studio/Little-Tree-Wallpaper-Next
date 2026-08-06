@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'wouter';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
   Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
@@ -9,8 +11,10 @@ import type { Key } from '@heroui/react';
 import {
   Plus, Trash2, Wand2, ChevronDown, Heart, Package,
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download, RefreshCw,
+  CheckCircle2, AlertCircle, CalendarDays,
 } from 'lucide-react';
-import { getSettings, setSetting, getAutostartStatus, setAutostartEnabled, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo } from '@/api/backend';
+import { checkForUpdates, getSettings, setSetting, getAutostartStatus, setAutostartEnabled, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo, notifyForcedUpdateDetected } from '@/api/backend';
+import type { UpdateCheckResult } from '@/api/backend';
 import StorageSettingsPanel from '@/components/StorageSettingsPanel';
 import ThemeSettingsPanel from '@/components/ThemeSettingsPanel';
 import PluginSettingsPanel from '@/components/PluginSettingsPanel';
@@ -200,6 +204,7 @@ export default function Settings() {
             <Tabs.Tab id="sniff"><span className="whitespace-nowrap">嗅探</span><Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="appearance"><span className="whitespace-nowrap">外观</span><Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="plugins"><span className="whitespace-nowrap">插件</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="updates"><span className="whitespace-nowrap">更新</span><Tabs.Indicator /></Tabs.Tab>
             <Tabs.Tab id="about"><span className="whitespace-nowrap">关于</span><Tabs.Indicator /></Tabs.Tab>
           </Tabs.List>
         </Tabs.ListContainer>
@@ -366,6 +371,10 @@ export default function Settings() {
 
         <Tabs.Panel id="plugins">
           <PluginSettingsPanel />
+        </Tabs.Panel>
+
+        <Tabs.Panel id="updates">
+          {activeTab === 'updates' && <UpdatePanel settings={settings} onUpdate={update} />}
         </Tabs.Panel>
 
         <Tabs.Panel id="about">
@@ -1016,6 +1025,187 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
   );
 }
 
+function formatUpdateDate(value: string): string {
+  if (!value) return '未提供';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '未知大小';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function UpdateReleaseNotes({ content }: { content: string }) {
+  return (
+    <Markdown
+      skipHtml
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            className="inline-flex items-center gap-1 text-primary underline underline-offset-2"
+            onClick={(event) => {
+              event.preventDefault();
+              if (href) void openUrl(href);
+            }}
+          >
+            {children}
+            <ExternalLink size={12} />
+          </a>
+        ),
+      }}
+    >
+      {content}
+    </Markdown>
+  );
+}
+
+function UpdatePanel({ settings, onUpdate }: {
+  settings: AppSettings;
+  onUpdate: (key: string, value: unknown) => void;
+}) {
+  const [result, setResult] = useState<UpdateCheckResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const runCheck = async (channel = settings.updates.channel) => {
+    setChecking(true);
+    setError(null);
+    try {
+      const updateResult = await checkForUpdates(channel);
+      setResult(updateResult);
+      notifyForcedUpdateDetected(updateResult);
+    } catch (checkError: unknown) {
+      setError(checkError instanceof Error ? checkError.message : '无法获取更新信息');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    void runCheck();
+  }, []);
+
+  const channels = result?.channels.length
+    ? result.channels
+    : [{ id: settings.updates.channel, name: settings.updates.channel, description: '', order: 0 }];
+  const selectedChannel = result?.selected_channel || settings.updates.channel;
+  const selectedChannelInfo = channels.find((channel) => channel.id === selectedChannel);
+
+  return (
+    <div className="space-y-4">
+      <Card className="space-y-4 p-4">
+        <Section title="更新设置">
+          <Row label="自动检查更新">
+            <Switch aria-label="自动检查更新" isSelected={settings.updates.auto_check} onChange={(value) => onUpdate('updates.auto_check', value)}>
+              <Switch.Control><Switch.Thumb /></Switch.Control>
+            </Switch>
+          </Row>
+          <Row label="更新渠道">
+            <ComboBox
+              aria-label="更新渠道"
+              className="w-full sm:w-48"
+              selectedKey={selectedChannel}
+              onSelectionChange={(key) => {
+                const channel = String(key);
+                onUpdate('updates.channel', channel);
+                setResult((current) => current ? { ...current, selected_channel: channel } : current);
+                void runCheck(channel);
+              }}
+            >
+              <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+              <ComboBox.Popover>
+                <ListBox>
+                  {channels.map((channel) => (
+                    <ListBox.Item key={channel.id} id={channel.id} textValue={channel.name}>
+                      {channel.name}
+                      <ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </ComboBox.Popover>
+            </ComboBox>
+          </Row>
+          {selectedChannelInfo?.description && <p className="text-xs leading-relaxed text-muted">{selectedChannelInfo.description}</p>}
+        </Section>
+      </Card>
+
+      <Card className="space-y-4 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${error ? 'bg-danger/10 text-danger' : result?.has_update ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success'}`}>
+              {error ? <AlertCircle size={20} /> : result?.has_update ? <Download size={20} /> : <CheckCircle2 size={20} />}
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold">
+                  {error ? '检查更新失败' : result?.has_update ? `发现新版本 v${result.latest_version}` : result ? '当前版本不低于渠道最新版本' : '尚未检查更新'}
+                </h3>
+                {result?.has_update && result.force_update && <Chip color="danger" variant="soft" size="sm">必须更新</Chip>}
+                {result && <Chip color={result.has_update ? 'accent' : 'success'} variant="soft" size="sm">{selectedChannelInfo?.name || result.selected_channel}</Chip>}
+              </div>
+              <p className="mt-1 text-sm text-muted">
+                {error || (result ? `当前 v${result.current_version}，最新 v${result.latest_version}` : '点击右侧按钮从更新服务获取最新版本。')}
+              </p>
+            </div>
+          </div>
+          <Button variant="secondary" isPending={checking} onPress={() => void runCheck()}>
+            {({ isPending }) => <>{isPending ? <Spinner color="current" size="sm" /> : <RefreshCw size={15} />}{isPending ? '正在检查' : '检查更新'}</>}
+          </Button>
+        </div>
+
+        {result && (
+          <>
+            <Separator />
+            <div className="grid gap-3 text-sm sm:grid-cols-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg bg-surface-secondary p-3">
+                <span className="text-muted">适用平台</span>
+                <span className="font-mono">{result.platform} / {result.architecture}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg bg-surface-secondary p-3">
+                <span className="flex items-center gap-1.5 text-muted"><CalendarDays size={14} />发布时间</span>
+                <span>{formatUpdateDate(result.release_date)}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-muted">更新说明</h3>
+              {result.release_note.trim() ? (
+                <div className="rounded-lg bg-surface-secondary p-4 text-sm leading-6 text-wrap-pretty [&_a]:break-words [&_blockquote]:my-3 [&_blockquote]:border-l-3 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted [&_code]:rounded [&_code]:bg-surface-tertiary [&_code]:px-1.5 [&_code]:py-0.5 [&_h1]:mb-3 [&_h1]:text-xl [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mb-2 [&_h3]:mt-3 [&_h3]:font-semibold [&_hr]:my-4 [&_hr]:border-border [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-surface-tertiary [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-surface-tertiary [&_th]:p-2 [&_th]:text-left [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
+                  <UpdateReleaseNotes content={result.release_note} />
+                </div>
+              ) : <p className="text-sm text-muted">此版本未提供更新说明。</p>}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {result.has_update && result.package?.download_url && (
+                <Button onPress={() => void openUrl(result.package!.download_url)}>
+                  <Download size={15} />下载安装包
+                  <span className="text-xs opacity-75">{formatFileSize(result.package.size_bytes)}</span>
+                </Button>
+              )}
+              {result.release_notes_url && (
+                <Button variant="secondary" onPress={() => void openUrl(result.release_notes_url)}>
+                  <ExternalLink size={15} />查看发布页面
+                </Button>
+              )}
+              {result.has_update && !result.package?.download_url && <p className="text-xs text-muted">当前平台暂无可用安装包，请前往发布页面查看。</p>}
+            </div>
+
+            {result.has_update && result.package?.sha256 && (
+              <p className="break-all font-mono text-[11px] text-muted">SHA-256: {result.package.sha256}</p>
+            )}
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function AboutPanel() {
   const [app, setApp] = useState<import('@/api/backend').AppInfo | null>(null);
   const [build, setBuild] = useState<import('@/api/backend').BuildInfo | null>(null);
@@ -1232,141 +1422,50 @@ function AboutPanel() {
           <Accordion.Panel>
             <Accordion.Body>
               <div className="space-y-4 text-sm text-muted">
-                <p>本项目使用了大量优秀的开源软件，以下列出所有直接及间接依赖及其许可证信息：</p>
+                <p>感谢以下开源项目及其贡献者为本项目提供支持。这里仅列出本项目直接使用的运行时依赖及其许可证信息：</p>
 
                 <div className="space-y-2">
-                  <p className="font-medium text-foreground">前端运行时与框架</p>
+                  <p className="font-medium text-foreground">前端</p>
                   <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react@19.2.6 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-dom@19.2.6 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">wouter@3.10.0 (Unlicense)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">scheduler@0.27.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">use-sync-external-store@1.6.0 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/react (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/styles (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@tailwindcss/vite (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lucide-react (ISC)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-dom (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-markdown (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">remark-gfm (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwindcss (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">wouter (Unlicense)</span>
                   </div>
                 </div>
 
                 <Separator />
 
                 <div className="space-y-2">
-                  <p className="font-medium text-foreground">UI 组件与样式</p>
+                  <p className="font-medium text-foreground">后端</p>
                   <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/react@3.0.5 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@heroui/styles@3.0.5 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwindcss@4.0.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@tailwindcss/vite@4.3.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lucide-react@1.17.0 (ISC)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwind-merge@3.4.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tailwind-variants@3.2.2 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tw-animate-css@1.4.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">clsx@2.1.1 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">input-otp@1.4.2 (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiohttp (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">certifi (MPL-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">cryptography (Apache-2.0 / BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">fastapi (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">fonttools (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">loguru (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lumiview (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pillow (HPND)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">platformdirs (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">psutil (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pycaw (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pyperclip (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pystray (LGPL-3.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pywin32 (PSF-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">PyYAML (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">requests (Apache-2.0)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">rtoml (MIT)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">uvicorn (BSD-3-Clause)</span>
+                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">windows-toasts (MIT)</span>
                   </div>
                 </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">React Aria / Adobe Spectrum (Apache-2.0)</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-aria@3.48.0</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-aria-components@1.17.0</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-stately@3.46.0</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@adobe/react-spectrum@3.47.1</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-aria/*</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-stately/*</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-types/*</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@react-spectrum/*</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@spectrum-icons/*</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@internationalized/*</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@swc/helpers@0.5.23</span>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">Radix UI (MIT)</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-avatar@1.1.11</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-primitive@2.1.4</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-slot@1.2.4</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-context@1.1.3</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-compose-refs@1.1.2</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@radix-ui/react-use-*@1.1.1</span>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">构建工具</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">vite@6.0.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@vitejs/plugin-react@6.0.2 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">esbuild@0.25.12 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">rollup@4.60.4 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">typescript@5.9.3 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@babel/*@7.29.7 (MIT)</span>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">前端其他依赖</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">postcss@8.5.15 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">nanoid@3.3.12 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">tslib@2.8.1 (0BSD)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">lightningcss@1.32.0 (MPL-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">caniuse-lite@1.0.30 (CC-BY-4.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">source-map-js@1.2.1 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">intl-messageformat@10.7.18 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">react-transition-group@4.4.5 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@formatjs/*@2.x (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@jridgewell/* (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@types/* (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">@rolldown/pluginutils (MIT)</span>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">后端 (Python)</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pywebview@6.2.1 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">requests@2.34.2 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">platformdirs@4.10.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pillow@12.2.0 (HPND)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">psutil@7.2.2 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pystray@0.19.5 (LGPL-3.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pyperclip@1.11.0 (BSD)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">loguru@0.7.3 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">aiohttp@3.14.0 (Apache-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">certifi@2026.6.17 (MPL-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">fastapi@0.115.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">uvicorn@0.32.0 (BSD-3-Clause)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">PyYAML@6.0.2 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">rtoml@0.12.0 (MIT)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pywin32@306 (PSF-2.0)</span>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">Python 构建与打包</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">pyinstaller@6.21.0 (GPL-2.0)</span>
-                    <span className="rounded-md bg-surface-tertiary px-2 py-1 text-center text-xs">hatchling@1.27.0 (MIT)</span>
-                  </div>
-                </div>
-
-                <p className="text-xs">
-                  完整依赖列表及精确版本请参阅项目源码中的 package.json、package-lock.json、pyproject.toml 及 uv.lock。
-                  前端共 140+ 个包，后端共 30 个包。
-                </p>
               </div>
             </Accordion.Body>
           </Accordion.Panel>

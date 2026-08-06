@@ -19,7 +19,7 @@ import uuid
 import webbrowser
 from collections import deque
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -784,7 +784,7 @@ class AutomationService:
                     variables[str(config.get("result_variable") or "entries")] = current_value
                 elif node_type == "datetime":
                     raw_value = current_value if legacy_input and isinstance(current_value, (str, int, float)) and current_value != "" else config.get("value")
-                    zone = timezone.utc if str(config.get("timezone") or "local") == "utc" else None
+                    zone = UTC if str(config.get("timezone") or "local") == "utc" else None
                     if raw_value is None or raw_value == "":
                         value = datetime.now(zone).astimezone() if zone is None else datetime.now(zone)
                     elif isinstance(raw_value, (int, float)):

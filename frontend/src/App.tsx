@@ -36,6 +36,7 @@ import PluginGlobalUI from '@/plugins/PluginGlobalUI';
 import StaticWallpaperGuardProvider from '@/components/StaticWallpaperGuardProvider';
 import TextContextMenu from '@/components/TextContextMenu';
 import WindowTitleBar from '@/components/WindowTitleBar';
+import ForcedUpdateBanner from '@/components/ForcedUpdateBanner';
 import { useHashRouterLocation, usePathname } from '@/lib/router';
 
 function AppContent() {
@@ -78,52 +79,55 @@ function AppContent() {
     <ThemeProvider>
       <div className="relative z-10 flex h-screen w-screen min-h-0 flex-col overflow-hidden">
         <WindowTitleBar title={windowTitle} />
-        <div className="min-h-0 flex-1">
-        <StaticWallpaperGuardProvider>
-          <PluginProvider>
-            <ImageViewerProvider>
-            <Layout>
-              <Switch>
-                <Route path="/" component={Home} />
-                <Route path="/resource" component={Resource} />
-                <Route path="/resource/cnu/:workId" component={CnuWorkDetail} />
-                <Route path="/resource/pixivel/:workId" component={PixivelWorkDetail} />
-                <Route path="/resource/source-management" component={WallpaperSourceManagement} />
-                <Route path="/generate" component={Generate} />
-                <Route path="/create" component={Create} />
-                <Route path="/dynamic" component={DynamicWallpaper} />
-                <Route path="/dynamic/editor" component={DynamicWidgetEditor} />
-                <Route path="/dynamic/runtime" component={DynamicWallpaperRuntime} />
-                <Route path="/automation" component={Automation} />
-                <Route path="/search" component={Search} />
-                <Route path="/sniff" component={Sniff} />
-                <Route path="/favorite" component={Favorite} />
-                <Route path="/tags" component={Tags} />
-                <Route path="/store" component={Store} />
-                <Route path="/settings" component={Settings} />
-                <Route path="/settings/:tab" component={Settings} />
-                <Route path="/help" component={Help} />
-                <Route path="/history" component={History} />
-                <Route path="/tools" component={Tools} />
-                <Route path="/tools/color-palette" component={ColorPalette} />
-                <Route path="/tools/dynamic-wallpaper" component={DynamicWallpaperDebug} />
-                <Route component={PluginPage} />
-              </Switch>
-            </Layout>
-            <ImageViewer />
-            {betaVersion !== null && (
-              <BetaWarningModal
-                version={betaVersion}
-                onDismiss={() => setBetaVersion(null)}
-              />
-            )}
-            <BetaWatermark />
-            <PluginGlobalUI />
-            <TextContextMenu />
-            <Toast.Provider placement="bottom end" />
-            </ImageViewerProvider>
-          </PluginProvider>
-        </StaticWallpaperGuardProvider>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <ForcedUpdateBanner />
+          <div className="min-h-0 flex-1">
+            <StaticWallpaperGuardProvider>
+              <PluginProvider>
+                <ImageViewerProvider>
+                  <Layout>
+                    <Switch>
+                      <Route path="/" component={Home} />
+                      <Route path="/resource" component={Resource} />
+                      <Route path="/resource/cnu/:workId" component={CnuWorkDetail} />
+                      <Route path="/resource/pixivel/:workId" component={PixivelWorkDetail} />
+                      <Route path="/resource/source-management" component={WallpaperSourceManagement} />
+                      <Route path="/generate" component={Generate} />
+                      <Route path="/create" component={Create} />
+                      <Route path="/dynamic" component={DynamicWallpaper} />
+                      <Route path="/dynamic/editor" component={DynamicWidgetEditor} />
+                      <Route path="/dynamic/runtime" component={DynamicWallpaperRuntime} />
+                      <Route path="/automation" component={Automation} />
+                      <Route path="/search" component={Search} />
+                      <Route path="/sniff" component={Sniff} />
+                      <Route path="/favorite" component={Favorite} />
+                      <Route path="/tags" component={Tags} />
+                      <Route path="/store" component={Store} />
+                      <Route path="/settings" component={Settings} />
+                      <Route path="/settings/:tab" component={Settings} />
+                      <Route path="/help" component={Help} />
+                      <Route path="/history" component={History} />
+                      <Route path="/tools" component={Tools} />
+                      <Route path="/tools/color-palette" component={ColorPalette} />
+                      <Route path="/tools/dynamic-wallpaper" component={DynamicWallpaperDebug} />
+                      <Route component={PluginPage} />
+                    </Switch>
+                  </Layout>
+                  <ImageViewer />
+                  {betaVersion !== null && (
+                    <BetaWarningModal
+                      version={betaVersion}
+                      onDismiss={() => setBetaVersion(null)}
+                    />
+                  )}
+                  <BetaWatermark />
+                  <PluginGlobalUI />
+                  <TextContextMenu />
+                  <Toast.Provider placement="bottom end" />
+                </ImageViewerProvider>
+              </PluginProvider>
+            </StaticWallpaperGuardProvider>
+          </div>
         </div>
       </div>
     </ThemeProvider>

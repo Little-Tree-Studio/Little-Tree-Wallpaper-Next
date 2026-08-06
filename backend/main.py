@@ -26,9 +26,9 @@ from backend.webview_config import configure_webview2_gesture_arguments  # noqa:
 
 configure_webview2_gesture_arguments()
 
-import uvicorn
-from loguru import logger
-from lumiview import CloseBehavior
+import uvicorn  # noqa: E402
+from loguru import logger  # noqa: E402
+from lumiview import CloseBehavior  # noqa: E402
 
 from backend.api import BackendAPI  # noqa: E402
 from backend.app_meta import APP_NAME, BUILD_TIME, GIT_COMMIT, VERSION  # noqa: E402

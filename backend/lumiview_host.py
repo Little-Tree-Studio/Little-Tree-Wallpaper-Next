@@ -9,10 +9,9 @@ from backend.webview_config import configure_webview2_gesture_arguments
 
 configure_webview2_gesture_arguments()
 
-from lumiview import App, Bridge, BridgeContext, CloseBehavior, InitContext, Scope, Window, WindowEffect
-from lumiview.plugins import WindowControls
-from wryview import WebContext, WebView, WindowHandleKind
-
+from lumiview import App, Bridge, BridgeContext, CloseBehavior, InitContext, Scope, Window, WindowEffect  # noqa: E402
+from lumiview.plugins import WindowControls  # noqa: E402
+from wryview import WebContext, WebView, WindowHandleKind  # noqa: E402
 
 EMBEDDED_WALLPAPER_GESTURE_GUARD = r"""
 (() => {

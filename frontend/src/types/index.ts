@@ -247,6 +247,10 @@ export interface AppSettings {
       performance: DynamicWallpaperPerformanceSettings;
     };
   };
+  updates: {
+    auto_check: boolean;
+    channel: string;
+  };
   home_page: HomePageSettings;
   startup: {
     auto_start: boolean;

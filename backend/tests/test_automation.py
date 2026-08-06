@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from backend.services.automation import AutomationService
 from backend.api import BackendAPI
+from backend.services.automation import AutomationService
 
 
 class AutomationServiceTests(unittest.TestCase):

@@ -1005,8 +1005,65 @@ export async function addToHistory(path: string, title: string, reason: string):
   return call('add_to_history', path, title, reason);
 }
 
-export async function checkForUpdates(): Promise<{ has_update: boolean; version: string; changelog: string } | null> {
-  return call('check_for_updates');
+export interface UpdateChannel {
+  id: string;
+  name: string;
+  description: string;
+  order: number;
+}
+
+export interface UpdatePackage {
+  download_url: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface UpdateCheckResult {
+  has_update: boolean;
+  current_version: string;
+  latest_version: string;
+  selected_channel: string;
+  channels: UpdateChannel[];
+  release_notes_url: string;
+  release_note: string;
+  release_date: string;
+  force_update: boolean;
+  minimum_supported_version: string;
+  platform: string;
+  architecture: string;
+  package: UpdatePackage | null;
+}
+
+export const FORCED_UPDATE_DETECTED_EVENT = 'ltw:forced-update-detected';
+
+export function notifyForcedUpdateDetected(update: UpdateCheckResult): void {
+  if (typeof window !== 'undefined' && update.has_update && update.force_update) {
+    window.dispatchEvent(new CustomEvent(FORCED_UPDATE_DETECTED_EVENT, { detail: update }));
+  }
+}
+
+export async function checkForUpdates(channel?: string): Promise<UpdateCheckResult> {
+  return call('check_for_updates', channel);
+}
+
+export interface UpdateDownloadResult {
+  path: string;
+  filename: string;
+  size_bytes: number;
+  already_downloaded: boolean;
+}
+
+export async function downloadUpdatePackage(
+  version: string,
+  packageInfo: UpdatePackage,
+): Promise<UpdateDownloadResult> {
+  return call(
+    'download_update_package',
+    version,
+    packageInfo.download_url,
+    packageInfo.sha256,
+    packageInfo.size_bytes,
+  );
 }
 
 export async function openFolder(path: string): Promise<void> {
