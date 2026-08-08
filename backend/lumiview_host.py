@@ -5,32 +5,13 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from backend.webview_config import configure_webview2_gesture_arguments
+from backend.webview_config import configure_webview2_overscroll_arguments
 
-configure_webview2_gesture_arguments()
+configure_webview2_overscroll_arguments()
 
 from lumiview import App, Bridge, BridgeContext, CloseBehavior, InitContext, Plugin, Window, WindowEffect  # noqa: E402
 from lumiview.plugins import WindowControls  # noqa: E402
 from wryview import WebContext, WebView, WindowHandleKind  # noqa: E402
-
-EMBEDDED_WALLPAPER_GESTURE_GUARD = r"""
-(() => {
-  const cancel = (event) => event.preventDefault();
-  addEventListener('wheel', (event) => {
-    if (event.ctrlKey) event.preventDefault();
-  }, { passive: false, capture: true });
-  addEventListener('gesturestart', cancel, { passive: false, capture: true });
-  addEventListener('gesturechange', cancel, { passive: false, capture: true });
-  addEventListener('gestureend', cancel, { passive: false, capture: true });
-  addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && ['+', '-', '=', '0'].includes(event.key)) {
-      event.preventDefault();
-    }
-  }, { capture: true });
-  document.documentElement.style.touchAction = 'none';
-  document.documentElement.style.overscrollBehavior = 'none';
-})();
-"""
 
 
 class WindowThemeControls(Plugin):
@@ -122,7 +103,6 @@ class LumiViewHost:
                 autoplay=True,
                 hotkeys_zoom=False,
                 back_forward_gestures=False,
-                initialization_script=EMBEDDED_WALLPAPER_GESTURE_GUARD,
                 clipboard=False,
                 web_context=self._web_context,
                 https_scheme=True,
@@ -176,6 +156,8 @@ class LumiViewHost:
         # WebContext. Dynamic wallpapers require autoplay, so enable it for all
         # application windows rather than only the media host.
         options.setdefault("autoplay", True)
+        options.setdefault("hotkeys_zoom", False)
+        options.setdefault("back_forward_gestures", False)
         hidden = bool(options.pop("hidden", False))
         frameless = bool(options.pop("frameless", False))
         focus = bool(options.pop("focus", True))

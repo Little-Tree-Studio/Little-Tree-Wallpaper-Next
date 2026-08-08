@@ -22,9 +22,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
 
-from backend.webview_config import configure_webview2_gesture_arguments  # noqa: E402
+from backend.webview_config import configure_webview2_overscroll_arguments  # noqa: E402
 
-configure_webview2_gesture_arguments()
+configure_webview2_overscroll_arguments()
 
 import uvicorn  # noqa: E402
 from loguru import logger  # noqa: E402

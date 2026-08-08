@@ -5,38 +5,38 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.lumiview_host import (
-    EMBEDDED_WALLPAPER_GESTURE_GUARD,
     LumiViewHost,
     WindowThemeControls,
 )
-from backend.webview_config import (
-    WEBVIEW2_DISABLED_FEATURES,
-    WEBVIEW2_GESTURE_ARGUMENTS,
-    configure_webview2_gesture_arguments,
-)
+from backend.webview_config import WEBVIEW2_DISABLED_FEATURES, configure_webview2_overscroll_arguments
 from lumiview import Bridge, CloseBehavior, InitContext, Plugin
 
 
 class LumiViewHostOptionsTests(unittest.TestCase):
-    def test_webview2_gesture_arguments_merge_without_duplicates(self) -> None:
-        with patch.dict("os.environ", {"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--existing --disable-features=ExistingFeature"}, clear=False):
-            first = configure_webview2_gesture_arguments()
-            second = configure_webview2_gesture_arguments()
+    def test_webview2_overscroll_argument_merges_without_duplicates(self) -> None:
+        environment = {
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--existing --disable-features=ExistingFeature"
+        }
+        with patch.dict("os.environ", environment, clear=False):
+            first = configure_webview2_overscroll_arguments()
+            second = configure_webview2_overscroll_arguments()
 
         self.assertEqual(first, second)
         self.assertTrue(first.startswith("--existing "))
-        for argument in WEBVIEW2_GESTURE_ARGUMENTS:
-            self.assertEqual(first.split().count(argument), 1)
         disabled = next(argument for argument in first.split() if argument.startswith("--disable-features="))
         features = disabled.partition("=")[2].split(",")
         self.assertIn("ExistingFeature", features)
         for feature in WEBVIEW2_DISABLED_FEATURES:
             self.assertEqual(features.count(feature), 1)
+        self.assertNotIn("--disable-pinch", first)
+        self.assertNotIn("PullToRefresh", features)
 
     def test_all_windows_enable_autoplay_for_shared_web_context(self) -> None:
         options = LumiViewHost._window_options({"title": "Main"})
 
         self.assertTrue(options["autoplay"])
+        self.assertFalse(options["hotkeys_zoom"])
+        self.assertFalse(options["back_forward_gestures"])
         self.assertEqual(options["close_behavior"], CloseBehavior.Hide)
 
     def test_legacy_window_options_are_mapped(self) -> None:
@@ -96,7 +96,7 @@ class LumiViewHostOptionsTests(unittest.TestCase):
         options = webview_type.call_args.kwargs
         self.assertFalse(options["hotkeys_zoom"])
         self.assertFalse(options["back_forward_gestures"])
-        self.assertEqual(options["initialization_script"], EMBEDDED_WALLPAPER_GESTURE_GUARD)
+        self.assertNotIn("initialization_script", options)
         webview_type.return_value.set_bounds.assert_called_once_with(1920, 0, 1920, 1080)
 
 
