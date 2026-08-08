@@ -649,7 +649,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fonttools", specifier = ">=4.60.0" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "lumiview", specifier = "==0.1.0.dev0" },
+    { name = "lumiview", specifier = "==0.1.0.dev4" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "platformdirs", specifier = ">=4.10.0" },
     { name = "psutil", specifier = ">=7.2.2" },
@@ -687,19 +687,20 @@ wheels = [
 
 [[package]]
 name = "lumiview"
-version = "0.1.0.dev0"
+version = "0.1.0.dev4"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
 dependencies = [
     { name = "cattrs" },
     { name = "typing-extensions" },
     { name = "wryview" },
 ]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/82/ce/e9f13bb25a5ba5d704072081658500411aa67992b8c14a14e543b47cc874/lumiview-0.1.0.dev0.tar.gz", hash = "sha256:c194a3d8d3dfc65f6b331b669a9f624fae7a24f25e7507df12ec8c0408469589" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/c6/f4/67110a1f6328a8333259a4828e184fa9efb766033a8e684b92f5fd95159f/lumiview-0.1.0.dev4.tar.gz", hash = "sha256:ce2bf5ad1252cb6ae6433e1f497c8ab990501042e7dc89cb5e5357e9c202313f" }
 wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d3/a7/7e8e4eff74e391238644455139d3e840035758f5baa0a9860d189026aff4/lumiview-0.1.0.dev0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:4d597b8ddd98eb3e7ca4251d53c049988b1dddfbca8831c32401a1f84027cfac" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/df/bf/e4f5fcd52c5ed89318e1bd1fda66bf8d6e80d461be353e0a3989147250ed/lumiview-0.1.0.dev0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:be48eb2fd3dc41120fa0856cc1df2181c412ee704836c4981dfcdb2e8862c16e" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/05/33/f82b3766b94e19727a5d1577904c43d510dc3ed14d91e4ea0cd072ba5a78/lumiview-0.1.0.dev0-cp310-abi3-manylinux_2_38_x86_64.whl", hash = "sha256:c0c49433e8cf0f41da69d7482063e170f335b40bf6257ff9a4258a90e99e6ced" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/13/30/93e3470e678d4597879695703e5553867a8b6ba152371f30370a0cb7debc/lumiview-0.1.0.dev0-cp310-abi3-win_amd64.whl", hash = "sha256:118b313656a8f8d5a3b08b0f7a775f3c6f7732f8994daf599fcc45fa4e2a0e2c" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/33/d9/bc4a2a87dc6e90ac49bce506196fcf8bc7d31bbcc01c1c9be68f21e8b2e8/lumiview-0.1.0.dev4-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:ab44bb4e713501ebdf677c0b664bf4c03daeb0ec737a6141239c42645b2a00ed" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/90/fe/f1234a85e76e98f796e7f1e38b82e08a0dc92f53344d50994bb46407e29c/lumiview-0.1.0.dev4-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:97773eb0f273e76f09fd5d52cd7940c5e2f0225a1b631a446d224cdb47a25c74" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/34/b0/71eea08ba2d36ec16703480dff060ce40ba8896b8b248b6074b0467cc644/lumiview-0.1.0.dev4-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:b3cf79dbcab5006197e06cf1da912cbc0b19032b7d613e6d486ddb2f6fdb7181" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/19/4a/41096f5af2a235c829f3d1426f2b5ff0cd00aa8e5f7d101577faecbaac75/lumiview-0.1.0.dev4-cp310-abi3-win32.whl", hash = "sha256:8a618a1250b73a4dd28f0aa98601ad66677f8e9278aeb1fc2fc949f09fcfef61" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/78/02/cad4faea8af9a3a25a0f152567d33d7d81049a8fea7fbc48d4c205daec38/lumiview-0.1.0.dev4-cp310-abi3-win_amd64.whl", hash = "sha256:884df4015afea411a4f03c81ffa079b0b1876428ee1b6d2b7520458df9606147" },
 ]
 
 [[package]]

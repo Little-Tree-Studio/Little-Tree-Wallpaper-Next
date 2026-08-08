@@ -1,4 +1,4 @@
-lumiview>=0.1.0.dev0
+lumiview==0.1.0.dev4
 pywin32>=306; platform_system=='Windows'
 requests>=2.32.0
 platformdirs>=4.0.0

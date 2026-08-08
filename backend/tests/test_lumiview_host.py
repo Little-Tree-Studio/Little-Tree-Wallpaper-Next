@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.lumiview_host import (
     EMBEDDED_WALLPAPER_GESTURE_GUARD,
     LumiViewHost,
+    WindowThemeControls,
 )
 from backend.webview_config import (
     WEBVIEW2_DISABLED_FEATURES,
     WEBVIEW2_GESTURE_ARGUMENTS,
     configure_webview2_gesture_arguments,
 )
-from lumiview import CloseBehavior
+from lumiview import Bridge, CloseBehavior, InitContext, Plugin
 
 
 class LumiViewHostOptionsTests(unittest.TestCase):
@@ -59,6 +61,27 @@ class LumiViewHostOptionsTests(unittest.TestCase):
         self.assertIn("bridge", options)
         self.assertNotIn("text_select", options)
         self.assertNotIn("easy_drag", options)
+
+    def test_theme_controls_are_initialized_as_a_plugin(self) -> None:
+        controls = WindowThemeControls()
+        bridge = Bridge(includes=[controls])
+
+        context = bridge._run_on_init(InitContext())
+
+        self.assertIsInstance(controls, Plugin)
+        self.assertIn("lumiview.windowTheme", context.inject_script)
+        self.assertIn("windowTheme.set_acrylic", context.inject_script)
+
+    def test_native_handle_uses_public_window_api(self) -> None:
+        host = LumiViewHost.__new__(LumiViewHost)
+        window = MagicMock()
+        window.native_handle = AsyncMock(return_value=2048)
+
+        async def read_handle() -> int:
+            return await LumiViewHost.native_handle(host, window)
+
+        self.assertEqual(asyncio.run(read_handle()), 2048)
+        window.native_handle.assert_called_once_with()
 
     @patch("backend.lumiview_host.WebView")
     def test_embedded_webview_applies_positioned_bounds(self, webview_type: MagicMock) -> None:

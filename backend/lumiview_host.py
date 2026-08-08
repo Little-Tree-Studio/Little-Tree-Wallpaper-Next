@@ -9,7 +9,7 @@ from backend.webview_config import configure_webview2_gesture_arguments
 
 configure_webview2_gesture_arguments()
 
-from lumiview import App, Bridge, BridgeContext, CloseBehavior, InitContext, Scope, Window, WindowEffect  # noqa: E402
+from lumiview import App, Bridge, BridgeContext, CloseBehavior, InitContext, Plugin, Window, WindowEffect  # noqa: E402
 from lumiview.plugins import WindowControls  # noqa: E402
 from wryview import WebContext, WebView, WindowHandleKind  # noqa: E402
 
@@ -33,7 +33,7 @@ EMBEDDED_WALLPAPER_GESTURE_GUARD = r"""
 """
 
 
-class WindowThemeControls(Scope):
+class WindowThemeControls(Plugin):
     def __init__(self) -> None:
         super().__init__("windowTheme")
         self.command(self.set_acrylic)
@@ -98,11 +98,7 @@ class LumiViewHost:
         return await Window.create(**self._window_options(options))
 
     async def native_handle(self, window: Window) -> int:
-        def read_handle() -> int:
-            tao_window = window._tao
-            return int(tao_window.native_handle()) if tao_window is not None else 0
-
-        return int(await self._app.call_on_main(read_handle))
+        return int(await window.native_handle())
 
     def create_embedded_webview(
         self,

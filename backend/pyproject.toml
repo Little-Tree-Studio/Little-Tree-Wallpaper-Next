@@ -43,7 +43,7 @@ dependencies = [
     "PyYAML>=6.0.2",
     "uvicorn>=0.32.0",
     "windows-toasts>=1.3.1; platform_system=='Windows'",
-    "lumiview==0.1.0.dev0",
+    "lumiview==0.1.0.dev4",
 ]
 
 [project.scripts]

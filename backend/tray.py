@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from lumiview import WindowHookEvent
+from lumiview import WindowBaseEvent, WindowEvent
 
 
 class ApplicationTray:
@@ -40,9 +40,10 @@ class ApplicationTray:
             self._main_window = window
             self._allow_close = False
 
-        @window.on(WindowHookEvent.CloseRequested)
-        def on_close_requested() -> None:
-            self._on_main_closing()
+        @window.on(WindowEvent.CloseRequestedEvent)
+        def on_close_requested(event: WindowBaseEvent) -> None:
+            if self._on_main_closing() is False:
+                event.prevent()
 
     def _on_main_closing(self, *_args: Any) -> bool | None:
         with self._lock:

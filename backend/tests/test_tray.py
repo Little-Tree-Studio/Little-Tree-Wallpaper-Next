@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 from backend.tray import ApplicationTray
+from lumiview import WindowEvent
 
 
 class ApplicationTrayTests(unittest.TestCase):
@@ -42,6 +43,23 @@ class ApplicationTrayTests(unittest.TestCase):
 
         self.assertIs(self.tray._main_window, window)
         self.tray._create_main_window.assert_called_once()
+
+    def test_close_event_is_registered_and_prevented_when_window_stays_alive(self) -> None:
+        window = MagicMock()
+        handlers: dict[type, object] = {}
+        window.on.side_effect = lambda event_type: lambda handler: handlers.setdefault(event_type, handler)
+        self.tray._api.store.get.side_effect = lambda key, default=None: {
+            "ui.hide_on_close": True,
+            "ui.minimize_to_tray": True,
+            "ui.release_webview_on_close": False,
+        }.get(key, default)
+
+        self.tray.attach_main_window(window)
+        event = WindowEvent.CloseRequestedEvent()
+        handlers[WindowEvent.CloseRequestedEvent](event)
+
+        self.assertTrue(event.prevented)
+        window.hide.assert_called_once_with()
 
     def test_dynamic_play_and_pause_dispatch_to_backend(self) -> None:
         self.tray._dynamic_action("play")
