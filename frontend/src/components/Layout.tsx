@@ -8,7 +8,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
 
   const handleNavChange = (route: string) => navigate(route);
-  const isStandalone = pathname === '/dynamic/editor' || pathname === '/dynamic/runtime';
+  const isStandalone = pathname === '/dynamic/editor' || pathname === '/dynamic/runtime' || pathname === '/image-editor';
 
   if (isStandalone) return children;
 

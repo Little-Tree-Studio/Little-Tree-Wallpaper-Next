@@ -1101,6 +1101,8 @@ class BackendAPI:
             current = dict(item)
             for field in ("preview_url", "source_url"):
                 value = str(current.get(field) or "")
+                if value.lstrip().lower().startswith("data:image/"):
+                    continue
                 if self._is_cnu_cdn_url(value):
                     current[field] = self._build_cnu_proxy_url(value)
                 elif self._is_pixivel_cdn_url(value):

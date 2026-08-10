@@ -18,6 +18,7 @@ import Help from '@/pages/Help';
 import History from '@/pages/History';
 import Tools from '@/pages/Tools';
 import ColorPalette from '@/pages/ColorPalette';
+import ImageEditor from '@/pages/ImageEditor';
 import DynamicWallpaperDebug from '@/pages/DynamicWallpaperDebug';
 import DynamicWallpaper from '@/pages/DynamicWallpaper';
 import DynamicWidgetEditor from '@/pages/DynamicWidgetEditor';
@@ -42,7 +43,9 @@ import { useHashRouterLocation, usePathname } from '@/lib/router';
 function AppContent() {
   const pathname = usePathname();
   const isWallpaperRuntime = pathname === '/dynamic/runtime';
-  const windowTitle = pathname === '/dynamic/editor' ? '小组件编辑器' : '小树壁纸 Next';
+  const windowTitle = pathname === '/dynamic/editor'
+    ? '小组件编辑器'
+    : pathname === '/image-editor' ? '图片编辑' : '小树壁纸 Next';
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
 
   useEffect(() => {
@@ -109,6 +112,7 @@ function AppContent() {
                       <Route path="/history" component={History} />
                       <Route path="/tools" component={Tools} />
                       <Route path="/tools/color-palette" component={ColorPalette} />
+                      <Route path="/image-editor" component={ImageEditor} />
                       <Route path="/tools/dynamic-wallpaper" component={DynamicWallpaperDebug} />
                       <Route component={PluginPage} />
                     </Switch>

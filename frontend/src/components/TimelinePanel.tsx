@@ -311,7 +311,7 @@ export default function TimelinePanel({ active }: { active: boolean }) {
               <Card key={topic.id} className="gap-0 overflow-hidden p-0">
                 <button
                   type="button"
-                  className="group relative aspect-[4/3] w-full overflow-hidden bg-surface-secondary text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  className="group relative aspect-[4/3] w-full overflow-hidden bg-surface-secondary text-left transition-transform duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   onClick={() => openTopic(topic)}
                   aria-label={`浏览专题：${topic.title}`}
                 >
@@ -343,7 +343,7 @@ export default function TimelinePanel({ active }: { active: boolean }) {
               <Card key={`${item.id}-${index}`} className="gap-0 overflow-hidden p-0">
                 <button
                   type="button"
-                  className="group relative aspect-[4/3] w-full overflow-hidden bg-surface-secondary text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  className="group relative aspect-[4/3] w-full overflow-hidden bg-surface-secondary text-left transition-transform duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   onClick={() => openWallpaperViewer(index)}
                   aria-label={`查看壁纸：${item.title}`}
                 >

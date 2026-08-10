@@ -93,7 +93,7 @@ function mediaApiUrl(path: string): string {
 }
 
 /** Use the RPC origin when JavaScript must read a loopback media response. */
-function readableMediaUrl(url: string): string {
+export function readableMediaUrl(url: string): string {
   if (typeof window === 'undefined' || window.location.hostname !== '127.0.0.1') return url;
   try {
     const parsed = new URL(url, window.location.href);
@@ -110,6 +110,27 @@ function readableMediaUrl(url: string): string {
     // Let fetch report malformed external URLs with its normal error.
   }
   return url;
+}
+
+/** Fetch an image as readable bytes for Canvas-based editing. */
+export async function fetchEditableImage(url: string, referer?: string): Promise<Blob> {
+  await waitForApi();
+  let sourceUrl = readableMediaUrl(url);
+  try {
+    const parsed = new URL(sourceUrl, window.location.href);
+    if (parsed.protocol.startsWith('http') && parsed.origin !== window.location.origin) {
+      const query = new URLSearchParams({ url: parsed.toString() });
+      if (referer) query.set('referer', referer);
+      sourceUrl = `/api/sniff-image?${query}`;
+    }
+  } catch {
+    // Data URLs and browser-supported image sources can be fetched directly.
+  }
+  const response = await fetch(sourceUrl, { headers: authHeaders() });
+  if (!response.ok) throw new Error(`图片读取失败 (HTTP ${response.status})`);
+  const blob = await response.blob();
+  if (!blob.type.startsWith('image/')) throw new Error('来源不是可编辑图片');
+  return blob;
 }
 
 function isolateMediaUrls<T>(value: T): T {

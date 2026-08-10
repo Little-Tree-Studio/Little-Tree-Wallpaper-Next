@@ -39,5 +39,27 @@ class FavoriteFolderTests(unittest.TestCase):
         self.api._save_favorites.assert_called_once_with(self.data)
 
 
+class FavoriteUrlHydrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = object.__new__(BackendAPI)
+        self.api._build_sniff_proxy_url = MagicMock(return_value="/api/sniff-image?url=proxied")
+
+    def test_legacy_base64_preview_is_not_wrapped_as_network_url(self) -> None:
+        embedded = "data:image/jpeg;base64,/9j/4AAQ"
+        data = {
+            "items": [{
+                "id": "legacy",
+                "source_type": "sniff",
+                "preview_url": embedded,
+                "source_url": "",
+            }],
+        }
+
+        hydrated = self.api._hydrate_favorite_urls(data)
+
+        self.assertEqual(hydrated["items"][0]["preview_url"], embedded)
+        self.api._build_sniff_proxy_url.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

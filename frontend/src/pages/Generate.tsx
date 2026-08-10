@@ -818,8 +818,8 @@ export default function Generate() {
             return (
               <Card key={image.id} className="overflow-hidden p-0">
                 <div className="relative aspect-square bg-muted">
-                  {image.status === 'generating' && (
-                    <div className="generate-haze">
+                  {(image.status === 'generating' || image.status === 'done') && (
+                    <div className={image.status === 'done' ? 'generate-haze generate-haze--out' : 'generate-haze'}>
                       <div className="generate-haze__blob generate-haze__blob--1" />
                       <div className="generate-haze__blob generate-haze__blob--2" />
                       <div className="generate-haze__blob generate-haze__blob--3" />
@@ -847,7 +847,7 @@ export default function Generate() {
                       <img
                         src={source}
                         alt={image.prompt}
-                        className="h-full w-full object-contain"
+                        className="generate-result h-full w-full object-contain"
                         loading="lazy"
                       />
                       <span className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/45 p-2 text-white opacity-0 transition-opacity group-hover:opacity-100">

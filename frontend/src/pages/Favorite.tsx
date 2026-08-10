@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react';
 import { useNavigate } from '@/lib/router';
 import type { Key } from '@heroui/react';
 import {
@@ -18,7 +18,7 @@ import {
 import {
   getFavorites, removeFavorite, updateFavorite,
   createFavoriteFolder, updateFavoriteFolder, deleteFavoriteFolder, setWallpaper, downloadWithProgress,
-  exportFavorites, pickAndImportFavorites, selectLocalImage, localPreviewUrl,
+  exportFavorites, pickAndImportFavorites, selectLocalImage, localFileUrl, localPreviewUrl,
   FAVORITES_CHANGED_EVENT, saveAutomation,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer/context';
@@ -30,6 +30,12 @@ import { createWallpaperRotationAutomation } from '@/components/AutomationEditor
 const ROTATION_UNITS = { minutes: 60, hours: 3600, days: 86400 } as const;
 type RotationUnit = keyof typeof ROTATION_UNITS;
 type RotationTarget = { scope: 'selected' } | { scope: 'folder'; folder: FavoriteFolder };
+
+function getEmbeddedImageUrl(item: FavoriteItem): string {
+  return [item.preview_url, item.source_url]
+    .find((value) => value?.trimStart().toLowerCase().startsWith('data:image/'))
+    ?.trimStart() || '';
+}
 
 export default function Favorite() {
   const navigate = useNavigate();
@@ -43,6 +49,7 @@ export default function Favorite() {
   const [editSelectedTagKeys, setEditSelectedTagKeys] = useState<Key[]>([]);
   const [showTagManagerModal, setShowTagManagerModal] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
   const [tagSearchText, setTagSearchText] = useState('');
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -157,11 +164,17 @@ export default function Favorite() {
   const handleBatchDelete = async () => {
     if (selectedItems.length === 0) return;
     const ids = Array.from(selectedIds);
-    await Promise.all(ids.map((id) => removeFavorite(id)));
-    setSelectedIds(new Set());
+    setExitingIds(new Set(ids));
     setDeleteConfirmId(null);
-    setIsBatchMode(false);
-    refresh();
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    try {
+      await Promise.all(ids.map((id) => removeFavorite(id)));
+      setSelectedIds(new Set());
+      setIsBatchMode(false);
+      refresh();
+    } finally {
+      setExitingIds(new Set());
+    }
   };
 
   const handleBatchMove = async () => {
@@ -278,9 +291,19 @@ export default function Favorite() {
   };
 
   const handleDelete = async (id: string) => {
-    await removeFavorite(id);
+    setExitingIds((prev) => new Set(prev).add(id));
     setDeleteConfirmId(null);
-    refresh();
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    try {
+      await removeFavorite(id);
+      refresh();
+    } finally {
+      setExitingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   const openCreateFolderModal = () => {
@@ -395,24 +418,28 @@ export default function Favorite() {
   };
 
   const isLocalized = (item: FavoriteItem): boolean => {
-    return !!item.local_path;
+    return !!item.local_path || !!getEmbeddedImageUrl(item);
   };
 
   const getItemSrc = (it: FavoriteItem) => {
-    return (it.local_path && localPreviewUrl(it.local_path)) || it.preview_url || it.local_path || '';
+    return (it.local_path && localPreviewUrl(it.local_path)) || getEmbeddedImageUrl(it) || it.preview_url || it.source_url || '';
   };
 
   const handleOpenViewer = (item: FavoriteItem) => {
-    const items = filteredItems.map((it) => ({
-      src: (it.local_path && localPreviewUrl(it.local_path)) || it.source_url || it.preview_url || '',
-      title: it.title,
-      source_url: it.source_url,
-      source_type: it.source_type,
-      source_name: it.source_name,
-      local_path: it.local_path,
-      preview_url: it.preview_url,
-      tags: it.tags,
-    }));
+    const items = filteredItems.map((it) => {
+      const localPath = it.local_path;
+      const embeddedImageUrl = getEmbeddedImageUrl(it);
+      return {
+        src: localPath ? localFileUrl(localPath) : embeddedImageUrl || it.source_url || it.preview_url || '',
+        title: it.title,
+        source_url: it.source_url,
+        source_type: it.source_type,
+        source_name: it.source_name,
+        local_path: localPath,
+        preview_url: localPath ? localPreviewUrl(localPath, 320) : embeddedImageUrl || it.preview_url,
+        tags: it.tags,
+      };
+    });
     const index = filteredItems.findIndex((it) => it.id === item.id);
     openViewer(items, Math.max(0, index));
   };
@@ -492,12 +519,13 @@ export default function Favorite() {
 
       {loading ? <div className="py-10"><Spinner size="sm" /></div> : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredItems.map((item) => {
+          {filteredItems.map((item, index) => {
             const selected = selectedIds.has(item.id);
             return (
               <Card
                 key={item.id}
-                className={`overflow-hidden transition-shadow ${selected ? 'ring-1 ring-accent ring-inset' : ''}`}
+                className={`favorite-card-enter overflow-hidden transition-[box-shadow,transform] duration-150 ease-out active:scale-[0.98] ${selected ? 'ring-1 ring-accent ring-inset' : ''} ${exitingIds.has(item.id) ? 'favorite-card--exiting' : ''}`}
+                style={{ '--enter-delay': `${Math.min(index, 8) * 30}ms` } as CSSProperties}
                 onClick={() => {
                   if (isBatchMode) {
                     toggleSelection(item.id);
@@ -506,7 +534,7 @@ export default function Favorite() {
                   }
                 }}
               >
-                <div className="relative h-[160px] w-full overflow-hidden bg-surface-secondary">
+                <div className="relative h-[160px] w-full overflow-hidden rounded-2xl bg-surface-secondary">
                   {isBatchMode && (
                     <div className="absolute top-2 left-2 z-10 pointer-events-none">
                       <Checkbox isSelected={selected} onChange={() => toggleSelection(item.id)} aria-label={`选择 ${item.title}`}>

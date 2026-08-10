@@ -521,3 +521,169 @@ html[data-window-icon-close] .window-control-icon--close > svg {
     animation: none;
   }
 }
+
+/* Image viewer enter/exit */
+.image-viewer {
+  transition: opacity 200ms ease-out;
+}
+
+.image-viewer__stage {
+  transition:
+    opacity 250ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@starting-style {
+  .image-viewer {
+    opacity: 0;
+  }
+
+  .image-viewer__stage {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.image-viewer[data-exiting='true'] {
+  opacity: 0;
+  transition-duration: 150ms;
+}
+
+.image-viewer[data-exiting='true'] .image-viewer__stage {
+  opacity: 0;
+  transform: scale(0.98);
+  transition-duration: 150ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-viewer__stage {
+    transition-property: opacity;
+  }
+}
+
+/* Favorite grid entrance */
+.favorite-card-enter {
+  animation: favorite-card-in 200ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+@keyframes favorite-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .favorite-card-enter {
+    animation-name: favorite-card-in-reduced;
+    animation-delay: 0ms;
+  }
+}
+
+@keyframes favorite-card-in-reduced {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* Favorite card exit */
+.favorite-card--exiting {
+  opacity: 0;
+  transform: scale(0.97);
+  transition:
+    opacity 150ms ease-out,
+    transform 150ms ease-out;
+  pointer-events: none;
+}
+
+.image-editor-stage {
+  background-color: #151618;
+  background-image:
+    linear-gradient(45deg, rgb(255 255 255 / 0.025) 25%, transparent 25%),
+    linear-gradient(-45deg, rgb(255 255 255 / 0.025) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgb(255 255 255 / 0.025) 75%),
+    linear-gradient(-45deg, transparent 75%, rgb(255 255 255 / 0.025) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .favorite-card--exiting {
+    transform: none;
+    transition-property: opacity;
+  }
+}
+
+/* Generate result reveal */
+.generate-result {
+  transition:
+    opacity 500ms ease-out,
+    transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@starting-style {
+  .generate-result {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.generate-haze--out {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 300ms ease-out,
+    visibility 0s linear 300ms;
+  pointer-events: none;
+}
+
+.generate-haze--out .generate-haze__blob,
+.generate-haze--out .generate-haze__icon,
+.generate-haze--out .generate-haze__text {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generate-result {
+    transition-property: opacity;
+    transition-duration: 300ms;
+  }
+}
+
+/* API config collapse (wallpaper source creator) */
+.api-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.api-collapse--open {
+  grid-template-rows: 1fr;
+}
+
+.api-collapse__inner {
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+.api-collapse--open > .api-collapse__inner {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .api-collapse {
+    transition: none;
+  }
+}

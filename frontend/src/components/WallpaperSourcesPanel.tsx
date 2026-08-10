@@ -1608,7 +1608,8 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                             </div>
 
                             {/* 折叠内容 */}
-                            {apiExpanded.has(idx) && (
+                            <div className={`api-collapse ${apiExpanded.has(idx) ? 'api-collapse--open' : ''}`}>
+                              <div className="api-collapse__inner" inert={!apiExpanded.has(idx)}>
                               <div className="px-3 pb-3 space-y-2 border-t border-border">
                                 {/* 名称 */}
                                 <TextField className="pt-2" isInvalid={!!e.name}>
@@ -2513,7 +2514,8 @@ export default function WallpaperSourcesPanel({ onExecute, mode = 'main' }: Wall
                               </Accordion.Item>
                             </Accordion>
                               </div>
-                            )}
+                              </div>
+                            </div>
                           </div>
                         );
                       })}

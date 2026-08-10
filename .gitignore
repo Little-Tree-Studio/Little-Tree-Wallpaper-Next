@@ -9,3 +9,4 @@ __pycache__/
 AGENTS.md
 test-viewer.png
 *.part
+skills-lock.json

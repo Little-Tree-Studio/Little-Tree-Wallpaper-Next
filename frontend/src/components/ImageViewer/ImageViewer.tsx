@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, RotateCw, ZoomIn, ZoomOut, Maximize, Heart, Image as ImageIcon,
   Copy, ChevronLeft, ChevronRight, Save, PanelsTopLeft, ExternalLink,
-  ClipboardCopy,
+  ClipboardCopy, SlidersHorizontal,
 } from 'lucide-react';
 import { Button, Kbd, Label, ListBox, Separator, Spinner, Tooltip, toast } from '@heroui/react';
 import { useImageViewer } from './context';
@@ -12,6 +12,8 @@ import {
   copyImageToClipboardWithProgress, notifyFavoritesChanged,
 } from '@/api/backend';
 import { safeNameForFile } from '@/lib/download';
+import { useNavigate } from '@/lib/router';
+import { setImageEditorSession } from '@/lib/imageEditorSession';
 
 interface TooltipIconButtonProps {
   onPress: (e?: any) => void;
@@ -71,6 +73,7 @@ function TooltipIconButton({
 }
 
 export default function ImageViewer() {
+  const navigate = useNavigate();
   const { isOpen, items, currentIndex, options, closeViewer, goNext, goPrev, goTo } = useImageViewer();
   const [rotation, setRotation] = useState(0);
   const [scale, setScale] = useState(1);
@@ -83,6 +86,8 @@ export default function ImageViewer() {
   const [imageLoadError, setImageLoadError] = useState(false);
   const [favoriteId, setFavoriteId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ImageViewerContextMenuState | null>(null);
+  const [mounted, setMounted] = useState(isOpen);
+  const [exiting, setExiting] = useState(false);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
@@ -198,6 +203,21 @@ export default function ImageViewer() {
       document.body.style.overflow = '';
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setMounted(true);
+      setExiting(false);
+      return undefined;
+    }
+    if (!mounted) return undefined;
+    setExiting(true);
+    const timer = window.setTimeout(() => {
+      setMounted(false);
+      setExiting(false);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, mounted]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -347,10 +367,21 @@ export default function ImageViewer() {
     if (url) await copyToClipboard(url);
   };
 
+  const handleEdit = () => {
+    if (!currentItem) return;
+    setImageEditorSession({
+      ...currentItem,
+      returnPath: window.location.hash.replace(/^#/, '') || '/',
+    });
+    closeViewer();
+    navigate('/image-editor');
+  };
+
   const runContextMenuAction = (key: React.Key) => {
     const action = String(key);
     setContextMenu(null);
     if (action === 'copy-image') void handleCopyImage();
+    else if (action === 'edit') handleEdit();
     else if (action === 'save-as') void handleSaveAs();
     else if (action === 'favorite') void handleFavorite();
     else if (action === 'set-wallpaper') void handleSetWallpaper();
@@ -364,7 +395,7 @@ export default function ImageViewer() {
     else if (action === 'next') goNext();
   };
 
-  if (!isOpen || !currentItem) return null;
+  if (!mounted || !currentItem) return null;
 
   const transformStyle: React.CSSProperties = {
     transform: `translate(${pan.x}px, ${pan.y}px) rotate(${rotation}deg) scale(${scale})`,
@@ -377,7 +408,8 @@ export default function ImageViewer() {
 
   return (
     <div
-      className="fixed inset-x-0 bottom-0 top-11 z-50 flex flex-col bg-black/95"
+      className="image-viewer fixed inset-x-0 bottom-0 top-11 z-50 flex flex-col bg-black/95"
+      data-exiting={exiting || undefined}
       onClick={handleBackdropClick}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -395,6 +427,14 @@ export default function ImageViewer() {
           )}
         </div>
         <div className="flex items-center gap-1">
+          <TooltipIconButton
+            onPress={handleEdit}
+            ariaLabel="编辑图片"
+            tooltip="编辑图片"
+            className="rounded p-1.5 text-white/70 hover:bg-white/10 hover:text-white"
+          >
+            <SlidersHorizontal size={16} />
+          </TooltipIconButton>
           <TooltipIconButton
             onPress={handleCopyUrl}
             ariaLabel="复制链接"
@@ -417,7 +457,7 @@ export default function ImageViewer() {
       {/* Main image area */}
       <div
         ref={imgContainerRef}
-        className="relative flex flex-1 items-center justify-center overflow-hidden"
+        className="image-viewer__stage relative flex flex-1 items-center justify-center overflow-hidden"
         onWheel={handleWheel}
         onClick={handleBackdropClick}
         onContextMenu={handleContextMenu}
@@ -491,6 +531,7 @@ export default function ImageViewer() {
         >
           <ListBox aria-label={`${currentItem.title || '当前图片'} 操作`} selectionMode="none" onAction={runContextMenuAction}>
             <ListBox.Section>
+              <ListBox.Item id="edit" textValue="编辑图片"><SlidersHorizontal size={16} className="text-muted" /><Label>编辑图片</Label></ListBox.Item>
               <ListBox.Item id="copy-image" textValue="复制图片"><ClipboardCopy size={16} className="text-muted" /><Label>复制图片</Label></ListBox.Item>
               <ListBox.Item id="save-as" textValue="另存为"><Save size={16} className="text-muted" /><Label>另存为</Label></ListBox.Item>
               <ListBox.Item id="favorite" textValue={favoriteId ? '取消收藏' : '收藏图片'}><Heart size={16} className={favoriteId ? 'text-danger' : 'text-muted'} fill={favoriteId ? 'currentColor' : 'none'} /><Label>{favoriteId ? '取消收藏' : '收藏图片'}</Label></ListBox.Item>

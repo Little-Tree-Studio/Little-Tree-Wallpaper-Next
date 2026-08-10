@@ -183,7 +183,7 @@ export default function Home() {
       <Card className="overflow-hidden">
         <div className="flex gap-6 p-6">
           <div
-            className="relative h-[200px] w-[320px] shrink-0 overflow-hidden rounded-xl bg-surface-secondary cursor-pointer"
+            className="relative h-[200px] w-[320px] shrink-0 cursor-pointer overflow-hidden rounded-xl bg-surface-secondary transition-transform duration-150 ease-out active:scale-[0.98]"
             onClick={handleOpenCurrentViewer}
           >
             {wpLoading ? (

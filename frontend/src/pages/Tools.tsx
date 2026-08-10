@@ -39,7 +39,7 @@ export default function Tools() {
           return (
             <Card
               key={tool.id}
-              className="cursor-pointer transition-all hover:shadow-md hover:scale-[1.02]"
+              className="cursor-pointer transition-[transform,box-shadow] duration-150 ease-out hover:shadow-md hover:scale-[1.02] active:scale-[0.98]"
               variant="secondary"
               onClick={() => navigate(tool.path)}
             >
