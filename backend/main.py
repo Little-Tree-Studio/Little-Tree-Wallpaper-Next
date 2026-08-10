@@ -354,6 +354,7 @@ def main() -> None:
                         on_quit=stop_runtime,
                     )
                     api._configure_desktop_notifications(tray.notify)
+                    api._configure_application_quit(tray.quit)
                     tray.attach_main_window(main_window)
                     api.start_automation_runtime()
                     tray_started = tray.start()

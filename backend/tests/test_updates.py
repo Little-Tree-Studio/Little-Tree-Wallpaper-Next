@@ -1,5 +1,6 @@
 import hashlib
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -35,6 +36,14 @@ class _DownloadResponse:
 
 
 class UpdateApiTests(unittest.TestCase):
+    def test_application_quit_callback_can_be_configured(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+        quit_application = MagicMock()
+
+        api._configure_application_quit(quit_application)
+
+        self.assertIs(api._application_quit, quit_application)
+
     def test_version_key_compares_numeric_segments(self) -> None:
         self.assertGreater(_version_key("2.10.0"), _version_key("2.9.9"))
         self.assertEqual(_version_key("2.0"), _version_key("2.0.0"))
@@ -125,6 +134,63 @@ class UpdateApiTests(unittest.TestCase):
             update_directory = Path(directory) / "updates"
             self.assertFalse((update_directory / "update.exe").exists())
             self.assertFalse((update_directory / "update.exe.part").exists())
+
+    @patch("requests.get")
+    def test_background_download_reports_progress_and_completion(self, get) -> None:
+        payload = b"background update package"
+        digest = hashlib.sha256(payload).hexdigest()
+        get.return_value = _DownloadResponse(payload)
+
+        with tempfile.TemporaryDirectory() as directory:
+            api = BackendAPI.__new__(BackendAPI)
+            api.store = MagicMock()
+            api.store.get.return_value = directory
+
+            initial = api.start_update_download(
+                "2.1.0",
+                "https://example.com/update.exe",
+                digest,
+                len(payload),
+            )
+            self.assertEqual(initial["phase"], "downloading")
+
+            deadline = time.monotonic() + 2
+            status = api.get_update_download_status()
+            while status["phase"] in {"downloading", "verifying"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                status = api.get_update_download_status()
+
+            self.assertEqual(status["phase"], "downloaded")
+            self.assertEqual(status["progress"], 100.0)
+            self.assertEqual(status["received_bytes"], len(payload))
+            self.assertEqual(Path(status["path"]).read_bytes(), payload)
+
+    @patch("backend.api.threading.Timer")
+    @patch("backend.api.os.startfile")
+    @patch("backend.api.sys.platform", "win32")
+    def test_install_downloaded_update_uses_nsis_silent_arguments(self, startfile, timer) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            update_directory = Path(directory) / "updates"
+            update_directory.mkdir()
+            installer = update_directory / "update.exe"
+            installer.write_bytes(b"installer")
+
+            api = BackendAPI.__new__(BackendAPI)
+            api.store = MagicMock()
+            api.store.get.return_value = directory
+            api._ensure_update_task_runtime()
+            api._application_quit = MagicMock()
+            api._update_task_state.update({"phase": "downloaded", "path": str(installer)})
+
+            result = api.install_downloaded_update()
+
+            self.assertTrue(result["started"])
+            startfile.assert_called_once()
+            arguments = startfile.call_args.kwargs["arguments"]
+            self.assertIn("/S", arguments)
+            self.assertIn("/UPDATEPID=", arguments)
+            self.assertIn("/LAUNCH=1", arguments)
+            timer.return_value.start.assert_called_once()
 
 
 if __name__ == "__main__":

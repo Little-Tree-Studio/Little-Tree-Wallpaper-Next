@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import {
   Card, Button, Switch, Input, Tabs, Separator, ComboBox, ListBox, RadioGroup, Radio, Label,
   Accordion, Link, Table, Modal, TextArea, toast, Autocomplete, SearchField, EmptyState, Tag,
-  TagGroup, useFilter, Checkbox, CheckboxGroup, Spinner, Chip,
+  TagGroup, useFilter, Checkbox, CheckboxGroup, Spinner, Chip, ProgressBar,
 } from '@heroui/react';
 import type { Key } from '@heroui/react';
 import {
@@ -13,8 +13,8 @@ import {
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download, RefreshCw,
   CheckCircle2, AlertCircle, CalendarDays,
 } from 'lucide-react';
-import { checkForUpdates, getSettings, setSetting, getAutostartStatus, setAutostartEnabled, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo, notifyForcedUpdateDetected } from '@/api/backend';
-import type { UpdateCheckResult } from '@/api/backend';
+import { checkForUpdates, getSettings, setSetting, getAutostartStatus, setAutostartEnabled, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo, notifyForcedUpdateDetected, getUpdateDownloadStatus, installDownloadedUpdate, startUpdateDownload } from '@/api/backend';
+import type { UpdateCheckResult, UpdateDownloadStatus } from '@/api/backend';
 import StorageSettingsPanel from '@/components/StorageSettingsPanel';
 import ThemeSettingsPanel from '@/components/ThemeSettingsPanel';
 import PluginSettingsPanel from '@/components/PluginSettingsPanel';
@@ -1071,6 +1071,8 @@ function UpdatePanel({ settings, onUpdate }: {
   const [result, setResult] = useState<UpdateCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [download, setDownload] = useState<UpdateDownloadStatus | null>(null);
+  const [installing, setInstalling] = useState(false);
 
   const runCheck = async (channel = settings.updates.channel) => {
     setChecking(true);
@@ -1088,7 +1090,45 @@ function UpdatePanel({ settings, onUpdate }: {
 
   useEffect(() => {
     void runCheck();
+    void getUpdateDownloadStatus().then(setDownload).catch(() => undefined);
   }, []);
+
+  const downloadActive = download?.phase === 'downloading' || download?.phase === 'verifying';
+  useEffect(() => {
+    if (!downloadActive) return undefined;
+    const timer = window.setInterval(() => {
+      void getUpdateDownloadStatus().then(setDownload).catch(() => undefined);
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [downloadActive]);
+
+  const beginDownload = async () => {
+    if (!result?.package) return;
+    try {
+      setDownload(await startUpdateDownload(result.latest_version, result.package));
+      toast.success('已开始后台下载', { description: '离开此页面或隐藏窗口不会中断下载。' });
+    } catch (downloadError: unknown) {
+      toast.danger('无法下载更新', {
+        description: downloadError instanceof Error ? downloadError.message : '请稍后重试',
+        timeout: 0,
+      });
+    }
+  };
+
+  const installUpdate = async () => {
+    setInstalling(true);
+    try {
+      await installDownloadedUpdate();
+      setDownload((current) => current ? { ...current, phase: 'installing' } : current);
+      toast.success('正在安装更新', { description: '应用即将退出，安装完成后会自动重新启动。' });
+    } catch (installError: unknown) {
+      toast.danger('无法安装更新', {
+        description: installError instanceof Error ? installError.message : '请稍后重试',
+        timeout: 0,
+      });
+      setInstalling(false);
+    }
+  };
 
   const channels = result?.channels.length
     ? result.channels
@@ -1183,10 +1223,20 @@ function UpdatePanel({ settings, onUpdate }: {
 
             <div className="flex flex-wrap items-center gap-2">
               {result.has_update && result.package?.download_url && (
-                <Button onPress={() => void openUrl(result.package!.download_url)}>
-                  <Download size={15} />下载安装包
-                  <span className="text-xs opacity-75">{formatFileSize(result.package.size_bytes)}</span>
-                </Button>
+                download?.version === result.latest_version && download.phase === 'downloaded' ? (
+                  <Button isPending={installing} onPress={() => void installUpdate()}>
+                    {({ isPending }) => <>{isPending ? <Spinner color="current" size="sm" /> : <Package size={15} />}{isPending ? '正在启动安装' : '静默安装并重启'}</>}
+                  </Button>
+                ) : (
+                  <Button
+                    isDisabled={downloadActive || download?.phase === 'installing'}
+                    onPress={() => void beginDownload()}
+                  >
+                    {downloadActive ? <Spinner color="current" size="sm" /> : <Download size={15} />}
+                    {downloadActive ? '正在后台下载' : '后台下载更新'}
+                    <span className="text-xs opacity-75">{formatFileSize(result.package.size_bytes)}</span>
+                  </Button>
+                )
               )}
               {result.release_notes_url && (
                 <Button variant="secondary" onPress={() => void openUrl(result.release_notes_url)}>
@@ -1195,6 +1245,29 @@ function UpdatePanel({ settings, onUpdate }: {
               )}
               {result.has_update && !result.package?.download_url && <p className="text-xs text-muted">当前平台暂无可用安装包，请前往发布页面查看。</p>}
             </div>
+
+            {download?.version === result.latest_version && download.phase !== 'idle' && (
+              <div className="space-y-2 rounded-lg bg-surface-secondary p-3">
+                {(download.phase === 'downloading' || download.phase === 'verifying') && (
+                  <ProgressBar
+                    aria-label={download.phase === 'verifying' ? '正在校验安装包' : '更新下载进度'}
+                    isIndeterminate={download.total_bytes <= 0}
+                    value={download.progress}
+                  >
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <Label>{download.phase === 'verifying' ? '正在校验安装包' : '正在后台下载'}</Label>
+                      <span className="text-xs tabular-nums text-muted">
+                        {formatFileSize(download.received_bytes)}{download.total_bytes > 0 ? ` / ${formatFileSize(download.total_bytes)} · ${Math.round(download.progress)}%` : ''}
+                      </span>
+                    </div>
+                    <ProgressBar.Track><ProgressBar.Fill /></ProgressBar.Track>
+                  </ProgressBar>
+                )}
+                {download.phase === 'downloaded' && <p className="text-sm text-success">安装包已下载并通过 SHA-256 校验，可以静默安装。</p>}
+                {download.phase === 'installing' && <p className="text-sm text-muted">正在启动 NSIS 静默安装，应用即将退出...</p>}
+                {download.phase === 'error' && <p className="text-sm text-danger">下载失败：{download.error}</p>}
+              </div>
+            )}
 
             {result.has_update && result.package?.sha256 && (
               <p className="break-all font-mono text-[11px] text-muted">SHA-256: {result.package.sha256}</p>

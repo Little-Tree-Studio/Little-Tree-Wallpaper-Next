@@ -1074,6 +1074,23 @@ export interface UpdateDownloadResult {
   already_downloaded: boolean;
 }
 
+export type UpdateDownloadPhase = 'idle' | 'downloading' | 'verifying' | 'downloaded' | 'installing' | 'error';
+
+export interface UpdateDownloadStatus {
+  id: string;
+  phase: UpdateDownloadPhase;
+  version: string;
+  filename: string;
+  path: string;
+  received_bytes: number;
+  total_bytes: number;
+  progress: number;
+  error: string;
+  already_downloaded: boolean;
+  started_at: string;
+  finished_at: string;
+}
+
 export async function downloadUpdatePackage(
   version: string,
   packageInfo: UpdatePackage,
@@ -1085,6 +1102,27 @@ export async function downloadUpdatePackage(
     packageInfo.sha256,
     packageInfo.size_bytes,
   );
+}
+
+export async function startUpdateDownload(
+  version: string,
+  packageInfo: UpdatePackage,
+): Promise<UpdateDownloadStatus> {
+  return call(
+    'start_update_download',
+    version,
+    packageInfo.download_url,
+    packageInfo.sha256,
+    packageInfo.size_bytes,
+  );
+}
+
+export async function getUpdateDownloadStatus(): Promise<UpdateDownloadStatus> {
+  return call('get_update_download_status');
+}
+
+export async function installDownloadedUpdate(): Promise<{ started: boolean; path: string }> {
+  return call('install_downloaded_update');
 }
 
 export async function openFolder(path: string): Promise<void> {

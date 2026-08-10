@@ -172,6 +172,10 @@ class BackendAPI:
         self._pending_wallpaper_lock = threading.RLock()
         self._pending_static_wallpaper: dict[str, Any] | None = None
         self._desktop_notify: Callable[[str, str], None] | None = None
+        self._application_quit: Callable[[], None] | None = None
+        self._update_task_lock = threading.RLock()
+        self._update_task_signature: tuple[str, str, str, int] | None = None
+        self._update_task_state = self._new_update_task_state()
         self._favorites_lock = threading.RLock()
         self._automation_rotation_lock = threading.RLock()
         self._storage_references_lock = threading.RLock()
@@ -581,6 +585,9 @@ class BackendAPI:
         notify: Callable[[str, str], None],
     ) -> None:
         self._desktop_notify = notify
+
+    def _configure_application_quit(self, quit_application: Callable[[], None]) -> None:
+        self._application_quit = quit_application
 
     def start_automation_runtime(self) -> None:
         self.automation_service.start()
@@ -2716,12 +2723,46 @@ class BackendAPI:
             } if package else None,
         }
 
-    def download_update_package(
+    @staticmethod
+    def _new_update_task_state() -> dict[str, Any]:
+        return {
+            "id": "",
+            "phase": "idle",
+            "version": "",
+            "filename": "",
+            "path": "",
+            "received_bytes": 0,
+            "total_bytes": 0,
+            "progress": 0.0,
+            "error": "",
+            "already_downloaded": False,
+            "started_at": "",
+            "finished_at": "",
+        }
+
+    def _ensure_update_task_runtime(self) -> None:
+        # Some unit tests construct BackendAPI with __new__, so keep this state
+        # lazily initializable as well as creating it in __init__.
+        if not hasattr(self, "_update_task_lock"):
+            self._update_task_lock = threading.RLock()
+            self._update_task_signature = None
+            self._update_task_state = self._new_update_task_state()
+        if not hasattr(self, "_application_quit"):
+            self._application_quit = None
+
+    @staticmethod
+    def _update_progress_value(received: int, total: int) -> float:
+        if total <= 0:
+            return 0.0
+        return round(min(100.0, max(0.0, received * 100 / total)), 2)
+
+    def _download_update_package(
         self,
         version: str,
         url: str,
         sha256: str,
         size_bytes: int = 0,
+        progress: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, Any]:
         import requests
 
@@ -2745,12 +2786,19 @@ class BackendAPI:
         def file_matches(path: Path) -> bool:
             if not path.is_file():
                 return False
-            if expected_size and path.stat().st_size != expected_size:
+            actual_size = path.stat().st_size
+            if expected_size and actual_size != expected_size:
                 return False
             digest = hashlib.sha256()
+            checked = 0
+            if progress:
+                progress("verifying", checked, actual_size)
             with path.open("rb") as source:
                 for chunk in iter(lambda: source.read(1024 * 1024), b""):
                     digest.update(chunk)
+                    checked += len(chunk)
+                    if progress:
+                        progress("verifying", checked, actual_size)
             return digest.hexdigest() == expected_sha256
 
         with _UPDATE_DOWNLOAD_LOCK:
@@ -2767,6 +2815,8 @@ class BackendAPI:
             digest = hashlib.sha256()
             response = None
             try:
+                if progress:
+                    progress("downloading", 0, expected_size)
                 response = requests.get(url, timeout=(10, 300), stream=True, allow_redirects=True)
                 response.raise_for_status()
                 final_url = urlparse(str(response.url))
@@ -2779,6 +2829,9 @@ class BackendAPI:
                     raise RuntimeError("更新安装包超过允许的大小")
                 if expected_size and response_size and response_size != expected_size:
                     raise RuntimeError("更新安装包大小与公告不一致")
+                progress_total = expected_size or response_size
+                if progress:
+                    progress("downloading", 0, progress_total)
 
                 with partial.open("wb") as output:
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -2789,12 +2842,16 @@ class BackendAPI:
                             raise RuntimeError("更新安装包超过允许的大小")
                         digest.update(chunk)
                         output.write(chunk)
+                        if progress:
+                            progress("downloading", received, progress_total)
                     output.flush()
                     with contextlib.suppress(OSError):
                         os.fsync(output.fileno())
 
                 if expected_size and received != expected_size:
                     raise RuntimeError("更新安装包下载不完整")
+                if progress:
+                    progress("verifying", received, expected_size or received)
                 if digest.hexdigest() != expected_sha256:
                     raise RuntimeError("更新安装包 SHA-256 校验失败")
                 os.replace(partial, destination)
@@ -2813,6 +2870,118 @@ class BackendAPI:
                 "size_bytes": received,
                 "already_downloaded": False,
             }
+
+    def download_update_package(
+        self,
+        version: str,
+        url: str,
+        sha256: str,
+        size_bytes: int = 0,
+    ) -> dict[str, Any]:
+        """Download and verify an update synchronously (legacy RPC)."""
+        return self._download_update_package(version, url, sha256, size_bytes)
+
+    def get_update_download_status(self) -> dict[str, Any]:
+        self._ensure_update_task_runtime()
+        with self._update_task_lock:
+            return dict(self._update_task_state)
+
+    def start_update_download(
+        self,
+        version: str,
+        url: str,
+        sha256: str,
+        size_bytes: int = 0,
+    ) -> dict[str, Any]:
+        """Start one process-owned update download and return immediately."""
+        self._ensure_update_task_runtime()
+        signature = (str(version), str(url), str(sha256).lower(), int(size_bytes or 0))
+        with self._update_task_lock:
+            phase = str(self._update_task_state.get("phase") or "idle")
+            if self._update_task_signature == signature and phase in {"downloading", "verifying", "downloaded"}:
+                return dict(self._update_task_state)
+            if phase in {"downloading", "verifying", "installing"}:
+                raise RuntimeError("已有更新任务正在进行")
+
+            self._update_task_signature = signature
+            self._update_task_state = {
+                **self._new_update_task_state(),
+                "id": uuid.uuid4().hex,
+                "phase": "downloading",
+                "version": signature[0],
+                "total_bytes": signature[3],
+                "started_at": datetime.now().astimezone().isoformat(),
+            }
+            initial_state = dict(self._update_task_state)
+
+        def update_progress(phase: str, received: int, total: int) -> None:
+            with self._update_task_lock:
+                self._update_task_state.update({
+                    "phase": phase,
+                    "received_bytes": received,
+                    "total_bytes": total,
+                    "progress": self._update_progress_value(received, total),
+                })
+
+        def run_download() -> None:
+            try:
+                result = self._download_update_package(*signature, progress=update_progress)
+                with self._update_task_lock:
+                    self._update_task_state.update({
+                        "phase": "downloaded",
+                        "filename": result["filename"],
+                        "path": result["path"],
+                        "received_bytes": result["size_bytes"],
+                        "total_bytes": result["size_bytes"],
+                        "progress": 100.0,
+                        "already_downloaded": result["already_downloaded"],
+                        "finished_at": datetime.now().astimezone().isoformat(),
+                    })
+                notify = getattr(self, "_desktop_notify", None)
+                if notify:
+                    notify("更新下载完成", f"小树壁纸 v{signature[0]} 已准备好安装")
+            except Exception as exc:
+                logger.error("Background update download failed: {}", exc)
+                with self._update_task_lock:
+                    self._update_task_state.update({
+                        "phase": "error",
+                        "error": str(exc),
+                        "finished_at": datetime.now().astimezone().isoformat(),
+                    })
+
+        threading.Thread(target=run_download, name="update-download", daemon=True).start()
+        return initial_state
+
+    def install_downloaded_update(self) -> dict[str, Any]:
+        """Launch the verified NSIS installer silently, then exit the app."""
+        self._ensure_update_task_runtime()
+        if sys.platform != "win32":
+            raise RuntimeError("静默安装更新目前仅支持 Windows")
+        if self._application_quit is None:
+            raise RuntimeError("当前运行模式无法自动退出并安装更新")
+
+        with self._update_task_lock:
+            if self._update_task_state.get("phase") != "downloaded":
+                raise RuntimeError("更新安装包尚未下载完成")
+            installer = Path(str(self._update_task_state.get("path") or "")).resolve()
+            update_root = (self._downloads_dir() / "updates").resolve()
+            if installer.suffix.lower() != ".exe" or not installer.is_file() or installer.parent != update_root:
+                raise RuntimeError("更新安装包路径无效")
+            self._update_task_state.update({"phase": "installing", "error": ""})
+
+        arguments = f"/S /UPDATEPID={os.getpid()} /LAUNCH=1"
+        try:
+            os.startfile(str(installer), "open", arguments=arguments)
+        except Exception:
+            with self._update_task_lock:
+                self._update_task_state["phase"] = "downloaded"
+            raise
+
+        quit_timer = threading.Timer(0.75, self._application_quit)
+        quit_timer.daemon = True
+        quit_timer.start()
+        logger.info("Started silent NSIS update installer: {} {}", installer, arguments)
+        return {"started": True, "path": str(installer)}
 
     def open_folder(self, path: str) -> None:
         # Spawn the OS handler with an argument list (never a shell) so a

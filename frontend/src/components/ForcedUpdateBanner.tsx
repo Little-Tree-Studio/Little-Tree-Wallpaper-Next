@@ -1,23 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Spinner } from '@heroui/react';
-import { Download, ExternalLink, FolderOpen, RefreshCw } from 'lucide-react';
+import { Alert, Button, ProgressBar, Spinner } from '@heroui/react';
+import { Download, ExternalLink, Package, RefreshCw } from 'lucide-react';
 import {
   checkForUpdates,
-  downloadUpdatePackage,
   FORCED_UPDATE_DETECTED_EVENT,
-  openFile,
+  getUpdateDownloadStatus,
+  installDownloadedUpdate,
   openUrl,
+  startUpdateDownload,
 } from '@/api/backend';
-import type { UpdateCheckResult, UpdateDownloadResult } from '@/api/backend';
+import type { UpdateCheckResult, UpdateDownloadStatus } from '@/api/backend';
 import { logError } from '@/lib/log';
 
-type DownloadState =
-  | { phase: 'downloading'; update: UpdateCheckResult }
-  | { phase: 'downloaded'; update: UpdateCheckResult; download: UpdateDownloadResult }
-  | { phase: 'error'; update: UpdateCheckResult; message: string };
+type DownloadState = {
+  update: UpdateCheckResult;
+  download: UpdateDownloadStatus;
+};
 
 let forcedUpdateCheckPromise: Promise<UpdateCheckResult> | null = null;
-const updateDownloads = new Map<string, Promise<UpdateDownloadResult>>();
 
 function checkForcedUpdate(): Promise<UpdateCheckResult> {
   if (!forcedUpdateCheckPromise) {
@@ -29,31 +29,52 @@ function checkForcedUpdate(): Promise<UpdateCheckResult> {
   return forcedUpdateCheckPromise;
 }
 
-function downloadForcedUpdate(update: UpdateCheckResult): Promise<UpdateDownloadResult> {
-  if (!update.package) return Promise.reject(new Error('当前平台没有可用的强制更新安装包'));
-  const key = `${update.latest_version}:${update.package.sha256}`;
-  const existing = updateDownloads.get(key);
-  if (existing) return existing;
-  const request = downloadUpdatePackage(update.latest_version, update.package).catch((error) => {
-    updateDownloads.delete(key);
-    throw error;
-  });
-  updateDownloads.set(key, request);
-  return request;
-}
-
 export default function ForcedUpdateBanner() {
   const [state, setState] = useState<DownloadState | null>(null);
+  const [installing, setInstalling] = useState(false);
 
   const startDownload = async (update: UpdateCheckResult) => {
-    setState({ phase: 'downloading', update });
     try {
-      const download = await downloadForcedUpdate(update);
-      setState({ phase: 'downloaded', update, download });
+      if (!update.package) throw new Error('当前平台没有可用的强制更新安装包');
+      const download = await startUpdateDownload(update.latest_version, update.package);
+      setState({ update, download });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '安装包下载失败';
       logError('Forced update download failed', error);
-      setState({ phase: 'error', update, message });
+      setState({
+        update,
+        download: {
+          id: '', phase: 'error', version: update.latest_version, filename: '', path: '',
+          received_bytes: 0, total_bytes: update.package?.size_bytes || 0, progress: 0,
+          error: message, already_downloaded: false, started_at: '', finished_at: '',
+        },
+      });
+    }
+  };
+
+  const downloadActive = state?.download.phase === 'downloading' || state?.download.phase === 'verifying';
+  useEffect(() => {
+    if (!downloadActive) return undefined;
+    const timer = window.setInterval(() => {
+      void getUpdateDownloadStatus().then((download) => {
+        setState((current) => current ? { ...current, download } : current);
+      }).catch((error) => logError('Forced update progress failed', error));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [downloadActive]);
+
+  const installUpdate = async () => {
+    setInstalling(true);
+    try {
+      await installDownloadedUpdate();
+      setState((current) => current ? { ...current, download: { ...current.download, phase: 'installing' } } : current);
+    } catch (error: unknown) {
+      logError('Forced update install failed', error);
+      setState((current) => current ? {
+        ...current,
+        download: { ...current.download, phase: 'error', error: error instanceof Error ? error.message : '无法启动安装' },
+      } : current);
+      setInstalling(false);
     }
   };
 
@@ -77,11 +98,16 @@ export default function ForcedUpdateBanner() {
 
   if (!state) return null;
 
-  const description = state.phase === 'downloading'
-    ? '此版本必须更新才能继续获得支持，安装包正在自动下载。'
-    : state.phase === 'downloaded'
-      ? `安装包 ${state.download.filename} 已下载，请打开并完成更新。`
-      : `自动下载安装包失败：${state.message}`;
+  const phase = state.download.phase;
+  const description = phase === 'downloading'
+    ? '此版本必须更新才能继续获得支持，安装包正在后台下载。'
+    : phase === 'verifying'
+      ? '下载完成，正在校验安装包完整性。'
+      : phase === 'downloaded'
+        ? `安装包 ${state.download.filename} 已校验，可以静默安装。`
+        : phase === 'installing'
+          ? '正在启动静默安装，应用即将退出并在更新后重新启动。'
+          : `自动下载安装包失败：${state.download.error}`;
 
   return (
     <div className="shrink-0 px-3 pt-2">
@@ -90,26 +116,37 @@ export default function ForcedUpdateBanner() {
         <Alert.Content>
           <Alert.Title>必须更新到 v{state.update.latest_version}</Alert.Title>
           <Alert.Description>{description}</Alert.Description>
+          {(phase === 'downloading' || phase === 'verifying') && (
+            <ProgressBar
+              aria-label="强制更新下载进度"
+              className="mt-2"
+              isIndeterminate={state.download.total_bytes <= 0}
+              size="sm"
+              value={state.download.progress}
+            >
+              <ProgressBar.Track><ProgressBar.Fill /></ProgressBar.Track>
+            </ProgressBar>
+          )}
         </Alert.Content>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {state.phase === 'downloading' && (
+          {(phase === 'downloading' || phase === 'verifying') && (
             <span className="flex items-center gap-2 text-sm font-medium">
-              <Spinner color="current" size="sm" />正在下载
+              <Spinner color="current" size="sm" />{Math.round(state.download.progress)}%
             </span>
           )}
-          {state.phase === 'downloaded' && (
-            <Button size="sm" variant="danger" onPress={() => void openFile(state.download.path)}>
-              <FolderOpen size={14} />打开安装包
+          {phase === 'downloaded' && (
+            <Button size="sm" variant="danger" isPending={installing} onPress={() => void installUpdate()}>
+              {installing ? <Spinner color="current" size="sm" /> : <Package size={14} />}静默安装并重启
             </Button>
           )}
-          {state.phase === 'error' && (
+          {phase === 'error' && (
             <Button size="sm" variant="danger" onPress={() => void startDownload(state.update)}>
               <RefreshCw size={14} />重新下载
             </Button>
           )}
           {state.update.release_notes_url && (
             <Button size="sm" variant="ghost" onPress={() => void openUrl(state.update.release_notes_url)}>
-              {state.phase === 'downloading' ? <Download size={14} /> : <ExternalLink size={14} />}
+              {phase === 'downloading' ? <Download size={14} /> : <ExternalLink size={14} />}
               发布页面
             </Button>
           )}

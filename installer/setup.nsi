@@ -94,6 +94,8 @@ VIAddVersionKey "OriginalFilename" "${OUT_NAME}"
 !define MUI_CUSTOMFUNCTION_UNGUIINIT "un.InitInstallerFont"
 
 Var FontDPI
+Var UpdatePid
+Var LaunchAfterUpdate
 
 !macro LTW_FONT_FUNCTIONS un
   Function ${un}ApplyFontToChildren
@@ -265,8 +267,12 @@ LangString LTW_ERR_X64 ${LANG_JAPANESE}    "Little Tree Wallpaper Next には 64
         ClearErrors
         Delete "$INSTDIR\${PRODUCT_EXE}"
         ${If} ${Errors}
+          IfSilent ${un}silent_abort 0
           MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(LTW_ERR_RUNNING)" /SD IDRETRY IDRETRY ${un}close_retry
           Abort
+          ${un}silent_abort:
+            SetErrorLevel 2
+            Abort
         ${EndIf}
     ${EndIf}
   FunctionEnd
@@ -276,6 +282,22 @@ LangString LTW_ERR_X64 ${LANG_JAPANESE}    "Little Tree Wallpaper Next には 64
 
 ; --------------------------------- Init ------------------------------------
 Function .onInit
+  StrCpy $UpdatePid ""
+  StrCpy $LaunchAfterUpdate "0"
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/UPDATEPID=" $UpdatePid
+  ClearErrors
+  ${GetOptions} $R0 "/LAUNCH=" $LaunchAfterUpdate
+  ${If} $UpdatePid != ""
+    System::Call "kernel32::OpenProcess(i 0x00100000, i 0, i $UpdatePid) p.r0"
+    ${If} $0 P<> 0
+      ; Wait for the running application to release installed files. A finite
+      ; timeout prevents an invisible silent updater from hanging forever.
+      System::Call "kernel32::WaitForSingleObject(p r0, i 120000) i.r1"
+      System::Call "kernel32::CloseHandle(p r0)"
+    ${EndIf}
+  ${EndIf}
   !insertmacro MUI_LANGDLL_DISPLAY
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "$(LTW_ERR_X64)" /SD IDOK
@@ -323,6 +345,12 @@ SectionEnd
 Section "$(LTW_SEC_DESKTOP)" SecDesktop
   CreateShortcut "$DESKTOP\$(LTW_NAME).lnk" "$INSTDIR\${PRODUCT_EXE}" "" "$INSTDIR\${PRODUCT_EXE}" 0
 SectionEnd
+
+Function .onInstSuccess
+  ${If} $LaunchAfterUpdate == "1"
+    Exec '"$INSTDIR\${PRODUCT_EXE}"'
+  ${EndIf}
+FunctionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain}    "$(LTW_SEC_MAIN_DESC)"
