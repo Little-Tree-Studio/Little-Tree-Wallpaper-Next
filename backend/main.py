@@ -37,7 +37,11 @@ from backend.logging_setup import configure as configure_logging  # noqa: E402
 from backend.lumiview_host import LumiViewHost  # noqa: E402
 from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir  # noqa: E402
 from backend.server import create_app  # noqa: E402
-from backend.services.autostart import is_autostart_launch, should_start_hidden  # noqa: E402
+from backend.services.autostart import (  # noqa: E402
+    is_autostart_launch,
+    is_force_onboarding_launch,
+    should_start_hidden,
+)
 from backend.tray import ApplicationTray  # noqa: E402
 
 ensure_dirs()
@@ -254,13 +258,21 @@ def main() -> None:
 
     api = BackendAPI()
     api.set_api_token(token)
-    autostart_launch = is_autostart_launch(sys.argv[1:])
+    launch_arguments = sys.argv[1:]
+    autostart_launch = is_autostart_launch(launch_arguments)
+    force_onboarding = is_force_onboarding_launch(launch_arguments)
     start_hidden = should_start_hidden(
         autostart_launch=autostart_launch,
         hide_on_launch=bool(api.store.get("startup.hide_on_launch", True)),
         tray_enabled=bool(api.store.get("ui.minimize_to_tray", True)),
+        force_onboarding=force_onboarding,
     )
-    logger.info("Launch source: {}; main window hidden: {}", "autostart" if autostart_launch else "manual", start_hidden)
+    logger.info(
+        "Launch source: {}; force onboarding: {}; main window hidden: {}",
+        "autostart" if autostart_launch else "manual",
+        force_onboarding,
+        start_hidden,
+    )
     server: uvicorn.Server | None = None
     try:
         server = _start_backend(api, token, port)
@@ -274,6 +286,8 @@ def main() -> None:
         # The token is delivered to the frontend via the launch URL; the React app
         # reads it once, stores it in sessionStorage and strips it from the bar.
         launch_url = f"{base_url}/?token={token}"
+        if force_onboarding:
+            launch_url += "&force_onboarding=1"
         logger.info("Launching LumiView window at {}", base_url)
 
         try:

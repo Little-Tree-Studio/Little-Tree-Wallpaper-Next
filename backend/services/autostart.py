@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - available only on Windows
     winreg = None  # type: ignore[assignment]
 
 AUTOSTART_ARGUMENT = "--autostart"
+FORCE_ONBOARDING_ARGUMENT = "--force-onboarding"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_VALUE_NAME = "LittleTreeWallpaper"
 MACOS_LABEL = "com.littletreestudio.littletreewallpaper"
@@ -25,8 +26,18 @@ def is_autostart_launch(arguments: Sequence[str]) -> bool:
     return AUTOSTART_ARGUMENT in arguments
 
 
-def should_start_hidden(*, autostart_launch: bool, hide_on_launch: bool, tray_enabled: bool) -> bool:
-    return autostart_launch and hide_on_launch and tray_enabled
+def is_force_onboarding_launch(arguments: Sequence[str]) -> bool:
+    return FORCE_ONBOARDING_ARGUMENT in arguments
+
+
+def should_start_hidden(
+    *,
+    autostart_launch: bool,
+    hide_on_launch: bool,
+    tray_enabled: bool,
+    force_onboarding: bool = False,
+) -> bool:
+    return autostart_launch and hide_on_launch and tray_enabled and not force_onboarding
 
 
 class AutostartService:

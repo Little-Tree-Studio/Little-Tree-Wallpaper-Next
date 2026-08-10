@@ -1,11 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Auto-generated. Edit tools/build.py if you need to change the bundle recipe.
+# Layout is controlled by the LTW_BUILD_MODE environment variable:
+#   onefile (default) -> single executable in dist/
+#   onedir            -> folder bundle in dist/<APP_NAME>/
+import os
 import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
+
+ONEDIR = os.environ.get('LTW_BUILD_MODE', 'onefile') == 'onedir'
+APP_NAME = '小树壁纸 Next' if sys.platform != 'win32' else 'LittleTreeWallpaper'
 
 DATAS = [
     ('build.json', '.'),
@@ -57,11 +64,12 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
+    [] if ONEDIR else a.binaries,
+    [] if ONEDIR else a.zipfiles,
+    [] if ONEDIR else a.datas,
     [],
-    name='小树壁纸 Next' if sys.platform != 'win32' else 'LittleTreeWallpaper',
+    name=APP_NAME,
+    exclude_binaries=ONEDIR,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -75,3 +83,15 @@ exe = EXE(
     entitlements_file=None,
     icon='frontend/dist/logo.ico' if sys.platform == 'win32' else None,
 )
+
+if ONEDIR:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name=APP_NAME,
+    )

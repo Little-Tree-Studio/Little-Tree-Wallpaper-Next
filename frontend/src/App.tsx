@@ -38,6 +38,7 @@ import StaticWallpaperGuardProvider from '@/components/StaticWallpaperGuardProvi
 import TextContextMenu from '@/components/TextContextMenu';
 import WindowTitleBar from '@/components/WindowTitleBar';
 import ForcedUpdateBanner from '@/components/ForcedUpdateBanner';
+import FirstRunSetup from '@/components/FirstRunSetup';
 import { useHashRouterLocation, usePathname } from '@/lib/router';
 
 function AppContent() {
@@ -80,16 +81,17 @@ function AppContent() {
 
   return (
     <ThemeProvider>
-      <div className="relative z-10 flex h-screen w-screen min-h-0 flex-col overflow-hidden">
-        <WindowTitleBar title={windowTitle} />
-        <div className="flex min-h-0 flex-1 flex-col">
-          <ForcedUpdateBanner />
-          <div className="min-h-0 flex-1">
-            <StaticWallpaperGuardProvider>
-              <PluginProvider>
-                <ImageViewerProvider>
-                  <Layout>
-                    <Switch>
+      <FirstRunSetup>
+        <div className="relative z-10 flex h-screen w-screen min-h-0 flex-col overflow-hidden">
+          <WindowTitleBar title={windowTitle} />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <ForcedUpdateBanner />
+            <div className="min-h-0 flex-1">
+              <StaticWallpaperGuardProvider>
+                <PluginProvider>
+                  <ImageViewerProvider>
+                    <Layout>
+                      <Switch>
                       <Route path="/" component={Home} />
                       <Route path="/resource" component={Resource} />
                       <Route path="/resource/cnu/:workId" component={CnuWorkDetail} />
@@ -115,25 +117,26 @@ function AppContent() {
                       <Route path="/image-editor" component={ImageEditor} />
                       <Route path="/tools/dynamic-wallpaper" component={DynamicWallpaperDebug} />
                       <Route component={PluginPage} />
-                    </Switch>
-                  </Layout>
-                  <ImageViewer />
-                  {betaVersion !== null && (
-                    <BetaWarningModal
-                      version={betaVersion}
-                      onDismiss={() => setBetaVersion(null)}
-                    />
-                  )}
-                  <BetaWatermark />
-                  <PluginGlobalUI />
-                  <TextContextMenu />
-                  <Toast.Provider placement="bottom end" />
-                </ImageViewerProvider>
-              </PluginProvider>
-            </StaticWallpaperGuardProvider>
+                      </Switch>
+                    </Layout>
+                    <ImageViewer />
+                    {betaVersion !== null && (
+                      <BetaWarningModal
+                        version={betaVersion}
+                        onDismiss={() => setBetaVersion(null)}
+                      />
+                    )}
+                    <BetaWatermark />
+                    <PluginGlobalUI />
+                    <TextContextMenu />
+                    <Toast.Provider placement="bottom end" />
+                  </ImageViewerProvider>
+                </PluginProvider>
+              </StaticWallpaperGuardProvider>
+            </div>
           </div>
         </div>
-      </div>
+      </FirstRunSetup>
     </ThemeProvider>
   );
 }

@@ -223,6 +223,10 @@ export interface StoreResource {
 }
 
 export interface AppSettings {
+  onboarding: {
+    completed: boolean;
+    agreement_version: string;
+  };
   ui: {
     language: string;
     theme: 'system' | 'light' | 'dark';

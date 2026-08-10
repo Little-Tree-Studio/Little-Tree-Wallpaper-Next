@@ -5,8 +5,9 @@
 | 工具 | 用途 |
 | --- | --- |
 | `tools/sync_meta.py` | 更新 `build.json` 中的构建信息，并同步项目版本号 |
-| `tools/build.py` | 依次更新构建信息、构建前端并通过 PyInstaller 打包应用 |
+| `tools/build.py` | 依次更新构建信息、构建前端、通过 PyInstaller 打包应用，可选编译 NSIS 安装程序 |
 | `tools/plugin_pack.py` | 校验插件源码目录并生成可复现的 `.ltp` 插件包 |
+| `installer/setup.nsi` | NSIS 安装脚本模板，由 `tools/build.py --mode installer` 注入版本信息后用 makensis 编译 |
 
 所有命令都应从仓库根目录执行。脚本本身使用 Python 标准库，但完整构建还需要 Node.js、npm、前端依赖和 PyInstaller；插件打包器还需要能够从当前仓库导入 `backend.plugins.validation`。
 
@@ -145,7 +146,8 @@ python tools/build.py --build-type stable --built-by pyinstaller
 2. 如未跳过前端，检查 `frontend/node_modules`。目录不存在且未启用离线模式时，执行 `npm install --no-audit --no-fund`。
 3. 执行 `npm run build`，由 TypeScript 和 Vite 生成 `frontend/dist`。
 4. 确认仓库根目录存在 `build.spec`。
-5. 执行 `python -m PyInstaller --noconfirm --clean build.spec`。
+5. 按 `--mode` 执行 `python -m PyInstaller --noconfirm --clean build.spec`。`folder` 与 `installer` 模式通过环境变量 `LTW_BUILD_MODE=onedir` 让 spec 生成目录形式产物。
+6. `--mode installer` 时，用 Pillow 生成安装程序品牌图（欢迎页横幅、页眉条和图标），再调用 makensis 编译 `installer/setup.nsi`。
 
 任一子命令返回非零状态时，构建工具会立即以相同状态退出。找不到外部命令时退出码为 `127`。
 
@@ -155,8 +157,29 @@ python tools/build.py --build-type stable --built-by pyinstaller
 - Node.js 和 npm。
 - PyInstaller；开发依赖定义在 `backend/pyproject.toml` 的 `dev` 依赖组中。
 - 已提交到仓库根目录的 `build.spec`。
+- `--mode installer` 额外要求 Windows、NSIS 3（`makensis.exe` 位于 PATH 或默认安装目录）以及 Pillow（后端依赖，用于生成安装程序品牌图）。
 
-工具不会自动安装 PyInstaller，不会在缺少 PyInstaller 时回退构建 wheel，也不会自动生成 `build.spec`。
+工具不会自动安装 PyInstaller 或 NSIS，不会在缺少 PyInstaller 时回退构建 wheel，也不会自动生成 `build.spec`。
+
+### 构建模式
+
+`--mode` 控制产物形式：
+
+| 模式 | 产物 | 说明 |
+| --- | --- | --- |
+| `onefile`（默认） | `dist/LittleTreeWallpaper.exe` | 单文件可执行程序，与既有行为一致 |
+| `folder` | `dist/LittleTreeWallpaper/` | PyInstaller onedir 目录形式，含 `_internal/` 运行时，启动更快，便于打包分发 |
+| `installer` | `dist/LittleTreeWallpaper-Setup-<version>[-beta].exe` | 先按 `folder` 模式生成目录产物，再编译 NSIS 安装程序 |
+
+安装程序特性：
+
+- Modern UI 2 界面，包含欢迎页、许可页、组件选择（可选桌面快捷方式）、安装目录、进度与完成页（可直接启动应用或访问项目主页）。
+- 多语言：简体中文、English、繁體中文、日本語；启动时显示语言选择，卸载程序沿用安装时选择的语言。
+- 界面字体按语言优化：简中微软雅黑、English Segoe UI、繁中微软正黑、日语 Yu Gothic UI。运行时克隆每个控件原有字号与字重，仅替换字体名称，安装与卸载的所有页面均生效，不改变对话框布局。
+- 支持高 DPI：安装程序声明 DPI 感知，文本与布局按系统缩放；品牌图按 2 倍尺寸生成，在 200% 缩放下依旧清晰。
+- 品牌图由构建工具根据 `frontend/public/logo.png` 生成深绿渐变横幅与页眉条，临时存放于 `dist/installer-assets/`。
+- 安装到 `%ProgramFiles%\LittleTreeWallpaper`（需要管理员权限，仅支持 64 位 Windows），注册“应用和功能”卸载条目与开始菜单文件夹。
+- 覆盖安装时先检测并关闭正在运行的应用、清理旧文件，再写入新版本；卸载时按安装时记录的语言名称清理快捷方式。
 
 ### 常用命令
 
@@ -176,6 +199,12 @@ python tools/build.py --no-binary
 # 不执行 npm install，但仍执行 npm run build
 python tools/build.py --offline-frontend
 
+# 生成目录形式产物 dist/LittleTreeWallpaper/
+python tools/build.py --mode folder
+
+# 生成目录产物并编译多语言 NSIS 安装程序（需要 NSIS 3）
+python tools/build.py --mode installer
+
 # 只预览元数据变化；不会执行前端或 PyInstaller 构建
 python tools/build.py --dry-run
 ```
@@ -187,6 +216,7 @@ python tools/build.py --dry-run
 | `--version VERSION` | 传递给 `sync_meta.py`，直接设置版本号 |
 | `--build-type beta\|stable` | 设置构建渠道 |
 | `--built-by WHO` | 设置构建来源 |
+| `--mode onefile\|folder\|installer` | 产物形式；默认 `onefile`，见上文“构建模式” |
 | `--no-frontend` | 跳过前端依赖安装和前端构建，继续执行 PyInstaller |
 | `--no-binary` | 更新元数据后立即结束，同时跳过前端和 PyInstaller |
 | `--offline-frontend` | 无条件跳过 `npm install`，但仍执行 `npm run build` |
@@ -196,12 +226,12 @@ python tools/build.py --dry-run
 
 ### PyInstaller 产物
 
-当前 `build.spec` 以 `backend/main.py` 为入口，生成单文件、无控制台窗口的应用。默认输出到仓库根目录的 `dist/`：
+当前 `build.spec` 以 `backend/main.py` 为入口，生成无控制台窗口的应用，输出到仓库根目录的 `dist/`。spec 通过环境变量 `LTW_BUILD_MODE` 切换布局（由 `tools/build.py --mode` 自动设置）：
 
-| 平台 | 可执行文件名称 |
-| --- | --- |
-| Windows | `dist/LittleTreeWallpaper.exe` |
-| macOS / Linux | `dist/小树壁纸 Next` |
+| 平台 | 单文件（默认） | 目录形式（onedir） |
+| --- | --- | --- |
+| Windows | `dist/LittleTreeWallpaper.exe` | `dist/LittleTreeWallpaper/` |
+| macOS / Linux | `dist/小树壁纸 Next` | `dist/小树壁纸 Next/` |
 
 Spec 会打包以下数据：
 

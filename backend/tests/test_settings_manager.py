@@ -21,6 +21,8 @@ class SettingsStoreMigrationTests(unittest.TestCase):
             self.assertEqual(store.get("sniff.max_results"), 300)
             self.assertEqual(store.get("create.export_format"), "png")
             self.assertEqual(store.get("generate.prompt_history_limit"), 12)
+            self.assertFalse(store.get("onboarding.completed"))
+            self.assertEqual(store.get("onboarding.agreement_version"), "")
             self.assertTrue(store.get("ui.hide_on_close"))
             self.assertTrue(store.get("ui.minimize_to_tray"))
             self.assertFalse(store.get("ui.release_webview_on_close"))
@@ -80,6 +82,7 @@ class SettingsStoreMigrationTests(unittest.TestCase):
 
             self.assertEqual(store.get("im.mirror_preference"), "auto")
             self.assertEqual(store.get("download.concurrent_tasks"), 6)
+            self.assertTrue(store.get("onboarding.completed"))
             providers = store.get("generate.providers")
             self.assertEqual(providers[0]["id"], POLLINATIONS_PROVIDER_ID)
 

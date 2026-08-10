@@ -28,6 +28,10 @@ POLLINATIONS_PROVIDER: dict[str, Any] = {
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "metadata": {"version": VERSION},
+    "onboarding": {
+        "completed": False,
+        "agreement_version": "",
+    },
     "ui": {
         "language": "zh-CN",
         "theme": "system",
@@ -196,7 +200,10 @@ class SettingsStore:
         self._migrate()
 
     def _migrate(self) -> None:
+        is_existing_install = bool(self._data) and "onboarding" not in self._data
         self._apply_defaults(self._data)
+        if is_existing_install:
+            self._data["onboarding"]["completed"] = True
 
     @staticmethod
     def _apply_defaults(data: dict[str, Any]) -> None:

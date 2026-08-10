@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import unittest
 
-from backend.services.autostart import is_autostart_launch, should_start_hidden
+from backend.services.autostart import (
+    is_autostart_launch,
+    is_force_onboarding_launch,
+    should_start_hidden,
+)
 
 
 class StartupModeTests(unittest.TestCase):
     def test_autostart_argument_is_detected(self) -> None:
         self.assertTrue(is_autostart_launch(["--autostart"]))
         self.assertFalse(is_autostart_launch([]))
+
+    def test_force_onboarding_argument_is_detected(self) -> None:
+        self.assertTrue(is_force_onboarding_launch(["--force-onboarding"]))
+        self.assertTrue(is_force_onboarding_launch(["--autostart", "--force-onboarding"]))
+        self.assertFalse(is_force_onboarding_launch([]))
 
     def test_only_autostart_launch_with_tray_can_start_hidden(self) -> None:
         self.assertTrue(
@@ -22,6 +31,14 @@ class StartupModeTests(unittest.TestCase):
         )
         self.assertFalse(
             should_start_hidden(autostart_launch=True, hide_on_launch=True, tray_enabled=False)
+        )
+        self.assertFalse(
+            should_start_hidden(
+                autostart_launch=True,
+                hide_on_launch=True,
+                tray_enabled=True,
+                force_onboarding=True,
+            )
         )
 
 

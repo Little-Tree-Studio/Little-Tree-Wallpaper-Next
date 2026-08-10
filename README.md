@@ -144,6 +144,12 @@ uv run --project backend --no-sync python tools/build.py --build-type stable --b
 # 复用已有 frontend/dist，仅重新打包
 uv run --project backend --no-sync python tools/build.py --no-frontend
 
+# 生成目录形式产物（dist/LittleTreeWallpaper/）
+uv run --project backend --no-sync python tools/build.py --mode folder
+
+# 生成目录产物并编译多语言 NSIS 安装程序（需要 NSIS 3）
+uv run --project backend --no-sync python tools/build.py --mode installer
+
 # 只预览元数据变化
 uv run --project backend --no-sync python tools/build.py --dry-run
 ```
