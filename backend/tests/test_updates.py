@@ -48,6 +48,29 @@ class UpdateApiTests(unittest.TestCase):
         self.assertGreater(_version_key("2.10.0"), _version_key("2.9.9"))
         self.assertEqual(_version_key("2.0"), _version_key("2.0.0"))
 
+    def test_version_key_compares_semver_prereleases(self) -> None:
+        self.assertLess(_version_key("2.0.0-beta.1"), _version_key("2.0.0-beta.2"))
+        self.assertLess(_version_key("2.0.0-beta.2"), _version_key("2.0.0-beta.10"))
+        self.assertLess(_version_key("2.0.0-alpha.9"), _version_key("2.0.0-beta.1"))
+        self.assertLess(_version_key("2.0.0-beta.10"), _version_key("2.0.0"))
+        self.assertEqual(_version_key("2.0.0+build.1"), _version_key("2.0.0+build.2"))
+
+    @patch("backend.api.platform.machine", return_value="AMD64")
+    @patch("backend.api.sys.platform", "win32")
+    @patch("backend.api.VERSION", "2.0.0-beta.1")
+    @patch("requests.get")
+    def test_check_for_updates_detects_newer_beta(self, get, _machine) -> None:
+        get.side_effect = [
+            _Response([{"id": "beta", "name": "测试版", "order": 0}]),
+            _Response({"version": "2.0.0-beta.2"}),
+        ]
+        api = BackendAPI.__new__(BackendAPI)
+        api.store = MagicMock()
+
+        result = api.check_for_updates("beta")
+
+        self.assertTrue(result["has_update"])
+
     @patch("backend.api.platform.machine", return_value="AMD64")
     @patch("backend.api.sys.platform", "win32")
     @patch("backend.api.VERSION", "2.0.0")

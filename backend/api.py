@@ -75,12 +75,33 @@ _UPDATE_DOWNLOAD_LOCK = threading.Lock()
 ensure_dirs()
 
 
-def _version_key(version: str) -> tuple[int, ...]:
-    """Return numeric version segments for natural version ordering."""
-    parts = [int(part) for part in re.findall(r"\d+", str(version))]
-    while len(parts) > 1 and parts[-1] == 0:
-        parts.pop()
-    return tuple(parts)
+def _version_key(
+    version: str,
+) -> tuple[tuple[int, ...], int, tuple[tuple[int, int | str], ...]]:
+    """Return a comparable SemVer key, including prerelease identifiers."""
+    value = str(version).strip()
+    match = re.fullmatch(
+        r"[vV]?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        value,
+    )
+    if match:
+        core = [int(part) for part in match.group(1).split(".")]
+        prerelease = match.group(2)
+    else:
+        # Keep malformed remote versions deterministic instead of crashing the
+        # update check. They sort as prereleases of their extracted core.
+        core = [int(part) for part in re.findall(r"\d+", value)] or [0]
+        prerelease = value
+
+    while len(core) > 1 and core[-1] == 0:
+        core.pop()
+    prerelease_key = tuple(
+        (0, int(identifier)) if identifier.isdigit() else (1, identifier)
+        for identifier in prerelease.split(".")
+    ) if prerelease else ()
+    # A release has higher precedence than a prerelease with the same core.
+    return tuple(core), 0 if prerelease else 1, prerelease_key
 
 
 def _create_file_dialog_root() -> Any:
