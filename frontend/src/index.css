@@ -886,6 +886,41 @@ html[data-window-icon-close] .window-control-icon--close > svg {
   background: color-mix(in srgb, var(--foreground) 4%, transparent);
 }
 
+.first-run-success-anchor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+}
+
+.first-run-confetti {
+  position: absolute;
+  inset: -4.5rem -6rem;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.first-run-confetti i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  width: var(--confetti-width);
+  height: var(--confetti-height);
+  border-radius: var(--confetti-radius);
+  background: var(--confetti-color);
+  opacity: 0;
+  transform: translate3d(-50%, -50%, 0) rotate(0deg) scale(0.72);
+  animation: first-run-confetti-burst var(--confetti-duration) var(--first-run-ease-out) var(--confetti-delay) both;
+  will-change: transform, opacity;
+}
+
+.first-run-success-anchor > svg {
+  position: relative;
+  z-index: 1;
+}
+
 .first-run-success {
   animation: first-run-success-in 300ms var(--first-run-ease-out) both;
 }
@@ -914,6 +949,39 @@ html[data-window-icon-close] .window-control-icon--close > svg {
 @keyframes first-run-success-in {
   from { opacity: 0; transform: scale(0.94); }
   to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes first-run-confetti-burst {
+  0% {
+    opacity: 0;
+    transform: translate3d(-50%, -50%, 0) rotate(0deg) scale(0.72);
+  }
+
+  12% {
+    opacity: 0.95;
+  }
+
+  70% {
+    opacity: 0.95;
+    transform: translate3d(calc(-50% + var(--confetti-x)), calc(-50% + var(--confetti-y)), 0) rotate(var(--confetti-rotate)) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(calc(-50% + var(--confetti-end-x)), calc(-50% + var(--confetti-end-y)), 0) rotate(var(--confetti-end-rotate)) scale(0.92);
+  }
+}
+
+@keyframes first-run-confetti-static {
+  0% {
+    opacity: 0;
+    transform: translate3d(calc(-50% + var(--confetti-x)), calc(-50% + var(--confetti-y)), 0) rotate(var(--confetti-rotate)) scale(1);
+  }
+
+  100% {
+    opacity: 0.72;
+    transform: translate3d(calc(-50% + var(--confetti-x)), calc(-50% + var(--confetti-y)), 0) rotate(var(--confetti-rotate)) scale(1);
+  }
 }
 
 @keyframes first-run-drift-one {
@@ -951,6 +1019,13 @@ html[data-window-icon-close] .window-control-icon--close > svg {
 
   .first-run-orb {
     animation: none;
+    will-change: auto;
+  }
+
+  .first-run-confetti i {
+    animation-name: first-run-confetti-static;
+    animation-duration: 180ms;
+    animation-delay: 0ms;
     will-change: auto;
   }
 

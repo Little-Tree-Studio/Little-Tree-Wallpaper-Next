@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   Button,
   Card,
@@ -73,6 +73,46 @@ const DEFAULT_DRAFT: SetupDraft = {
   fullScreenAction: 'pause',
   batteryAction: 'pause',
 };
+
+const CONFETTI_PIECES = [
+  { x: '-4.8rem', y: '-3.0rem', endX: '-5.2rem', endY: '-1.9rem', rotate: '-170deg', endRotate: '-250deg', delay: '0ms', duration: '1120ms', color: 'var(--primary)', width: '0.55rem', height: '0.16rem', radius: '0.08rem' },
+  { x: '-3.9rem', y: '-4.0rem', endX: '-4.3rem', endY: '-3.0rem', rotate: '130deg', endRotate: '210deg', delay: '35ms', duration: '1240ms', color: 'var(--success, #17c964)', width: '0.48rem', height: '0.15rem', radius: '0.075rem' },
+  { x: '-2.4rem', y: '-4.6rem', endX: '-2.6rem', endY: '-3.5rem', rotate: '-120deg', endRotate: '-190deg', delay: '70ms', duration: '1060ms', color: 'var(--warning, #f5a524)', width: '0.58rem', height: '0.16rem', radius: '0.08rem' },
+  { x: '0rem', y: '-5.0rem', endX: '0.2rem', endY: '-4.0rem', rotate: '95deg', endRotate: '165deg', delay: '20ms', duration: '1180ms', color: 'var(--danger, #f31260)', width: '0.22rem', height: '0.22rem', radius: '999px' },
+  { x: '2.5rem', y: '-4.4rem', endX: '2.9rem', endY: '-3.3rem', rotate: '145deg', endRotate: '225deg', delay: '85ms', duration: '1100ms', color: 'var(--primary)', width: '0.52rem', height: '0.15rem', radius: '0.075rem' },
+  { x: '4.3rem', y: '-3.2rem', endX: '4.8rem', endY: '-2.0rem', rotate: '-135deg', endRotate: '-215deg', delay: '45ms', duration: '1260ms', color: 'var(--success, #17c964)', width: '0.6rem', height: '0.17rem', radius: '0.085rem' },
+  { x: '5.1rem', y: '-1.0rem', endX: '5.6rem', endY: '0rem', rotate: '115deg', endRotate: '190deg', delay: '100ms', duration: '1040ms', color: 'var(--warning, #f5a524)', width: '0.5rem', height: '0.15rem', radius: '0.075rem' },
+  { x: '4.7rem', y: '1.3rem', endX: '5.2rem', endY: '2.4rem', rotate: '-95deg', endRotate: '-170deg', delay: '15ms', duration: '1210ms', color: 'color-mix(in srgb, var(--primary) 62%, var(--success, #17c964))', width: '0.22rem', height: '0.22rem', radius: '999px' },
+  { x: '3.4rem', y: '2.7rem', endX: '3.8rem', endY: '3.9rem', rotate: '150deg', endRotate: '240deg', delay: '60ms', duration: '1130ms', color: 'var(--danger, #f31260)', width: '0.56rem', height: '0.16rem', radius: '0.08rem' },
+  { x: '1.6rem', y: '3.6rem', endX: '1.9rem', endY: '4.8rem', rotate: '-140deg', endRotate: '-220deg', delay: '30ms', duration: '1280ms', color: 'var(--primary)', width: '0.5rem', height: '0.15rem', radius: '0.075rem' },
+  { x: '-0.4rem', y: '4.2rem', endX: '-0.2rem', endY: '5.3rem', rotate: '125deg', endRotate: '205deg', delay: '90ms', duration: '1080ms', color: 'var(--success, #17c964)', width: '0.22rem', height: '0.22rem', radius: '999px' },
+  { x: '-2.2rem', y: '3.7rem', endX: '-2.5rem', endY: '4.9rem', rotate: '-105deg', endRotate: '-185deg', delay: '50ms', duration: '1170ms', color: 'var(--warning, #f5a524)', width: '0.54rem', height: '0.16rem', radius: '0.08rem' },
+  { x: '-3.8rem', y: '2.8rem', endX: '-4.3rem', endY: '4.0rem', rotate: '165deg', endRotate: '245deg', delay: '10ms', duration: '1220ms', color: 'color-mix(in srgb, var(--warning, #f5a524) 72%, var(--danger, #f31260))', width: '0.58rem', height: '0.16rem', radius: '0.08rem' },
+  { x: '-4.9rem', y: '1.2rem', endX: '-5.4rem', endY: '2.3rem', rotate: '-125deg', endRotate: '-205deg', delay: '75ms', duration: '1050ms', color: 'var(--danger, #f31260)', width: '0.5rem', height: '0.15rem', radius: '0.075rem' },
+  { x: '-5.3rem', y: '-0.9rem', endX: '-5.8rem', endY: '0.1rem', rotate: '110deg', endRotate: '185deg', delay: '25ms', duration: '1190ms', color: 'var(--primary)', width: '0.22rem', height: '0.22rem', radius: '999px' },
+  { x: '-3.0rem', y: '-2.5rem', endX: '-3.4rem', endY: '-1.4rem', rotate: '80deg', endRotate: '145deg', delay: '120ms', duration: '980ms', color: 'var(--success, #17c964)', width: '0.48rem', height: '0.14rem', radius: '0.07rem' },
+  { x: '3.1rem', y: '-2.3rem', endX: '3.5rem', endY: '-1.2rem', rotate: '-85deg', endRotate: '-150deg', delay: '130ms', duration: '1020ms', color: 'var(--warning, #f5a524)', width: '0.2rem', height: '0.2rem', radius: '999px' },
+  { x: '2.2rem', y: '2.0rem', endX: '2.5rem', endY: '3.0rem', rotate: '100deg', endRotate: '175deg', delay: '110ms', duration: '1090ms', color: 'color-mix(in srgb, var(--primary) 62%, var(--success, #17c964))', width: '0.52rem', height: '0.15rem', radius: '0.075rem' },
+  { x: '-1.4rem', y: '2.4rem', endX: '-1.6rem', endY: '3.4rem', rotate: '-95deg', endRotate: '-165deg', delay: '140ms', duration: '1140ms', color: 'var(--danger, #f31260)', width: '0.2rem', height: '0.2rem', radius: '999px' },
+  { x: '0.9rem', y: '-2.7rem', endX: '1.1rem', endY: '-1.7rem', rotate: '135deg', endRotate: '205deg', delay: '65ms', duration: '1010ms', color: 'var(--primary)', width: '0.5rem', height: '0.15rem', radius: '0.075rem' },
+] as const;
+
+function confettiStyle(piece: (typeof CONFETTI_PIECES)[number]): CSSProperties {
+  return {
+    '--confetti-x': piece.x,
+    '--confetti-y': piece.y,
+    '--confetti-end-x': piece.endX,
+    '--confetti-end-y': piece.endY,
+    '--confetti-rotate': piece.rotate,
+    '--confetti-end-rotate': piece.endRotate,
+    '--confetti-delay': piece.delay,
+    '--confetti-duration': piece.duration,
+    '--confetti-color': piece.color,
+    '--confetti-width': piece.width,
+    '--confetti-height': piece.height,
+    '--confetti-radius': piece.radius,
+  } as CSSProperties;
+}
 
 function consumeForceOnboardingFlag(): boolean {
   const url = new URL(window.location.href);
@@ -504,7 +544,10 @@ function SetupStep({
 
   return (
     <div className="mx-auto flex min-h-full max-w-[720px] flex-col items-center justify-center text-center lg:max-w-[820px]">
-      <CheckCircle2 className="first-run-success text-success" size={56} strokeWidth={2.1} aria-hidden="true" />
+      <span className="first-run-success-anchor">
+        <CompletionConfetti />
+        <CheckCircle2 className="first-run-success text-success" size={56} strokeWidth={2.1} aria-hidden="true" />
+      </span>
       <h1 className="mt-6 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">已经准备好了</h1>
       <p className="mt-4 max-w-xl text-sm leading-7 text-muted">点击“开始探索”保存所有选择。之后可在设置中更改任何选项，并在帮助页面重新查看用户协议。</p>
       <div className="mt-8 flex flex-wrap justify-center gap-2">
@@ -514,6 +557,14 @@ function SetupStep({
         <Chip size="sm" variant="soft">协议已确认</Chip>
       </div>
     </div>
+  );
+}
+
+function CompletionConfetti() {
+  return (
+    <span className="first-run-confetti" aria-hidden="true">
+      {CONFETTI_PIECES.map((piece, index) => <i key={index} style={confettiStyle(piece)} />)}
+    </span>
   );
 }
 

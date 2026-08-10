@@ -93,6 +93,8 @@ VIAddVersionKey "OriginalFilename" "${OUT_NAME}"
 !define MUI_CUSTOMFUNCTION_GUIINIT   "InitInstallerFont"
 !define MUI_CUSTOMFUNCTION_UNGUIINIT "un.InitInstallerFont"
 
+Var FontDPI
+
 !macro LTW_FONT_FUNCTIONS un
   Function ${un}ApplyFontToChildren
     ; $R9 = parent window whose direct children receive the new font face
@@ -108,7 +110,18 @@ VIAddVersionKey "OriginalFilename" "${OUT_NAME}"
       SendMessage $R8 ${WM_GETFONT} 0 0 $R7
       ${If} $R7 <> 0
         System::Call "gdi32::GetObjectW(p $R7, i 92, @R6)"
-        System::Call "*$R6(i.R0, i, i, i, i.R5)" ; lfHeight, lfWeight
+        System::Call "*$R6(i.R0, i, i, i, i.R5)" ; lfHeight (px), lfWeight
+        ; The CreateFont instruction takes POINTS, not pixels: it applies
+        ; -MulDiv(pt, GetDeviceCaps(LOGPIXELSY), 72) internally. Feed it the
+        ; pixel height converted back to points or fonts get scaled twice.
+        ${If} $R0 < 0
+          IntOp $R0 $R0 * -1
+        ${EndIf}
+        IntOp $R0 $R0 * 72
+        IntOp $R0 $R0 / $FontDPI
+        ${If} $R0 < 1
+          StrCpy $R0 1
+        ${EndIf}
         CreateFont $R4 "$(LTW_FONT_FACE)" $R0 $R5
         SendMessage $R8 ${WM_SETFONT} $R4 1
       ${EndIf}
@@ -129,6 +142,14 @@ VIAddVersionKey "OriginalFilename" "${OUT_NAME}"
     ; child tree of $HWNDPARENT, and a previous page's dialog may still exist
     ; during a transition, so every level is swept instead of FindWindow.
     Push $R8
+    System::Call "user32::GetDC(p $HWNDPARENT) p.s"
+    Pop $R8
+    System::Call "gdi32::GetDeviceCaps(p $R8, i 90) i.s" ; LOGPIXELSY
+    Pop $FontDPI
+    System::Call "user32::ReleaseDC(p $HWNDPARENT, p $R8)"
+    ${If} $FontDPI < 96
+      StrCpy $FontDPI 96
+    ${EndIf}
     StrCpy $R9 $HWNDPARENT
     Call ${un}ApplyFontToChildren
     System::Call "user32::GetWindow(p $HWNDPARENT, i 5) p.s" ; GW_CHILD

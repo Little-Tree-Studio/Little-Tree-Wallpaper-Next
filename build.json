@@ -1,7 +1,7 @@
 {
   "version": "2.0.0",
   "build_type": "beta",
-  "build_time": "2026-08-10T14:08:43+08:00",
-  "git_commit": "70c7e50",
+  "build_time": "2026-08-10T14:34:24+08:00",
+  "git_commit": "75663c9",
   "built_by": "pyinstaller"
 }
