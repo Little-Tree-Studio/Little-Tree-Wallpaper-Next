@@ -40,6 +40,7 @@ from backend.server import create_app  # noqa: E402
 from backend.services.autostart import (  # noqa: E402
     is_autostart_launch,
     is_force_onboarding_launch,
+    is_watermark_disabled_launch,
     should_start_hidden,
 )
 from backend.tray import ApplicationTray  # noqa: E402
@@ -261,6 +262,7 @@ def main() -> None:
     launch_arguments = sys.argv[1:]
     autostart_launch = is_autostart_launch(launch_arguments)
     force_onboarding = is_force_onboarding_launch(launch_arguments)
+    watermark_disabled = is_watermark_disabled_launch(launch_arguments)
     start_hidden = should_start_hidden(
         autostart_launch=autostart_launch,
         hide_on_launch=bool(api.store.get("startup.hide_on_launch", True)),
@@ -268,9 +270,10 @@ def main() -> None:
         force_onboarding=force_onboarding,
     )
     logger.info(
-        "Launch source: {}; force onboarding: {}; main window hidden: {}",
+        "Launch source: {}; force onboarding: {}; watermark disabled: {}; main window hidden: {}",
         "autostart" if autostart_launch else "manual",
         force_onboarding,
+        watermark_disabled,
         start_hidden,
     )
     server: uvicorn.Server | None = None
@@ -288,6 +291,8 @@ def main() -> None:
         launch_url = f"{base_url}/?token={token}"
         if force_onboarding:
             launch_url += "&force_onboarding=1"
+        if watermark_disabled:
+            launch_url += "&no_watermark=1"
         logger.info("Launching LumiView window at {}", base_url)
 
         try:
@@ -327,7 +332,10 @@ def main() -> None:
                         token,
                         host.create_embedded_webview,
                     )
-                    editor_url = f"{base_url}/?token={token}#/dynamic/editor"
+                    editor_url = f"{base_url}/?token={token}"
+                    if watermark_disabled:
+                        editor_url += "&no_watermark=1"
+                    editor_url += "#/dynamic/editor"
                     api.configure_dynamic_editor_runtime(widget_editor, editor_url)
 
                     def create_main_window() -> Any:

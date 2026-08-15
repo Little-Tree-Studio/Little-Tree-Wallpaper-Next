@@ -1,5 +1,5 @@
 import { Card } from '@heroui/react';
-import { Palette, ArrowRight, MonitorPlay } from 'lucide-react';
+import { Palette, ArrowRight, MonitorPlay, SwatchBook } from 'lucide-react';
 import { useNavigate } from '@/lib/router';
 
 interface ToolItem {
@@ -24,6 +24,13 @@ const tools: ToolItem[] = [
     description: '探测 Windows WorkerW，加载本地视频并观察桌面宿主状态',
     icon: MonitorPlay,
     path: '/tools/dynamic-wallpaper',
+  },
+  {
+    id: 'zhongguose',
+    title: '中国传统色',
+    description: '五百二十六种中国传统色，竖排色卡，点击复制 HEX 色值',
+    icon: SwatchBook,
+    path: '/tools/zhongguose',
   },
 ];
 

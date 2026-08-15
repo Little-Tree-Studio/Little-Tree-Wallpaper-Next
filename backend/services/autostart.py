@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - available only on Windows
 
 AUTOSTART_ARGUMENT = "--autostart"
 FORCE_ONBOARDING_ARGUMENT = "--force-onboarding"
+NO_WATERMARK_ARGUMENT = "--no-watermark"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_VALUE_NAME = "LittleTreeWallpaper"
 MACOS_LABEL = "com.littletreestudio.littletreewallpaper"
@@ -28,6 +29,10 @@ def is_autostart_launch(arguments: Sequence[str]) -> bool:
 
 def is_force_onboarding_launch(arguments: Sequence[str]) -> bool:
     return FORCE_ONBOARDING_ARGUMENT in arguments
+
+
+def is_watermark_disabled_launch(arguments: Sequence[str]) -> bool:
+    return NO_WATERMARK_ARGUMENT in arguments
 
 
 def should_start_hidden(

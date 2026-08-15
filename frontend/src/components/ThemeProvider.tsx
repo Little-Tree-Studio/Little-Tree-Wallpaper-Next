@@ -72,6 +72,7 @@ function pageIdFromPath(pathname: string): string {
   if (/^resource\/pixivel\/[^/]+/.test(path)) return 'resource-pixivel-detail';
   if (path === 'resource/source-management') return 'resource-source-management';
   if (path === 'tools/color-palette') return 'tools-color-palette';
+  if (path === 'tools/zhongguose') return 'tools-zhongguose';
   return path.split('/')[0] || 'home';
 }
 

@@ -3,7 +3,13 @@ import Navigation from './Navigation';
 import Watermark from './Watermark';
 import { useNavigate, usePathname } from '@/lib/router';
 
-export default function Layout({ children }: { children: React.ReactNode }) {
+export default function Layout({
+  children,
+  hideWatermark = false,
+}: {
+  children: React.ReactNode;
+  hideWatermark?: boolean;
+}) {
   const pathname = usePathname();
   const navigate = useNavigate();
 
@@ -21,7 +27,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </ScrollShadow>
       </main>
-      <Watermark />
+      {!hideWatermark && <Watermark />}
     </div>
   );
 }
