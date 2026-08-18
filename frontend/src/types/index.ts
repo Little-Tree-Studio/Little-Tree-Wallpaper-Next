@@ -234,6 +234,9 @@ export interface AppSettings {
     hide_on_close: boolean;
     minimize_to_tray: boolean;
     release_webview_on_close: boolean;
+    sidebar: {
+      hidden: string[];
+    };
   };
   wallpaper: {
     auto_change: {
@@ -259,6 +262,7 @@ export interface AppSettings {
   startup: {
     auto_start: boolean;
     hide_on_launch: boolean;
+    page: string;
   };
   sniff: {
     user_agent: string;

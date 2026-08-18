@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from 'react';
 import { useNavigate } from '@/lib/router';
 import type { Key } from '@heroui/react';
 import {
@@ -13,10 +13,10 @@ import {
   Plus, Pencil, Trash2, ImageIcon, FolderPlus,
   RefreshCw, FolderOutput, Import, Globe, Settings2, Tag,
   AlertTriangle, FolderOpen, FolderInput, X, CheckSquare, FilePenLine,
-  Repeat2,
+  Repeat2, Eye, Copy,
 } from 'lucide-react';
 import {
-  getFavorites, removeFavorite, updateFavorite,
+  getFavorites, removeFavorite, updateFavorite, copyToClipboard,
   createFavoriteFolder, updateFavoriteFolder, deleteFavoriteFolder, setWallpaper, downloadWithProgress,
   exportFavorites, pickAndImportFavorites, selectLocalImage, localFileUrl, localPreviewUrl,
   FAVORITES_CHANGED_EVENT, saveAutomation,
@@ -30,6 +30,10 @@ import { createWallpaperRotationAutomation } from '@/components/AutomationEditor
 const ROTATION_UNITS = { minutes: 60, hours: 3600, days: 86400 } as const;
 type RotationUnit = keyof typeof ROTATION_UNITS;
 type RotationTarget = { scope: 'selected' } | { scope: 'folder'; folder: FavoriteFolder };
+type FavoriteContextMenu = { item: FavoriteItem; x: number; y: number };
+
+const FAVORITE_CONTEXT_MENU_WIDTH = 224;
+const FAVORITE_CONTEXT_MENU_MARGIN = 8;
 
 function getEmbeddedImageUrl(item: FavoriteItem): string {
   return [item.preview_url, item.source_url]
@@ -72,6 +76,8 @@ export default function Favorite() {
   const [rotationInterval, setRotationInterval] = useState(30);
   const [rotationUnit, setRotationUnit] = useState<RotationUnit>('minutes');
   const [creatingRotation, setCreatingRotation] = useState(false);
+  const [contextMenu, setContextMenu] = useState<FavoriteContextMenu | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const {contains} = useFilter({sensitivity: 'base'});
   const { openViewer } = useImageViewer();
 
@@ -106,6 +112,34 @@ export default function Favorite() {
     window.addEventListener(FAVORITES_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(FAVORITES_CHANGED_EVENT, refresh);
   }, [refresh]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const frame = window.requestAnimationFrame(() => {
+      const menu = contextMenuRef.current;
+      if (!menu) return;
+      const bounds = menu.getBoundingClientRect();
+      const x = Math.max(FAVORITE_CONTEXT_MENU_MARGIN, Math.min(contextMenu.x, window.innerWidth - bounds.width - FAVORITE_CONTEXT_MENU_MARGIN));
+      const y = Math.max(FAVORITE_CONTEXT_MENU_MARGIN, Math.min(contextMenu.y, window.innerHeight - bounds.height - FAVORITE_CONTEXT_MENU_MARGIN));
+      if (x !== contextMenu.x || y !== contextMenu.y) setContextMenu({ ...contextMenu, x, y });
+      menu.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])')?.focus();
+    });
+    const closeMenu = (event: Event) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    window.addEventListener('pointerdown', closeMenu);
+    window.addEventListener('blur', closeMenu);
+    window.addEventListener('resize', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('pointerdown', closeMenu);
+      window.removeEventListener('blur', closeMenu);
+      window.removeEventListener('resize', closeMenu);
+      window.removeEventListener('scroll', closeMenu, true);
+    };
+  }, [contextMenu]);
 
   const filteredItems = activeFolder === 'all'
     ? data.items
@@ -444,6 +478,31 @@ export default function Favorite() {
     openViewer(items, Math.max(0, index));
   };
 
+  const openContextMenu = (event: React.MouseEvent, item: FavoriteItem) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      item,
+      x: Math.max(FAVORITE_CONTEXT_MENU_MARGIN, Math.min(event.clientX, window.innerWidth - FAVORITE_CONTEXT_MENU_WIDTH - FAVORITE_CONTEXT_MENU_MARGIN)),
+      y: Math.max(FAVORITE_CONTEXT_MENU_MARGIN, event.clientY),
+    });
+  };
+
+  const runContextMenuAction = (key: Key) => {
+    if (!contextMenu) return;
+    const item = contextMenu.item;
+    setContextMenu(null);
+    if (key === 'view') handleOpenViewer(item);
+    else if (key === 'copy-link') {
+      const url = item.source_url || item.preview_url || item.local_path;
+      if (url) void copyToClipboard(url);
+    }
+    else if (key === 'wallpaper' && item.local_path) void setWallpaper(item.local_path);
+    else if (key === 'edit') openEditDrawer(item);
+    else if (key === 'localize') void handleLocalize(item);
+    else if (key === 'delete') setDeleteConfirmId(item.id);
+  };
+
   return (
     <div className="mx-auto max-w-6xl space-y-4">
       <div className="flex items-center justify-between">
@@ -533,6 +592,7 @@ export default function Favorite() {
                     handleOpenViewer(item);
                   }
                 }}
+                onContextMenu={(event) => openContextMenu(event, item)}
               >
                 <div className="relative h-[160px] w-full overflow-hidden rounded-2xl bg-surface-secondary">
                   {isBatchMode && (
@@ -581,6 +641,30 @@ export default function Favorite() {
               </Card>
             );
           })}
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu-enter fixed z-[70] w-[224px] rounded-xl border border-border bg-background/98 p-1.5 text-foreground shadow-xl backdrop-blur"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <ListBox aria-label={`${contextMenu.item.title} 操作`} selectionMode="none" onAction={runContextMenuAction}>
+            <ListBox.Section>
+              <ListBox.Item id="view" textValue="查看大图"><Eye size={16} className="text-muted" /><Label>查看大图</Label></ListBox.Item>
+              <ListBox.Item id="copy-link" textValue="复制链接"><Copy size={16} className="text-muted" /><Label>复制链接</Label></ListBox.Item>
+              <ListBox.Item id="wallpaper" textValue="设为壁纸" isDisabled={!contextMenu.item.local_path}><ImageIcon size={16} className="text-muted" /><Label>设为壁纸</Label></ListBox.Item>
+              <ListBox.Item id="edit" textValue="编辑收藏"><Pencil size={16} className="text-muted" /><Label>编辑收藏</Label></ListBox.Item>
+              <ListBox.Item id="localize" textValue="本地化" isDisabled={isLocalized(contextMenu.item)}><Globe size={16} className="text-muted" /><Label>本地化</Label></ListBox.Item>
+            </ListBox.Section>
+            <Separator />
+            <ListBox.Section>
+              <ListBox.Item id="delete" textValue="删除收藏" variant="danger"><Trash2 size={16} /><Label>删除收藏</Label></ListBox.Item>
+            </ListBox.Section>
+          </ListBox>
         </div>
       )}
 

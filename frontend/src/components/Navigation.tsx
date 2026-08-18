@@ -1,32 +1,19 @@
-import { useState } from 'react';
-import {
-  Home, Image, Wand2, Search, Star, Store, Settings, Wrench, Globe, LifeBuoy, Frame, Puzzle, Workflow, MonitorPlay,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Button, ScrollShadow } from '@heroui/react';
+import { Puzzle, Settings } from 'lucide-react';
+import { getSettings } from '@/api/backend';
 import { requestNavigation } from '@/lib/navigationGuard';
+import {
+  CORE_NAV_ITEMS,
+  HELP_NAV_ITEM,
+  SIDEBAR_SETTINGS_CHANGED_EVENT,
+  type NavigationItem,
+} from '@/lib/navigationItems';
 import { usePlugins } from '@/plugins/context';
 
-interface NavItem {
-  id: string;
-  label: string;
-  icon: React.ElementType;
-  route: string;
+interface NavItem extends NavigationItem {
   pluginId?: string;
 }
-
-const items: NavItem[] = [
-  { id: 'home', label: '首页', icon: Home, route: '/' },
-  { id: 'resource', label: '资源', icon: Image, route: '/resource' },
-  { id: 'generate', label: '生成', icon: Wand2, route: '/generate' },
-  { id: 'create', label: '制作', icon: Frame, route: '/create' },
-  { id: 'dynamic', label: '动态', icon: MonitorPlay, route: '/dynamic' },
-  { id: 'automation', label: '自动化', icon: Workflow, route: '/automation' },
-  { id: 'search', label: '搜索', icon: Search, route: '/search' },
-  { id: 'sniff', label: '嗅探', icon: Globe, route: '/sniff' },
-  { id: 'favorite', label: '收藏', icon: Star, route: '/favorite' },
-  { id: 'store', label: '商店', icon: Store, route: '/store' },
-  { id: 'tools', label: '工具', icon: Wrench, route: '/tools' },
-];
 
 interface NavigationProps {
   activeRoute: string;
@@ -52,8 +39,28 @@ function coreRouteOwns(route: string): boolean {
 
 export default function Navigation({ activeRoute, onChange, className = '' }: NavigationProps) {
   const [hovered, setHovered] = useState<string | null>(null);
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const { contributions } = usePlugins();
   const pages = [...contributions.pages, ...contributions.resource_pages];
+
+  useEffect(() => {
+    let active = true;
+    getSettings()
+      .then((settings) => {
+        if (active) setHiddenIds(settings.ui.sidebar?.hidden || []);
+      })
+      .catch(() => undefined);
+    const handleSettingsChange = (event: Event) => {
+      const hidden = (event as CustomEvent<{ hidden?: unknown }>).detail?.hidden;
+      if (Array.isArray(hidden)) setHiddenIds(hidden.filter((id): id is string => typeof id === 'string'));
+    };
+    window.addEventListener(SIDEBAR_SETTINGS_CHANGED_EVENT, handleSettingsChange);
+    return () => {
+      active = false;
+      window.removeEventListener(SIDEBAR_SETTINGS_CHANGED_EVENT, handleSettingsChange);
+    };
+  }, []);
+
   const pluginItems: NavItem[] = contributions.navigation
     .filter((item) => !item.location || item.location === 'sidebar')
     .flatMap((item) => {
@@ -64,6 +71,7 @@ export default function Navigation({ activeRoute, onChange, className = '' }: Na
         ? [{ id: `${item.pluginId}:${item.id}`, label: item.label, icon: Puzzle, route, pluginId: item.pluginId }]
         : [];
     });
+  const visibleItems: NavItem[] = [...CORE_NAV_ITEMS, ...pluginItems].filter((item) => !hiddenIds.includes(item.id));
   const activePluginRoute = pluginItems.some((item) => item.route === activeRoute);
   const navigateTo = (id: string, route: string) => {
     if (route === activeRoute) return;
@@ -73,48 +81,47 @@ export default function Navigation({ activeRoute, onChange, className = '' }: Na
   return (
     <nav className={`theme-navigation-chrome flex w-14 flex-col items-center gap-2 py-3 ${className}`}>
       <ScrollShadow hideScrollBar className="flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-x-hidden">
-          {[...items, ...pluginItems].map((item) => {
-            const isPlugin = item.icon === Puzzle;
-            const isActive = isPlugin
-              ? activeRoute === item.route
-              : !activePluginRoute && coreRouteActive(activeRoute, item.route);
-            const Icon = item.icon;
-            return (
-              <Button
-                key={item.id}
-                data-plugin-id={item.pluginId}
-                variant="ghost"
-                onPress={() => navigateTo(item.id, item.route)}
-                onMouseEnter={() => setHovered(item.id)}
-                onMouseLeave={() => setHovered(null)}
-                className={`
-                  group relative flex h-12 w-12 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-0 transition-all
-                  ${isActive ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:bg-surface-tertiary hover:text-foreground'}
-                `}
-                aria-label={item.label}
-              >
-                <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
-                <span className="text-[11px] leading-none">{item.label}</span>
-                {hovered === item.id && !isActive && (
-                  <span className="absolute left-full ml-2 rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md whitespace-nowrap">
-                    {item.label}
-                  </span>
-                )}
-              </Button>
-            );
-          })}
+        {visibleItems.map((item) => {
+          const isPlugin = item.icon === Puzzle;
+          const isActive = isPlugin
+            ? activeRoute === item.route
+            : !activePluginRoute && coreRouteActive(activeRoute, item.route);
+          const Icon = item.icon;
+          return (
+            <Button
+              key={item.id}
+              data-plugin-id={item.pluginId}
+              variant="ghost"
+              onPress={() => navigateTo(item.id, item.route)}
+              onMouseEnter={() => setHovered(item.id)}
+              onMouseLeave={() => setHovered(null)}
+              className={`group relative flex h-12 w-12 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0 py-0 transition-all ${isActive ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:bg-surface-tertiary hover:text-foreground'}`}
+              aria-label={item.label}
+            >
+              <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+              <span className="text-[11px] leading-none">{item.label}</span>
+              {hovered === item.id && !isActive && (
+                <span className="absolute left-full ml-2 whitespace-nowrap rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+                  {item.label}
+                </span>
+              )}
+            </Button>
+          );
+        })}
       </ScrollShadow>
 
       <div className="mt-auto flex flex-col items-center gap-2">
-        <Button
-          isIconOnly
-          variant="ghost"
-          className="h-11 w-11 rounded-lg text-muted-foreground hover:bg-surface-tertiary hover:text-foreground"
-          onPress={() => navigateTo('help', '/help')}
-          aria-label="帮助与反馈"
-        >
-          <LifeBuoy size={20} />
-        </Button>
+        {!hiddenIds.includes(HELP_NAV_ITEM.id) && (
+          <Button
+            isIconOnly
+            variant="ghost"
+            className="h-11 w-11 rounded-lg text-muted-foreground hover:bg-surface-tertiary hover:text-foreground"
+            onPress={() => navigateTo(HELP_NAV_ITEM.id, HELP_NAV_ITEM.route)}
+            aria-label={HELP_NAV_ITEM.label}
+          >
+            <HELP_NAV_ITEM.icon size={20} />
+          </Button>
+        )}
         <Button
           isIconOnly
           variant="ghost"

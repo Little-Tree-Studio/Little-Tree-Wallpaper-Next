@@ -41,6 +41,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "hide_on_close": True,
         "minimize_to_tray": True,
         "release_webview_on_close": False,
+        "sidebar": {"hidden": []},
     },
     "updates": {
         "auto_check": True,
@@ -131,6 +132,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_start": False,
         "script": {"enabled": False, "path": ""},
         "hide_on_launch": True,
+        "page": "/",
         "wallpaper_change": {
             "enabled": False,
             "list_ids": [],

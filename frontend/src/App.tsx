@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Route, Router, Switch } from 'wouter';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
@@ -29,7 +29,7 @@ import { ImageViewerProvider, ImageViewer } from '@/components/ImageViewer';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import BetaWarningModal from '@/components/BetaWarningModal';
 import BetaWatermark from '@/components/BetaWatermark';
-import { getBuildInfo } from '@/api/backend';
+import { getBuildInfo, getSettings } from '@/api/backend';
 import { Toast } from '@heroui/react';
 import { logError } from '@/lib/log';
 import { PluginProvider } from '@/plugins/context';
@@ -40,16 +40,35 @@ import TextContextMenu from '@/components/TextContextMenu';
 import WindowTitleBar from '@/components/WindowTitleBar';
 import ForcedUpdateBanner from '@/components/ForcedUpdateBanner';
 import FirstRunSetup from '@/components/FirstRunSetup';
-import { useHashRouterLocation, usePathname } from '@/lib/router';
+import { useHashRouterLocation, useNavigate, usePathname } from '@/lib/router';
 
 function AppContent() {
   const pathname = usePathname();
+  const navigate = useNavigate();
+  const currentPathRef = useRef(pathname);
+  const startupRedirectHandled = useRef(false);
   const isWallpaperRuntime = pathname === '/dynamic/runtime';
   const hideWatermark = new URLSearchParams(window.location.search).get('no_watermark') === '1';
   const windowTitle = pathname === '/dynamic/editor'
     ? '小组件编辑器'
     : pathname === '/image-editor' ? '图片编辑' : '小树壁纸 Next';
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    currentPathRef.current = pathname;
+  }, [pathname]);
+
+  useEffect(() => {
+    if (startupRedirectHandled.current || isWallpaperRuntime || pathname !== '/') return;
+    startupRedirectHandled.current = true;
+    getSettings()
+      .then((settings) => {
+        const startupPage = settings.startup?.page;
+        if (currentPathRef.current !== '/' || !startupPage || startupPage === '/') return;
+        if (startupPage.startsWith('/')) navigate(startupPage);
+      })
+      .catch(() => undefined);
+  }, [isWallpaperRuntime, navigate, pathname]);
 
   useEffect(() => {
     let cancelled = false;

@@ -134,52 +134,6 @@ export default function ImageViewer() {
   }, [isOpen, currentItem]);
 
   useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (contextMenu) {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setContextMenu(null);
-        }
-        return;
-      }
-      switch (e.key) {
-        case 'Escape':
-          closeViewer();
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          goPrev();
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          goNext();
-          break;
-        case '+':
-        case '=':
-          e.preventDefault();
-          setScale((s) => Math.min(s + 0.25, 5));
-          break;
-        case '-':
-          e.preventDefault();
-          setScale((s) => Math.max(s - 0.25, 0.25));
-          break;
-        case 'r':
-        case 'R':
-          setRotation((r) => (r + 90) % 360);
-          break;
-        case '0':
-          resetTransform();
-          break;
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, closeViewer, contextMenu, goNext, goPrev, resetTransform]);
-
-  useEffect(() => {
     if (!contextMenu) return;
     const frame = window.requestAnimationFrame(() => {
       const menu = contextMenuRef.current;
@@ -377,6 +331,78 @@ export default function ImageViewer() {
     navigate('/image-editor');
   };
 
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (contextMenu) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setContextMenu(null);
+        }
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && key === 'c') {
+        event.preventDefault();
+        if (!event.repeat) void (event.shiftKey ? handleCopyUrl() : handleCopyImage());
+        return;
+      }
+      if (modifier && key === 's') {
+        event.preventDefault();
+        if (!event.repeat) void handleSaveAs();
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      switch (key) {
+        case 'escape':
+          closeViewer();
+          break;
+        case 'arrowleft':
+          event.preventDefault();
+          goPrev();
+          break;
+        case 'arrowright':
+          event.preventDefault();
+          goNext();
+          break;
+        case '+':
+        case '=':
+          event.preventDefault();
+          setScale((value) => Math.min(value + 0.25, 5));
+          break;
+        case '-':
+          event.preventDefault();
+          setScale((value) => Math.max(value - 0.25, 0.25));
+          break;
+        case 'r':
+          handleRotate();
+          break;
+        case '0':
+          handleReset();
+          break;
+        case 'e':
+          if (!event.repeat) handleEdit();
+          break;
+        case 'f':
+          if (!event.repeat) void handleFavorite();
+          break;
+        case 'w':
+          if (!options.disableSetWallpaper && !event.repeat) void handleSetWallpaper();
+          break;
+        case 'o':
+          if (!event.repeat) void handleOpenWithSystem();
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, contextMenu, currentItem, favoriteId, options.disableSetWallpaper, closeViewer, goNext, goPrev]);
+
   const runContextMenuAction = (key: React.Key) => {
     const action = String(key);
     setContextMenu(null);
@@ -531,16 +557,16 @@ export default function ImageViewer() {
         >
           <ListBox aria-label={`${currentItem.title || '当前图片'} 操作`} selectionMode="none" onAction={runContextMenuAction}>
             <ListBox.Section>
-              <ListBox.Item id="edit" textValue="编辑图片"><SlidersHorizontal size={16} className="text-muted" /><Label>编辑图片</Label></ListBox.Item>
-              <ListBox.Item id="copy-image" textValue="复制图片"><ClipboardCopy size={16} className="text-muted" /><Label>复制图片</Label></ListBox.Item>
-              <ListBox.Item id="save-as" textValue="另存为"><Save size={16} className="text-muted" /><Label>另存为</Label></ListBox.Item>
-              <ListBox.Item id="favorite" textValue={favoriteId ? '取消收藏' : '收藏图片'}><Heart size={16} className={favoriteId ? 'text-danger' : 'text-muted'} fill={favoriteId ? 'currentColor' : 'none'} /><Label>{favoriteId ? '取消收藏' : '收藏图片'}</Label></ListBox.Item>
+              <ListBox.Item id="edit" textValue="编辑图片"><SlidersHorizontal size={16} className="text-muted" /><Label>编辑图片</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>E</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="copy-image" textValue="复制图片"><ClipboardCopy size={16} className="text-muted" /><Label>复制图片</Label><Kbd className="ms-auto" variant="light"><Kbd.Abbr keyValue="ctrl" /><Kbd.Content>C</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="save-as" textValue="另存为"><Save size={16} className="text-muted" /><Label>另存为</Label><Kbd className="ms-auto" variant="light"><Kbd.Abbr keyValue="ctrl" /><Kbd.Content>S</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="favorite" textValue={favoriteId ? '取消收藏' : '收藏图片'}><Heart size={16} className={favoriteId ? 'text-danger' : 'text-muted'} fill={favoriteId ? 'currentColor' : 'none'} /><Label>{favoriteId ? '取消收藏' : '收藏图片'}</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>F</Kbd.Content></Kbd></ListBox.Item>
             </ListBox.Section>
             <Separator />
             <ListBox.Section>
-              {!options.disableSetWallpaper && <ListBox.Item id="set-wallpaper" textValue="设为壁纸"><ImageIcon size={16} className="text-muted" /><Label>设为壁纸</Label></ListBox.Item>}
-              <ListBox.Item id="open-system" textValue="使用系统默认打开"><ExternalLink size={16} className="text-muted" /><Label>使用系统默认打开</Label></ListBox.Item>
-              <ListBox.Item id="copy-link" textValue="复制链接"><Copy size={16} className="text-muted" /><Label>复制链接</Label></ListBox.Item>
+              {!options.disableSetWallpaper && <ListBox.Item id="set-wallpaper" textValue="设为壁纸"><ImageIcon size={16} className="text-muted" /><Label>设为壁纸</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>W</Kbd.Content></Kbd></ListBox.Item>}
+              <ListBox.Item id="open-system" textValue="使用系统默认打开"><ExternalLink size={16} className="text-muted" /><Label>使用系统默认打开</Label><Kbd className="ms-auto" variant="light"><Kbd.Content>O</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="copy-link" textValue="复制链接"><Copy size={16} className="text-muted" /><Label>复制链接</Label><Kbd className="ms-auto" variant="light"><Kbd.Abbr keyValue="ctrl" /><Kbd.Abbr keyValue="shift" /><Kbd.Content>C</Kbd.Content></Kbd></ListBox.Item>
             </ListBox.Section>
             <Separator />
             <ListBox.Section>
@@ -601,23 +627,23 @@ export default function ImageViewer() {
         {!options.disableSetWallpaper && (
           <TooltipIconButton
             onPress={handleSetWallpaper}
-            ariaLabel="设为壁纸"
-            tooltip="设为壁纸"
+            ariaLabel="设为壁纸 (W)"
+            tooltip="设为壁纸 (W)"
           >
             <ImageIcon size={18} />
           </TooltipIconButton>
         )}
         <TooltipIconButton
           onPress={handleOpenWithSystem}
-          ariaLabel="使用系统默认打开"
-          tooltip="使用系统默认打开"
+          ariaLabel="使用系统默认打开 (O)"
+          tooltip="使用系统默认打开 (O)"
         >
           <ExternalLink size={18} />
         </TooltipIconButton>
           <TooltipIconButton
             onPress={handleFavorite}
-            ariaLabel={favoriteId ? '取消收藏' : '收藏'}
-            tooltip={favoriteId ? '取消收藏' : '收藏'}
+            ariaLabel={`${favoriteId ? '取消收藏' : '收藏'} (F)`}
+            tooltip={`${favoriteId ? '取消收藏' : '收藏'} (F)`}
             className={favoriteId
               ? 'rounded p-2 text-danger hover:bg-white/10 hover:text-danger'
               : undefined}
@@ -626,15 +652,15 @@ export default function ImageViewer() {
           </TooltipIconButton>
         <TooltipIconButton
           onPress={handleSaveAs}
-          ariaLabel="另存为"
-          tooltip="另存为"
+          ariaLabel="另存为 (Ctrl+S)"
+          tooltip="另存为 (Ctrl+S)"
         >
           <Save size={18} />
         </TooltipIconButton>
         <TooltipIconButton
           onPress={handleCopyImage}
-          ariaLabel="复制图片"
-          tooltip="复制图片"
+          ariaLabel="复制图片 (Ctrl+C)"
+          tooltip="复制图片 (Ctrl+C)"
         >
           <ClipboardCopy size={18} />
         </TooltipIconButton>

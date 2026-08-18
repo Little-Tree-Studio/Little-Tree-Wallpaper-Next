@@ -19,6 +19,8 @@ import StorageSettingsPanel from '@/components/StorageSettingsPanel';
 import ThemeSettingsPanel from '@/components/ThemeSettingsPanel';
 import PluginSettingsPanel from '@/components/PluginSettingsPanel';
 import { requestNavigation } from '@/lib/navigationGuard';
+import { SIDEBAR_NAV_ITEMS } from '@/lib/navigationItems';
+import { usePlugins } from '@/plugins/context';
 import type {
   AppSettings,
   AutostartStatus,
@@ -240,6 +242,8 @@ export default function Settings() {
               const s = await getSettings();
               setLocalSettings(s as AppSettings);
             }} />
+            <Separator />
+            <SidebarSettingsPanel settings={settings} onUpdate={update} />
             <Separator />
             <Section title="壁纸制作">
               <Row label="点击组件时显示快捷编辑面板"><Switch aria-label="点击组件时显示快捷编辑面板" isSelected={quickEditorEnabled} onChange={(enabled) => { setQuickEditorEnabled(enabled); localStorage.setItem('ltw:create:quick-editor-enabled', String(enabled)); window.dispatchEvent(new CustomEvent('ltw:quick-editor-setting', { detail: enabled })); }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
@@ -720,6 +724,62 @@ function HomePagePanel({ settings, onUpdate, onReload }: {
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
+    </Section>
+  );
+}
+
+function SidebarSettingsPanel({ settings, onUpdate }: { settings: AppSettings; onUpdate: (key: string, value: unknown) => void }) {
+  const { contributions } = usePlugins();
+  const hidden = settings.ui.sidebar?.hidden || [];
+  const startupPage = settings.startup.page || '/';
+  const pluginPages = [...contributions.pages, ...contributions.resource_pages];
+  const pluginItems = contributions.navigation
+    .filter((item) => !item.location || item.location === 'sidebar')
+    .flatMap((item) => {
+      const route = item.route ?? pluginPages.find((page) => (
+        page.pluginId === item.pluginId && page.id === item.page
+      ))?.route;
+      return route && !SIDEBAR_NAV_ITEMS.some((coreItem) => coreItem.route === route)
+        ? [{ id: `${item.pluginId}:${item.id}`, label: item.label, route }]
+        : [];
+    });
+  const sidebarItems = [...SIDEBAR_NAV_ITEMS, ...pluginItems];
+  const setHidden = (id: string, visible: boolean) => {
+    const next = visible ? hidden.filter((item) => item !== id) : [...new Set([...hidden, id])];
+    onUpdate('ui.sidebar.hidden', next);
+  };
+
+  return (
+    <Section title="左栏与启动页">
+      <p className="text-sm text-muted">隐藏不常用的功能，让左栏保持简洁。设置始终保留，隐藏的页面仍可通过其他页面链接或地址访问。</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {sidebarItems.map((item) => (
+          <Row key={item.id} label={item.label}>
+            <Switch aria-label={`显示${item.label}`} isSelected={!hidden.includes(item.id)} onChange={(visible) => setHidden(item.id, visible)}>
+              <Switch.Control><Switch.Thumb /></Switch.Control>
+            </Switch>
+          </Row>
+        ))}
+      </div>
+      <Row label="应用启动时进入">
+        <ComboBox
+          aria-label="应用启动时进入的页面"
+          className="w-full sm:w-48"
+          selectedKey={sidebarItems.some((item) => item.route === startupPage) ? startupPage : '/'}
+          onSelectionChange={(key) => {
+            const next = String(key);
+            if (sidebarItems.some((item) => item.route === next)) onUpdate('startup.page', next);
+          }}
+        >
+          <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+          <ComboBox.Popover>
+            <ListBox>
+              {sidebarItems.map((item) => <ListBox.Item key={item.route} id={item.route} textValue={item.label}>{item.label}</ListBox.Item>)}
+            </ListBox>
+          </ComboBox.Popover>
+        </ComboBox>
+      </Row>
+      <p className="text-xs text-muted">仅在应用以默认首页启动时生效，打开指定链接或独立窗口时不会被覆盖。</p>
     </Section>
   );
 }

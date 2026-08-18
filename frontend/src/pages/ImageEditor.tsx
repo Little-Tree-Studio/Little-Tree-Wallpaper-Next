@@ -4,13 +4,16 @@ import {
   Spinner, Switch, Tabs, Tooltip, toast,
 } from '@heroui/react';
 import {
-  ArrowLeft, Download, Eye, EyeOff, FlipHorizontal2, FlipVertical2,
+  ArrowLeft, ClipboardCopy, Download, Eye, EyeOff, FlipHorizontal2, FlipVertical2,
   Check, Crop, Focus, FolderOpen, ImagePlus, Lock, Redo2, RefreshCcw, RotateCcw, RotateCw,
-  Save, SlidersHorizontal, Undo2, Unlock, X, ZoomIn, ZoomOut,
+  Heart, Image as ImageIcon, Save, SlidersHorizontal, Undo2, Unlock, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { useNavigate } from '@/lib/router';
 import { getImageEditorSession, type ImageEditorSession } from '@/lib/imageEditorSession';
-import { fetchEditableImage, localFileUrl, saveBlobAs, saveBlobToDownloads, selectLocalImage } from '@/api/backend';
+import {
+  addFavorite, copyImageToClipboard, fetchEditableImage, localFileUrl, notifyFavoritesChanged,
+  saveBlobAs, saveBlobToDownloads, selectLocalImage, setWallpaperWithProgress,
+} from '@/api/backend';
 import { safeNameForFile } from '@/lib/download';
 
 interface ImageAdjustments {
@@ -710,18 +713,82 @@ export default function ImageEditor() {
     });
   };
 
+  const editedFilename = () => {
+    const baseName = safeNameForFile(session?.title || 'edited-image', 'edited-image').replace(/\.[^.]+$/, '');
+    return `${baseName}-edited.${exportFormat === 'jpeg' ? 'jpg' : exportFormat}`;
+  };
+
+  const saveEditedBlobToDownloads = async (blob: Blob): Promise<string> => {
+    const path = await saveBlobToDownloads(blob, editedFilename());
+    if (!path) throw new Error('保存编辑后的图片失败');
+    return path;
+  };
+
   const exportImage = async (toDownloads: boolean) => {
     setExporting(true);
     try {
       const blob = await createExportBlob();
-      const baseName = safeNameForFile(session?.title || 'edited-image', 'edited-image').replace(/\.[^.]+$/, '');
-      const filename = `${baseName}-edited.${exportFormat === 'jpeg' ? 'jpg' : exportFormat}`;
       const path = toDownloads
-        ? await saveBlobToDownloads(blob, filename)
-        : await saveBlobAs(blob, filename);
+        ? await saveBlobToDownloads(blob, editedFilename())
+        : await saveBlobAs(blob, editedFilename());
       if (path) toast.success(toDownloads ? '已保存到下载目录' : '图片已导出', { description: path, timeout: 4000 });
     } catch (error) {
       toast.danger('导出失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const favoriteEditedImage = async () => {
+    if (!canEdit || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await createExportBlob();
+      const path = await saveEditedBlobToDownloads(blob);
+      await addFavorite({
+        folder_id: 'default',
+        title: safeNameForFile(session?.title || 'edited-image', 'edited-image').replace(/\.[^.]+$/, '') + '-edited',
+        description: session?.description || '由图片编辑生成的图片',
+        tags: session?.tags || [],
+        preview_url: localFileUrl(path),
+        local_path: path,
+        source_type: 'edited',
+        source_name: '图片编辑',
+        source_url: localFileUrl(path),
+        source_page_url: session?.source_page_url,
+      });
+      notifyFavoritesChanged();
+      toast.success('已收藏编辑后的图片', { timeout: 3000 });
+    } catch (error) {
+      toast.danger('收藏失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const setEditedImageAsWallpaper = async () => {
+    if (!canEdit || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await createExportBlob();
+      const path = await saveEditedBlobToDownloads(blob);
+      await setWallpaperWithProgress('', editedFilename(), path);
+    } catch (error) {
+      toast.danger('设为壁纸失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const copyEditedImage = async () => {
+    if (!canEdit || exporting) return;
+    setExporting(true);
+    try {
+      const copied = await copyImageToClipboard(await createExportBlob());
+      if (!copied) throw new Error('系统剪贴板不可用');
+      toast.success('已复制编辑后的图片', { timeout: 3000 });
+    } catch (error) {
+      toast.danger('复制失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
     } finally {
       setExporting(false);
     }
@@ -765,6 +832,9 @@ export default function ImageEditor() {
     else if (action === 'compare') setShowOriginal((value) => !value);
     else if (action === 'reset') resetAll();
     else if (action === 'export') void exportImage(false);
+    else if (action === 'favorite') void favoriteEditedImage();
+    else if (action === 'set-wallpaper') void setEditedImageAsWallpaper();
+    else if (action === 'copy-image') void copyEditedImage();
   };
 
   useEffect(() => {
@@ -1079,6 +1149,13 @@ export default function ImageEditor() {
               <Card variant="secondary" className="gap-1 p-3"><div className="text-xs font-medium">输出信息</div><div className="text-xs text-muted">{editorState.width} × {editorState.height} px · {exportFormat.toUpperCase()}</div></Card>
               <Button fullWidth onPress={() => void exportImage(false)} isPending={exporting} isDisabled={!canEdit}><Save size={16} />另存为</Button>
               <Button fullWidth variant="secondary" onPress={() => void exportImage(true)} isPending={exporting} isDisabled={!canEdit}><Download size={16} />保存到下载目录</Button>
+              <Separator />
+              <div className="text-xs font-semibold tracking-wide text-muted">完成后操作</div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:grid-cols-1">
+                <Button fullWidth variant="secondary" onPress={() => void favoriteEditedImage()} isPending={exporting} isDisabled={!canEdit}><Heart size={16} />收藏</Button>
+                <Button fullWidth variant="secondary" onPress={() => void setEditedImageAsWallpaper()} isPending={exporting} isDisabled={!canEdit}><ImageIcon size={16} />设为壁纸</Button>
+                <Button fullWidth variant="secondary" onPress={() => void copyEditedImage()} isPending={exporting} isDisabled={!canEdit}><ClipboardCopy size={16} />复制图片</Button>
+              </div>
             </Tabs.Panel>
           </Tabs>
         </aside>
@@ -1117,6 +1194,9 @@ export default function ImageEditor() {
               <ListBox.Item id="compare" textValue={showOriginal ? '查看效果' : '对比原图'}><Eye size={16} className="text-muted" /><Label>{showOriginal ? '查看效果' : '对比原图'}</Label><Kbd className="ms-auto" variant="light"><Kbd.Abbr keyValue="space" /></Kbd></ListBox.Item>
               <ListBox.Item id="reset" textValue="重置全部调整"><RefreshCcw size={16} className="text-muted" /><Label>重置全部调整</Label></ListBox.Item>
               <ListBox.Item id="export" textValue="导出图片"><Download size={16} className="text-muted" /><Label>导出图片</Label><Kbd className="ms-auto" variant="light"><Kbd.Abbr keyValue="ctrl" /><Kbd.Content>S</Kbd.Content></Kbd></ListBox.Item>
+              <ListBox.Item id="favorite" textValue="收藏编辑后的图片"><Heart size={16} className="text-muted" /><Label>收藏编辑后的图片</Label></ListBox.Item>
+              <ListBox.Item id="set-wallpaper" textValue="将编辑后的图片设为壁纸"><ImageIcon size={16} className="text-muted" /><Label>设为壁纸</Label></ListBox.Item>
+              <ListBox.Item id="copy-image" textValue="复制编辑后的图片"><ClipboardCopy size={16} className="text-muted" /><Label>复制图片</Label></ListBox.Item>
             </ListBox.Section>
           </ListBox>
         </div>
