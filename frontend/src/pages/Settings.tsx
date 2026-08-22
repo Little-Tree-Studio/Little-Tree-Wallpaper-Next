@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import type { ElementType, ReactNode } from 'react';
 import { useParams } from 'wouter';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -12,6 +13,9 @@ import {
   Plus, Trash2, Wand2, ChevronDown, Heart, Package,
   Copyright, FileText, Shield, ExternalLink, Pencil, Upload, Download, RefreshCw,
   CheckCircle2, AlertCircle, CalendarDays,
+  Settings2, Image as ImageIcon, Shapes, HardDrive, Globe, Palette, Puzzle, Info,
+  AppWindow, Power, MessageSquareQuote, PanelLeft, Frame, Gauge, Camera, History, Layers,
+  ShieldAlert, Tags, Store, Sparkles, ShieldCheck, Server,
 } from 'lucide-react';
 import { checkForUpdates, getSettings, setSetting, getAutostartStatus, setAutostartEnabled, getStorageOverview, openUrl, importCustomSentences, exportCustomSentences, getAppInfo, getBuildInfo, notifyForcedUpdateDetected, getUpdateDownloadStatus, installDownloadedUpdate, startUpdateDownload } from '@/api/backend';
 import type { UpdateCheckResult, UpdateDownloadStatus } from '@/api/backend';
@@ -19,7 +23,7 @@ import StorageSettingsPanel from '@/components/StorageSettingsPanel';
 import ThemeSettingsPanel from '@/components/ThemeSettingsPanel';
 import PluginSettingsPanel from '@/components/PluginSettingsPanel';
 import { requestNavigation } from '@/lib/navigationGuard';
-import { SIDEBAR_NAV_ITEMS } from '@/lib/navigationItems';
+import { notifySidebarSettingsChanged, SIDEBAR_NAV_ITEMS } from '@/lib/navigationItems';
 import { usePlugins } from '@/plugins/context';
 import type {
   AppSettings,
@@ -129,10 +133,17 @@ export default function Settings() {
     if (!settings) return;
     const previousValue = getNestedValue(settings, key);
     setLocalSettings((currentSettings) => currentSettings ? setNestedValue(currentSettings, key, value) : currentSettings);
+    if (key === 'ui.sidebar.hidden' && Array.isArray(value)) {
+      notifySidebarSettingsChanged(value.filter((item): item is string => typeof item === 'string'));
+    }
     void setSetting(key, value).catch((error: unknown) => {
       setLocalSettings((currentSettings) => {
         if (!currentSettings || !Object.is(getNestedValue(currentSettings, key), value)) return currentSettings;
-        return setNestedValue(currentSettings, key, previousValue);
+        const restored = setNestedValue(currentSettings, key, previousValue);
+        if (key === 'ui.sidebar.hidden' && Array.isArray(previousValue)) {
+          notifySidebarSettingsChanged(previousValue.filter((item): item is string => typeof item === 'string'));
+        }
+        return restored;
       });
       toast.danger('设置保存失败', {
         description: error instanceof Error ? error.message : '请稍后重试',
@@ -198,30 +209,35 @@ export default function Settings() {
       >
         <Tabs.ListContainer>
           <Tabs.List aria-label="设置分类">
-            <Tabs.Tab id="general"><span className="whitespace-nowrap">通用</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="wallpaper"><span className="whitespace-nowrap">壁纸</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="content"><span className="whitespace-nowrap">内容</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="storage"><span className="whitespace-nowrap">存储</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="generate"><span className="whitespace-nowrap">生成</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="sniff"><span className="whitespace-nowrap">嗅探</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="appearance"><span className="whitespace-nowrap">外观</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="plugins"><span className="whitespace-nowrap">插件</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="updates"><span className="whitespace-nowrap">更新</span><Tabs.Indicator /></Tabs.Tab>
-            <Tabs.Tab id="about"><span className="whitespace-nowrap">关于</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="general"><Settings2 size={14} className="shrink-0" /><span className="whitespace-nowrap">通用</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="wallpaper"><ImageIcon size={14} className="shrink-0" /><span className="whitespace-nowrap">壁纸</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="content"><Shapes size={14} className="shrink-0" /><span className="whitespace-nowrap">内容</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="storage"><HardDrive size={14} className="shrink-0" /><span className="whitespace-nowrap">存储</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="generate"><Wand2 size={14} className="shrink-0" /><span className="whitespace-nowrap">生成</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="sniff"><Globe size={14} className="shrink-0" /><span className="whitespace-nowrap">嗅探</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="appearance"><Palette size={14} className="shrink-0" /><span className="whitespace-nowrap">外观</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="plugins"><Puzzle size={14} className="shrink-0" /><span className="whitespace-nowrap">插件</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="updates"><RefreshCw size={14} className="shrink-0" /><span className="whitespace-nowrap">更新</span><Tabs.Indicator /></Tabs.Tab>
+            <Tabs.Tab id="about"><Info size={14} className="shrink-0" /><span className="whitespace-nowrap">关于</span><Tabs.Indicator /></Tabs.Tab>
           </Tabs.List>
         </Tabs.ListContainer>
 
         <Tabs.Panel id="general">
           <Card className="space-y-4 p-4">
-            <Section title="窗口与托盘">
-              <Row label="关闭主窗口时隐藏到托盘"><Switch aria-label="关闭主窗口时隐藏到托盘" isSelected={settings.ui.hide_on_close} onChange={(v) => update('ui.hide_on_close', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="启用系统托盘"><Switch aria-label="启用系统托盘" isSelected={settings.ui.minimize_to_tray} onChange={(v) => update('ui.minimize_to_tray', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="关闭时释放主界面内存"><Switch aria-label="关闭时释放主界面内存" isSelected={settings.ui.release_webview_on_close} onChange={(v) => update('ui.release_webview_on_close', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <p className="text-xs text-muted">释放主界面后，自动化和动态壁纸继续在后台运行；从托盘打开时会重新创建界面。托盘开关重启程序后生效。</p>
+            <Section title="窗口与托盘" icon={AppWindow} description="控制主窗口的关闭行为与系统托盘。">
+              <Row label="关闭主窗口时隐藏到托盘" description="点击关闭按钮时仅隐藏窗口，应用继续在后台运行。">
+                <Switch aria-label="关闭主窗口时隐藏到托盘" isSelected={settings.ui.hide_on_close} onChange={(v) => update('ui.hide_on_close', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="启用系统托盘" description="在任务栏通知区域显示托盘图标，重启程序后生效。">
+                <Switch aria-label="启用系统托盘" isSelected={settings.ui.minimize_to_tray} onChange={(v) => update('ui.minimize_to_tray', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="关闭时释放主界面内存" description="释放后自动化和动态壁纸继续运行，从托盘打开时会重新创建界面。">
+                <Switch aria-label="关闭时释放主界面内存" isSelected={settings.ui.release_webview_on_close} onChange={(v) => update('ui.release_webview_on_close', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
             </Section>
             <Separator />
-            <Section title="开机与后台">
-              <Row label="开机自启动">
+            <Section title="开机与后台" icon={Power} description="登录系统时的启动行为。">
+              <Row label="开机自启动" description="当前用户登录后自动运行本应用。">
                 <Switch
                   aria-label="开机自启动"
                   isSelected={autostartStatus?.enabled ?? false}
@@ -229,13 +245,14 @@ export default function Settings() {
                   onChange={(enabled) => void updateAutostart(enabled)}
                 ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
               </Row>
-              <Row label="自启动时隐藏主界面"><Switch aria-label="自启动时隐藏主界面" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="自启动时隐藏主界面" description="需要系统托盘可用；如果托盘未启用或启动失败，主界面会自动显示。">
+                <Switch aria-label="自启动时隐藏主界面" isSelected={settings.startup.hide_on_launch} onChange={(v) => update('startup.hide_on_launch', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
                 {autostartStatus?.platform && <Chip size="sm" variant="soft">{autostartStatus.platform}</Chip>}
                 {autostartStatus?.mechanism && <span>通过 {autostartStatus.mechanism} 注册，仅对当前用户生效。</span>}
               </div>
               {autostartStatus?.reason && <p className="text-xs text-warning">{autostartStatus.reason}</p>}
-              <p className="text-xs text-muted">隐藏启动需要系统托盘可用；如果托盘未启用或启动失败，主界面会自动显示。</p>
             </Section>
             <Separator />
             <HomePagePanel settings={settings} onUpdate={update} onReload={async () => {
@@ -245,11 +262,17 @@ export default function Settings() {
             <Separator />
             <SidebarSettingsPanel settings={settings} onUpdate={update} />
             <Separator />
-            <Section title="壁纸制作">
-              <Row label="点击组件时显示快捷编辑面板"><Switch aria-label="点击组件时显示快捷编辑面板" isSelected={quickEditorEnabled} onChange={(enabled) => { setQuickEditorEnabled(enabled); localStorage.setItem('ltw:create:quick-editor-enabled', String(enabled)); window.dispatchEvent(new CustomEvent('ltw:quick-editor-setting', { detail: enabled })); }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="默认显示辅助网格"><Switch aria-label="默认显示辅助网格" isSelected={settings.create.show_grid} onChange={(v) => update('create.show_grid', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="默认启用智能吸附"><Switch aria-label="默认启用智能吸附" isSelected={settings.create.snap_to_guides} onChange={(v) => update('create.snap_to_guides', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="默认导出格式">
+            <Section title="壁纸制作" icon={Frame} description="制作页的默认编辑行为与导出选项。">
+              <Row label="点击组件时显示快捷编辑面板" description="在画布中选中组件时，自动弹出常用属性面板。">
+                <Switch aria-label="点击组件时显示快捷编辑面板" isSelected={quickEditorEnabled} onChange={(enabled) => { setQuickEditorEnabled(enabled); localStorage.setItem('ltw:create:quick-editor-enabled', String(enabled)); window.dispatchEvent(new CustomEvent('ltw:quick-editor-setting', { detail: enabled })); }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="默认显示辅助网格" description="新建画布时显示对齐网格，便于定位组件。">
+                <Switch aria-label="默认显示辅助网格" isSelected={settings.create.show_grid} onChange={(v) => update('create.show_grid', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="默认启用智能吸附" description="拖动组件时自动吸附到边缘和参考线。">
+                <Switch aria-label="默认启用智能吸附" isSelected={settings.create.snap_to_guides} onChange={(v) => update('create.snap_to_guides', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="默认导出格式" description="保存壁纸时使用的文件格式。">
                 <ComboBox aria-label="默认导出格式" className="w-full sm:w-40" selectedKey={settings.create.export_format} onSelectionChange={(key) => update('create.export_format', String(key))}>
                   <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
                   <ComboBox.Popover><ListBox>
@@ -259,7 +282,7 @@ export default function Settings() {
                 </ComboBox>
               </Row>
               {settings.create.export_format === 'jpeg' && (
-                <Row label="JPEG 默认质量">
+                <Row label="JPEG 默认质量" description="40-100，数值越高画质越好、文件越大。">
                   <Input aria-label="JPEG 默认质量" type="number" min={40} max={100} className="w-full sm:w-28" value={String(settings.create.jpeg_quality)} onChange={(event) => update('create.jpeg_quality', Math.max(40, Math.min(100, Number(event.target.value) || 40)))} />
                 </Row>
               )}
@@ -269,8 +292,7 @@ export default function Settings() {
 
         <Tabs.Panel id="wallpaper">
           <Card className="space-y-4 p-4">
-            <Section title="动态壁纸性能">
-              <p className="text-sm text-muted">检测到以下系统状态时，自动调整动态壁纸的运行方式。</p>
+            <Section title="动态壁纸性能" icon={Gauge} description="检测到以下系统状态时，自动调整动态壁纸的运行方式。">
               <PerformanceActionRow label="其他应用程序成为焦点时" value={settings.wallpaper.dynamic.performance.other_application_focused} onChange={(value) => update('wallpaper.dynamic.performance.other_application_focused', value)} />
               <PerformanceActionRow label="其他应用程序最大化时" value={settings.wallpaper.dynamic.performance.other_application_maximized} onChange={(value) => update('wallpaper.dynamic.performance.other_application_maximized', value)} />
               <PerformanceActionRow label="其他应用程序全屏时" value={settings.wallpaper.dynamic.performance.other_application_fullscreen} onChange={(value) => update('wallpaper.dynamic.performance.other_application_fullscreen', value)} />
@@ -279,50 +301,76 @@ export default function Settings() {
               <p className="text-xs text-muted">多个条件同时满足时，优先级为停止、暂停、静音、保持运行。停止会释放动态壁纸资源，条件解除后自动重新创建。</p>
             </Section>
             <Separator />
-            <Section title="退出后保留画面">
-              <Row label="同步动态壁纸截图">
+            <Section title="退出后保留画面" icon={Camera} description="程序退出后，桌面上仍能看到最近一次的壁纸画面。">
+              <Row label="同步动态壁纸截图" description="开启后每 5 分钟将当前动态壁纸画面设为 Windows 静态壁纸；图片轮播每次切换后也会立即同步。">
                 <Switch
                   aria-label="同步动态壁纸截图"
                   isSelected={settings.wallpaper.dynamic.static_snapshot.enabled}
                   onChange={(enabled) => update('wallpaper.dynamic.static_snapshot.enabled', enabled)}
                 ><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
               </Row>
-              <p className="text-xs text-muted">开启后每 5 分钟将当前动态壁纸画面设为 Windows 静态壁纸；图片轮播每次切换后也会立即同步。周期固定，程序退出后仍可看到最近一次画面。</p>
             </Section>
             <Separator />
-            <Section title="历史记录">
-              <Row label="最多保留记录">
+            <Section title="历史记录" icon={History} description="记录壁纸的更换历史，便于回溯和恢复。">
+              <Row label="记录模式" description="自动记录会定期读取系统当前壁纸，应用内外的更换都会写入；手动记录仅保存应用内设置和首页的「记录」操作。">
+                <ComboBox aria-label="壁纸历史记录模式" className="w-full sm:w-40" selectedKey={settings.wallpaper.history.record_mode ?? 'manual'} onSelectionChange={(key) => update('wallpaper.history.record_mode', String(key))}>
+                  <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+                  <ComboBox.Popover><ListBox>
+                    <ListBox.Item id="auto" textValue="自动记录">自动记录</ListBox.Item>
+                    <ListBox.Item id="manual" textValue="手动记录">手动记录</ListBox.Item>
+                  </ListBox></ComboBox.Popover>
+                </ComboBox>
+              </Row>
+              {(settings.wallpaper.history.record_mode ?? 'manual') === 'auto' && (
+                <>
+                  <Row label="检测间隔 (秒)" description="每隔多久读取一次系统壁纸。">
+                    <Input aria-label="壁纸更换检测间隔秒数" type="number" min={5} max={3600} className="w-full sm:w-28" value={String(settings.wallpaper.history.auto_record_interval_seconds ?? 30)} onChange={(event) => update('wallpaper.history.auto_record_interval_seconds', Math.max(5, Math.min(3600, Number(event.target.value) || 30)))} />
+                  </Row>
+                  <Row label="记录动态壁纸画面" description="动态壁纸同步到桌面的静态画面也会记入历史（约每 5 分钟一条）。">
+                    <Switch aria-label="记录动态壁纸设置的壁纸" isSelected={settings.wallpaper.history.record_dynamic_snapshot ?? false} onChange={(v) => update('wallpaper.history.record_dynamic_snapshot', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+                  </Row>
+                </>
+              )}
+              <Row label="最多保留记录" description="超出后自动删除最早的记录。">
                 <Input aria-label="最多保留壁纸历史记录" type="number" min={10} max={2000} className="w-full sm:w-28" value={String(settings.wallpaper.history.max_items)} onChange={(event) => update('wallpaper.history.max_items', Math.max(10, Math.min(2000, Number(event.target.value) || 10)))} />
               </Row>
-              <Row label="加载预览图数量">
+              <Row label="加载预览图数量" description="历史页面预先加载缩略图的条数。">
                 <Input aria-label="壁纸历史预览图数量" type="number" min={0} max={settings.wallpaper.history.max_items} className="w-full sm:w-28" value={String(settings.wallpaper.history.preview_items)} onChange={(event) => update('wallpaper.history.preview_items', Math.max(0, Math.min(settings.wallpaper.history.max_items, Number(event.target.value) || 0)))} />
               </Row>
             </Section>
             <Separator />
-            <Section title="壁纸源">
-              <Row label="合并显示"><Switch aria-label="合并显示" isSelected={settings.wallpaper.sources?.merge_display ?? true} onChange={(v) => update('wallpaper.sources.merge_display', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            <Section title="壁纸源" icon={Layers} description="壁纸源页面的内容组织方式。">
+              <Row label="合并显示" description="开启后所有壁纸源合并为一个列表浏览，关闭后按来源分组查看。">
+                <Switch aria-label="合并显示" isSelected={settings.wallpaper.sources?.merge_display ?? true} onChange={(v) => update('wallpaper.sources.merge_display', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
             </Section>
           </Card>
         </Tabs.Panel>
 
         <Tabs.Panel id="content">
           <Card className="space-y-4 p-4">
-            <Row label="显示 NSFW 内容"><Switch aria-label="显示 NSFW 内容" isSelected={settings.wallpaper.allow_NSFW} onChange={(v) => {
-              if (v) {
-                setNsfwConfirmAdult(false);
-                setNsfwConfirmLegal(false);
-                setNsfwDialogOpen(true);
-              } else {
-                update('wallpaper.allow_NSFW', false);
-              }
-            }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-            <Separator />
-            <Section title="Pixiv">
-              <Row label="收藏时添加作品标签"><Switch aria-label="Pixiv 收藏时添加作品标签" isSelected={settings.wallpaper.pixiv?.include_artwork_tags_in_favorites ?? true} onChange={(v) => update('wallpaper.pixiv.include_artwork_tags_in_favorites', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+            <Section title="内容安全" icon={ShieldAlert} description="控制成人内容的可见性。">
+              <Row label="显示 NSFW 内容" description="开启后，壁纸源中标记为包含 NSFW 的 API 将会显示并可用。">
+                <Switch aria-label="显示 NSFW 内容" isSelected={settings.wallpaper.allow_NSFW} onChange={(v) => {
+                  if (v) {
+                    setNsfwConfirmAdult(false);
+                    setNsfwConfirmLegal(false);
+                    setNsfwDialogOpen(true);
+                  } else {
+                    update('wallpaper.allow_NSFW', false);
+                  }
+                }}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
             </Section>
             <Separator />
-            <Section title="IntelliMarkets">
-              <Row label="镜像偏好">
+            <Section title="Pixiv" icon={Tags} description="插画社区 Pixiv 的收藏行为。">
+              <Row label="收藏时添加作品标签" description="收藏作品时，将作品自带的标签一并保存到收藏信息。">
+                <Switch aria-label="Pixiv 收藏时添加作品标签" isSelected={settings.wallpaper.pixiv?.include_artwork_tags_in_favorites ?? true} onChange={(v) => update('wallpaper.pixiv.include_artwork_tags_in_favorites', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+            </Section>
+            <Separator />
+            <Section title="IntelliMarkets" icon={Store} description="壁纸源市场的下载与连接偏好。">
+              <Row label="镜像偏好" description="选择获取壁纸源清单的镜像，「自动」会挑选最快的可用镜像。">
                 <ComboBox aria-label="IntelliMarkets 镜像偏好" className="w-full sm:w-40" selectedKey={settings.im?.mirror_preference || 'auto'} onSelectionChange={(key) => update('im.mirror_preference', String(key))}>
                   <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
                   <ComboBox.Popover><ListBox>
@@ -333,7 +381,9 @@ export default function Settings() {
                   </ListBox></ComboBox.Popover>
                 </ComboBox>
               </Row>
-              <Row label="自动检查源可用性"><Switch aria-label="自动检查 IntelliMarkets 源可用性" isSelected={settings.im?.auto_health_check !== false} onChange={(v) => update('im.auto_health_check', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+              <Row label="自动检查源可用性" description="定期检测已安装壁纸源是否可访问，结果展示在市场中。">
+                <Switch aria-label="自动检查 IntelliMarkets 源可用性" isSelected={settings.im?.auto_health_check !== false} onChange={(v) => update('im.auto_health_check', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
             </Section>
           </Card>
         </Tabs.Panel>
@@ -354,17 +404,31 @@ export default function Settings() {
 
         <Tabs.Panel id="sniff">
           <Card className="space-y-4 p-4">
-            <Section title="网页嗅探">
-              <Row label="User-Agent"><Input fullWidth value={settings.sniff.user_agent} onChange={(e) => update('sniff.user_agent', e.target.value)} /></Row>
-              <Row label="默认 Referer"><Input fullWidth value={settings.sniff.referer} onChange={(e) => update('sniff.referer', e.target.value)} /></Row>
-              <Row label="自动使用输入链接作为 Referer"><Switch aria-label="自动使用输入链接作为 Referer" isSelected={settings.sniff.use_source_as_referer} onChange={(v) => update('sniff.use_source_as_referer', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-              <Row label="请求超时 (秒)"><Input aria-label="嗅探请求超时秒数" type="number" min={5} max={120} className="w-full sm:w-28" value={String(settings.sniff.timeout_seconds)} onChange={(e) => update('sniff.timeout_seconds', Math.max(5, Math.min(120, Number(e.target.value) || 5)))} /></Row>
-              <Row label="单次最多提取"><Input aria-label="单次最多提取图片数" type="number" min={20} max={2000} className="w-full sm:w-28" value={String(settings.sniff.max_results)} onChange={(e) => update('sniff.max_results', Math.max(20, Math.min(2000, Number(e.target.value) || 20)))} /></Row>
+            <Section title="网页嗅探" icon={Globe} description="从网页中提取图片时的请求行为。">
+              <Row label="User-Agent" description="抓取网页时使用的浏览器标识，部分站点依赖它返回内容。">
+                <Input fullWidth aria-label="嗅探 User-Agent" value={settings.sniff.user_agent} onChange={(e) => update('sniff.user_agent', e.target.value)} />
+              </Row>
+              <Row label="默认 Referer" description="部分图床要求携带来源页才会返回图片。">
+                <Input fullWidth aria-label="嗅探默认 Referer" value={settings.sniff.referer} onChange={(e) => update('sniff.referer', e.target.value)} />
+              </Row>
+              <Row label="自动使用输入链接作为 Referer" description="未手动指定 Referer 时，自动以输入的链接作为来源。">
+                <Switch aria-label="自动使用输入链接作为 Referer" isSelected={settings.sniff.use_source_as_referer} onChange={(v) => update('sniff.use_source_as_referer', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+              </Row>
+              <Row label="请求超时 (秒)" description="超过该时间的页面请求会被中断。">
+                <Input aria-label="嗅探请求超时秒数" type="number" min={5} max={120} className="w-full sm:w-28" value={String(settings.sniff.timeout_seconds)} onChange={(e) => update('sniff.timeout_seconds', Math.max(5, Math.min(120, Number(e.target.value) || 5)))} />
+              </Row>
+              <Row label="单次最多提取" description="单次嗅探最多返回的图片数量。">
+                <Input aria-label="单次最多提取图片数" type="number" min={20} max={2000} className="w-full sm:w-28" value={String(settings.sniff.max_results)} onChange={(e) => update('sniff.max_results', Math.max(20, Math.min(2000, Number(e.target.value) || 20)))} />
+              </Row>
             </Section>
             <Separator />
-            <Section title="图片下载">
-              <Row label="下载超时 (秒)"><Input aria-label="图片下载超时秒数" type="number" min={10} max={600} className="w-full sm:w-28" value={String(settings.download.timeout_seconds)} onChange={(e) => update('download.timeout_seconds', Math.max(10, Math.min(600, Number(e.target.value) || 10)))} /></Row>
-              <Row label="批量下载并发数"><Input aria-label="批量下载并发数" type="number" min={1} max={8} className="w-full sm:w-28" value={String(settings.download.concurrent_tasks)} onChange={(e) => update('download.concurrent_tasks', Math.max(1, Math.min(8, Number(e.target.value) || 1)))} /></Row>
+            <Section title="图片下载" icon={Download} description="嗅探结果与批量下载的传输设置。">
+              <Row label="下载超时 (秒)" description="单个文件允许的最长下载时间。">
+                <Input aria-label="图片下载超时秒数" type="number" min={10} max={600} className="w-full sm:w-28" value={String(settings.download.timeout_seconds)} onChange={(e) => update('download.timeout_seconds', Math.max(10, Math.min(600, Number(e.target.value) || 10)))} />
+              </Row>
+              <Row label="批量下载并发数" description="同时进行的下载任务数，过高可能触发站点限流。">
+                <Input aria-label="批量下载并发数" type="number" min={1} max={8} className="w-full sm:w-28" value={String(settings.download.concurrent_tasks)} onChange={(e) => update('download.concurrent_tasks', Math.max(1, Math.min(8, Number(e.target.value) || 1)))} />
+              </Row>
             </Section>
           </Card>
         </Tabs.Panel>
@@ -551,8 +615,8 @@ function HomePagePanel({ settings, onUpdate, onReload }: {
   };
 
   return (
-    <Section title="主页语句">
-      <Row label="语句来源">
+    <Section title="主页语句" icon={MessageSquareQuote} description="首页展示的一句话及其来源。">
+      <Row label="语句来源" description="使用一言、诏预在线接口，或自定义语句库。">
         <ComboBox
           className="w-40"
           selectedKey={hp.source}
@@ -573,7 +637,7 @@ function HomePagePanel({ settings, onUpdate, onReload }: {
       </Row>
       <Row label="显示作者"><Switch aria-label="显示作者" isSelected={hp.show_author} onChange={(v) => onUpdate('home_page.show_author', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
       <Row label="显示来源"><Switch aria-label="显示来源" isSelected={hp.show_source} onChange={(v) => onUpdate('home_page.show_source', v)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
-      <Row label="当前壁纸刷新间隔 (秒)">
+      <Row label="当前壁纸刷新间隔 (秒)" description="首页壁纸预览自动刷新的周期。">
         <Input aria-label="当前壁纸刷新间隔秒数" type="number" min={10} max={600} className="w-full sm:w-28" value={String(hp.wallpaper_refresh_seconds)} onChange={(event) => onUpdate('home_page.wallpaper_refresh_seconds', Math.max(10, Math.min(600, Number(event.target.value) || 10)))} />
       </Row>
 
@@ -750,8 +814,7 @@ function SidebarSettingsPanel({ settings, onUpdate }: { settings: AppSettings; o
   };
 
   return (
-    <Section title="左栏与启动页">
-      <p className="text-sm text-muted">隐藏不常用的功能，让左栏保持简洁。设置始终保留，隐藏的页面仍可通过其他页面链接或地址访问。</p>
+    <Section title="左栏与启动页" icon={PanelLeft} description="隐藏不常用的功能，让左栏保持简洁。设置始终保留，隐藏的页面仍可通过其他页面链接或地址访问。">
       <div className="grid gap-2 sm:grid-cols-2">
         {sidebarItems.map((item) => (
           <Row key={item.id} label={item.label}>
@@ -761,7 +824,7 @@ function SidebarSettingsPanel({ settings, onUpdate }: { settings: AppSettings; o
           </Row>
         ))}
       </div>
-      <Row label="应用启动时进入">
+      <Row label="应用启动时进入" description="仅在应用以默认首页启动时生效，打开指定链接或独立窗口时不会被覆盖。">
         <ComboBox
           aria-label="应用启动时进入的页面"
           className="w-full sm:w-48"
@@ -779,7 +842,6 @@ function SidebarSettingsPanel({ settings, onUpdate }: { settings: AppSettings; o
           </ComboBox.Popover>
         </ComboBox>
       </Row>
-      <p className="text-xs text-muted">仅在应用以默认首页启动时生效，打开指定链接或独立窗口时不会被覆盖。</p>
     </Section>
   );
 }
@@ -878,8 +940,8 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
 
   return (
     <Card className="space-y-4 p-4">
-      <Section title="生成默认值">
-        <Row label="图片尺寸">
+      <Section title="生成默认值" icon={Sparkles} description="生成页面的默认参数，每次生成时可单独调整。">
+        <Row label="图片尺寸" description="生成图片的默认分辨率。">
           <ComboBox aria-label="默认生成图片尺寸" className="w-full sm:w-44" selectedKey={settings.generate.default_size} onSelectionChange={(key) => onUpdate('generate.default_size', String(key))}>
             <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
             <ComboBox.Popover><ListBox>
@@ -887,10 +949,10 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
             </ListBox></ComboBox.Popover>
           </ComboBox>
         </Row>
-        <Row label="每批图片数量">
+        <Row label="每批图片数量" description="单次生成同时产出的图片张数。">
           <Input aria-label="默认每批生成图片数量" type="number" min={1} max={MAX_IMAGES_PER_BATCH} className="w-full sm:w-28" value={String(settings.generate.default_n)} onChange={(event) => onUpdate('generate.default_n', Math.max(1, Math.min(MAX_IMAGES_PER_BATCH, Number(event.target.value) || 1)))} />
         </Row>
-        <Row label="返回格式">
+        <Row label="返回格式" description="优先使用 URL 返回；个别提供商仅支持 Base64 数据。">
           <ComboBox aria-label="默认图片返回格式" className="w-full sm:w-44" selectedKey={settings.generate.default_response_format} onSelectionChange={(key) => onUpdate('generate.default_response_format', String(key))}>
             <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
             <ComboBox.Popover><ListBox>
@@ -899,7 +961,7 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
             </ListBox></ComboBox.Popover>
           </ComboBox>
         </Row>
-        <Row label="图片质量">
+        <Row label="图片质量" description="质量越高细节越丰富，消耗也更多。">
           <ComboBox aria-label="默认生成图片质量" className="w-full sm:w-44" selectedKey={settings.generate.default_quality} onSelectionChange={(key) => onUpdate('generate.default_quality', String(key))}>
             <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
             <ComboBox.Popover><ListBox>
@@ -915,13 +977,19 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
 
       <Separator />
 
-      <Section title="记录与隐私">
-        <Row label="记住最近提示词"><Switch aria-label="记住最近提示词" isSelected={settings.generate.remember_prompts} onChange={(value) => onUpdate('generate.remember_prompts', value)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch></Row>
+      <Section title="记录与隐私" icon={ShieldCheck} description="提示词与生成记录仅保存在本机。">
+        <Row label="记住最近提示词" description="在生成页快速复用最近输入的提示词。">
+          <Switch aria-label="记住最近提示词" isSelected={settings.generate.remember_prompts} onChange={(value) => onUpdate('generate.remember_prompts', value)}><Switch.Control><Switch.Thumb /></Switch.Control></Switch>
+        </Row>
         {settings.generate.remember_prompts && (
-          <Row label="提示词历史数量"><Input aria-label="提示词历史数量" type="number" min={1} max={50} className="w-full sm:w-28" value={String(settings.generate.prompt_history_limit)} onChange={(event) => onUpdate('generate.prompt_history_limit', Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /></Row>
+          <Row label="提示词历史数量" description="保存在本地的最近提示词条数。">
+            <Input aria-label="提示词历史数量" type="number" min={1} max={50} className="w-full sm:w-28" value={String(settings.generate.prompt_history_limit)} onChange={(event) => onUpdate('generate.prompt_history_limit', Math.max(1, Math.min(50, Number(event.target.value) || 1)))} />
+          </Row>
         )}
-        <Row label="生成记录保留数量"><Input aria-label="生成记录保留数量" type="number" min={10} max={500} className="w-full sm:w-28" value={String(settings.generate.history_max_items)} onChange={(event) => onUpdate('generate.history_max_items', Math.max(10, Math.min(500, Number(event.target.value) || 10)))} /></Row>
-        <Row label="本地提示词历史">
+        <Row label="生成记录保留数量" description="超出后自动清理最早的生成记录。">
+          <Input aria-label="生成记录保留数量" type="number" min={10} max={500} className="w-full sm:w-28" value={String(settings.generate.history_max_items)} onChange={(event) => onUpdate('generate.history_max_items', Math.max(10, Math.min(500, Number(event.target.value) || 10)))} />
+        </Row>
+        <Row label="本地提示词历史" description="清除后无法恢复。">
           <Button size="sm" variant="secondary" onPress={() => {
             window.localStorage.removeItem('ltw:generate:prompt-history');
             toast.success('提示词历史已清除', { timeout: 2500 });
@@ -931,7 +999,7 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
 
       <Separator />
 
-      <Section title="已配置的提供商">
+      <Section title="已配置的提供商" icon={Server} description="选择当前用于 AI 图片生成的服务提供商。">
         {providers.length === 0 && (
           <p className="text-sm text-muted">尚未配置任何图片生成提供商</p>
         )}
@@ -977,7 +1045,7 @@ function GenerateSettingsPanel({ settings, onUpdate }: { settings: AppSettings; 
 
       <Separator />
 
-      <Section title="添加提供商">
+      <Section title="添加提供商" icon={Plus} description="从 models.dev 目录快速添加，或接入任意 OpenAI 兼容接口。">
         <div className="flex gap-2">
           <Button size="sm" variant="secondary" onPress={() => { setShowAddBuiltin(!showAddBuiltin); setShowAddCustom(false); if (!mdProviders) loadMd(); }}>
             <Wand2 size={14} /> 从 models.dev 添加
@@ -1199,13 +1267,13 @@ function UpdatePanel({ settings, onUpdate }: {
   return (
     <div className="space-y-4">
       <Card className="space-y-4 p-4">
-        <Section title="更新设置">
-          <Row label="自动检查更新">
+        <Section title="更新设置" icon={RefreshCw} description="应用的更新检查与安装方式。">
+          <Row label="自动检查更新" description="启动时在后台检查新版本。">
             <Switch aria-label="自动检查更新" isSelected={settings.updates.auto_check} onChange={(value) => onUpdate('updates.auto_check', value)}>
               <Switch.Control><Switch.Thumb /></Switch.Control>
             </Switch>
           </Row>
-          <Row label="更新渠道">
+          <Row label="更新渠道" description="不同渠道的版本节奏与稳定性可能不同。">
             <ComboBox
               aria-label="更新渠道"
               className="w-full sm:w-48"
@@ -1230,6 +1298,25 @@ function UpdatePanel({ settings, onUpdate }: {
               </ComboBox.Popover>
             </ComboBox>
           </Row>
+          <Row label="下载镜像" description="安装包托管在 GitHub，通过镜像前缀加速下载；安装前仍会进行 SHA-256 校验。">
+            <ComboBox
+              aria-label="更新下载镜像"
+              className="w-full sm:w-48"
+              selectedKey={settings.updates.mirror || 'direct'}
+              onSelectionChange={(key) => onUpdate('updates.mirror', key === 'direct' ? '' : String(key))}
+            >
+              <ComboBox.InputGroup><Input /><ComboBox.Trigger /></ComboBox.InputGroup>
+              <ComboBox.Popover>
+                <ListBox>
+                  <ListBox.Item id="https://gh-proxy.org/" textValue="gh-proxy.org（默认）">gh-proxy.org（默认）</ListBox.Item>
+                  <ListBox.Item id="https://cdn.gh-proxy.org/" textValue="cdn.gh-proxy.org">cdn.gh-proxy.org</ListBox.Item>
+                  <ListBox.Item id="https://axisnow.gh-proxy.org/" textValue="axisnow.gh-proxy.org">axisnow.gh-proxy.org</ListBox.Item>
+                  <ListBox.Item id="https://gh.xmly.dev/" textValue="gh.xmly.dev">gh.xmly.dev</ListBox.Item>
+                  <ListBox.Item id="direct" textValue="直接连接（不使用镜像）">直接连接（不使用镜像）</ListBox.Item>
+                </ListBox>
+              </ComboBox.Popover>
+            </ComboBox>
+          </Row>
           {selectedChannelInfo?.description && <p className="text-xs leading-relaxed text-muted">{selectedChannelInfo.description}</p>}
         </Section>
       </Card>
@@ -1237,13 +1324,13 @@ function UpdatePanel({ settings, onUpdate }: {
       <Card className="space-y-4 p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
-            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${error ? 'bg-danger/10 text-danger' : result?.has_update ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success'}`}>
-              {error ? <AlertCircle size={20} /> : result?.has_update ? <Download size={20} /> : <CheckCircle2 size={20} />}
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${error ? 'bg-danger/10 text-danger' : result ? (result.has_update ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success') : 'bg-surface-secondary text-muted'}`}>
+              {error ? <AlertCircle size={20} /> : result?.has_update ? <Download size={20} /> : result ? <CheckCircle2 size={20} /> : <Info size={20} />}
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-semibold">
-                  {error ? '检查更新失败' : result?.has_update ? `发现新版本 v${result.latest_version}` : result ? '当前版本不低于渠道最新版本' : '尚未检查更新'}
+                  {error ? '检查更新失败' : result?.has_update ? `发现新版本 v${result.latest_version}` : result ? '当前已是最新版本' : '尚未检查更新'}
                 </h3>
                 {result?.has_update && result.force_update && <Chip color="danger" variant="soft" size="sm">必须更新</Chip>}
                 {result && <Chip color={result.has_update ? 'accent' : 'success'} variant="soft" size="sm">{selectedChannelInfo?.name || result.selected_channel}</Chip>}
@@ -1698,19 +1785,33 @@ function AboutPanel() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, description, icon: Icon, children }: {
+  title: string;
+  description?: string;
+  icon?: ElementType;
+  children: ReactNode;
+}) {
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-semibold text-muted">{title}</h3>
+      <div className="flex items-start gap-2">
+        {Icon && <Icon size={15} className="mt-[3px] shrink-0 text-muted" />}
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{title}</h3>
+          {description && <p className="mt-0.5 text-xs leading-relaxed text-muted">{description}</p>}
+        </div>
+      </div>
       {children}
     </div>
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
   return (
     <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] sm:items-center">
-      <span className="text-sm text-wrap-pretty">{label}</span>
+      <div className="min-w-0">
+        <span className="block text-sm text-wrap-pretty">{label}</span>
+        {description && <p className="mt-0.5 text-xs leading-relaxed text-muted">{description}</p>}
+      </div>
       <div className="min-w-0 sm:text-right">{children}</div>
     </div>
   );

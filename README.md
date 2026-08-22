@@ -1,116 +1,131 @@
-# 小树壁纸 Next
+# Little Tree Wallpaper Next
 
 <p align="center">
-  <img src="frontend/public/logo.png" alt="小树壁纸 Next" width="112" height="112">
+  <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  一个集壁纸浏览、搜索、收藏、制作、动态桌面与自动化于一体的桌面壁纸管理器。
+  <img src="frontend/public/logo.png" alt="Little Tree Wallpaper Next" width="112" height="112">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/releases">下载发行版</a>
+  A desktop wallpaper manager that combines browsing, search, favorites, creation, dynamic desktops and automation.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Little-Tree-Studio/Little-Tree-Wallpaper-Next?include_prereleases&label=version"></a>
+  <img alt="Beta" src="https://img.shields.io/badge/status-beta-orange">
+  <a href="LICENSES"><img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12%2B-informational?logo=python&logoColor=white">
+  <img alt="Node" src="https://img.shields.io/badge/Node.js-20%2B-informational?logo=node.js&logoColor=white">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-informational?logo=windows&logoColor=white">
+  <a href="https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Little-Tree-Studio/Little-Tree-Wallpaper-Next?style=flat&color=yellow&logo=github"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/releases">Download</a>
   ·
-  <a href="https://docs.zsxiaoshu.cn/docs/wallpaper/">使用文档</a>
+  <a href="https://docs.zsxiaoshu.cn/docs/wallpaper/">Documentation</a>
   ·
-  <a href="https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/issues">问题反馈</a>
+  <a href="https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/issues">Issues</a>
 </p>
 
 > [!WARNING]
-> 小树壁纸 Next 2.0 目前处于 Beta 测试阶段，功能、配置与扩展文件格式以及 API 均可能随时调整，并可能产生不兼容变更，不建议用于关键生产环境。动态壁纸、插件和高级自动化仍属于高级功能，使用前请阅读下方的[注意事项](#注意事项)。
+> Little Tree Wallpaper Next 2.0 is currently in beta. Features, configuration, extension file formats and APIs may change at any time, possibly in incompatible ways, and it is not recommended for critical production use. Dynamic wallpapers, plugins and advanced automation remain advanced features; please read the [notes](#important-notes) below before using them.
 
-## 功能特性
+## Features
 
-- **多来源壁纸**：浏览 Bing、Windows 聚焦、拾光壁纸、CNU、Pixiv、IntelliMarkets 与自定义壁纸源。
-- **图片搜索与嗅探**：通过百度图片、Pexels、Pixiv 等来源搜索图片，也可以从网页中提取可用图片。
-- **收藏与整理**：使用收藏夹、标签和历史记录管理壁纸，支持收藏包导入、导出和远程资源本地化。
-- **壁纸制作**：通过多图层画布组合文字、图片、形状、渐变和滤镜，保存 `.ltwp` 工程或导出 PNG/JPEG。
-- **AI 图片生成**：支持 Pollinations AI、`models.dev` 提供商和 OpenAI-compatible 图片生成接口。
-- **动态桌面**：在 Windows 上使用本地视频、图片、文件夹或收藏夹创建动态场景，并添加时钟、日期、便笺等桌面小组件。
-- **可视化自动化**：使用简单、积木或节点图模式，按应用启动、间隔和每日时间切换壁纸或执行组合操作。
-- **主题系统**：自定义浅色/深色语义颜色、应用背景、字体和 CSS，支持 `.lttheme` 导入导出。
-- **插件系统**：通过 `.ltp` Python 插件扩展页面、导航、资源页、主题变量和动态壁纸小组件。
-- **本地桌面应用**：React 界面由 LumiView 承载，FastAPI 后端仅监听随机回环端口，并使用每次启动生成的令牌保护本地 API。
+- **Multiple wallpaper sources**: browse Bing, Windows Spotlight, Shiguang, CNU, Pixiv, IntelliMarkets and custom wallpaper sources.
+- **Image search & sniffing**: search images via Baidu Images, Pexels, Pixiv and more, or extract usable images directly from web pages.
+- **Favorites & organization**: manage wallpapers with favorite folders, tags and history; supports favorite pack import/export and localizing remote resources.
+- **Wallpaper creation**: compose text, images, shapes, gradients and filters on a multi-layer canvas; save `.ltwp` projects or export PNG/JPEG.
+- **AI image generation**: supports Pollinations AI, `models.dev` providers and OpenAI-compatible image generation endpoints.
+- **Dynamic desktop** (Windows): create dynamic scenes from local videos, images, folders or favorites, with clock, date, sticky-note and other desktop widgets.
+- **Visual automation**: switch wallpapers or run combined actions on app launch, on an interval or at a daily time using simple, block-based or node-graph modes.
+- **Theme system**: customize light/dark semantic colors, app background, fonts and CSS; supports `.lttheme` import/export.
+- **Resource store**: browse and install themes, wallpaper sources and plugins from the built-in store, with official and custom store sources; downloads are size-checked and SHA-256 verified.
+- **Plugin system**: extend pages, navigation, resource pages, theme variables and dynamic wallpaper widgets through `.ltp` Python plugins.
+- **Local desktop app**: the React UI is hosted by LumiView, while a FastAPI backend listens only on a random loopback port protected by a per-launch token.
 
-## 平台支持
+## Platform Support
 
-| 平台 | 静态壁纸 | 核心管理功能 | 动态壁纸 | 说明 |
+| Platform | Static wallpaper | Core management | Dynamic wallpaper | Notes |
 | --- | --- | --- | --- | --- |
-| Windows 10/11 | 支持 | 支持 | 实验性支持 | 功能最完整；动态壁纸依赖 Explorer WorkerW |
-| macOS | 代码支持 | 原则上支持 | 不支持 | 源码运行和打包需自行验证 AppKit 与系统权限 |
-| Linux | 部分支持 | 原则上支持 | 不支持 | 静态壁纸依赖桌面环境及 `gsettings`、`feh` 等可用工具 |
+| Windows 10/11 | Supported | Supported | Experimental | Most complete; dynamic wallpaper relies on Explorer WorkerW |
+| macOS | Code support | In principle | Not supported | Verify AppKit integration and system permissions yourself when running from source or packaging |
+| Linux | Partial | In principle | Not supported | Static wallpaper depends on the desktop environment and tools such as `gsettings` and `feh` |
 
-当前发布和测试以 Windows 为主。Linux 对 GNOME、KDE Plasma、XFCE、Cinnamon、MATE、Deepin、LXQt/LXDE、Hyprland 和 Sway 等环境提供适配，但实际效果取决于桌面环境、显示服务器和已安装工具。
+Releases and testing currently focus on Windows. Linux offers adaptations for GNOME, KDE Plasma, XFCE, Cinnamon, MATE, Deepin, LXQt/LXDE, Hyprland, Sway and others, but real-world results depend on the desktop environment, display server and installed tools.
 
-## 快速开始
+## Getting Started
 
-### 使用发行版
+### Using Releases
 
-普通用户可从 [Releases](https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/releases) 下载对应平台的构建产物。Windows 版本直接运行 `LittleTreeWallpaper.exe`。
+Most users can download platform builds from [Releases](https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/releases). On Windows, run `LittleTreeWallpaper.exe` directly.
 
-在线壁纸、搜索、网页嗅探和 AI 图片生成需要网络连接，服务可用性取决于对应的第三方接口。项目本身不要求注册账号；部分自定义图片生成服务或壁纸源可能需要单独配置 API Key。
+Online wallpapers, search, web sniffing and AI image generation require a network connection; availability depends on the corresponding third-party services. The project itself does not require an account; some custom image-generation services or wallpaper sources may need their own API keys.
 
-### 从源码运行
+### Running from Source
 
-环境要求：
+Requirements:
 
-- Python 3.12 或更高版本
-- Node.js 20 或更高版本，以及 npm
-- 推荐安装 [uv](https://docs.astral.sh/uv/)
-- Windows 动态壁纸需要 Windows 10/11 与正常运行的 Explorer 桌面
+- Python 3.12 or later
+- Node.js 20 or later, plus npm
+- [uv](https://docs.astral.sh/uv/) is recommended
+- Windows dynamic wallpapers require Windows 10/11 with a working Explorer desktop
 
-以下命令均从仓库根目录执行。
+Run all commands from the repository root.
 
-1. 克隆仓库：
+1. Clone the repository:
 
 ```powershell
 git clone https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next.git
 cd Little-Tree-Wallpaper-Next
 ```
 
-2. 安装并构建前端：
+2. Install and build the frontend:
 
 ```powershell
 npm install --prefix frontend
 npm run build --prefix frontend
 ```
 
-3. 安装后端依赖：
+3. Install backend dependencies:
 
 ```powershell
 uv sync --project backend --group dev --no-install-project
 ```
 
-`--no-install-project` 只同步应用依赖，源码会直接从仓库根目录导入。
+`--no-install-project` only syncs app dependencies; the source code is imported directly from the repository root.
 
-不使用 uv 时，可以创建虚拟环境并按依赖文件安装：
+Without uv, create a virtual environment and install from the requirements file:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r backend\requirements.txt
 ```
 
-4. 启动应用：
+4. Start the app:
 
-使用 uv：
+With uv:
 
 ```powershell
 uv run --project backend --no-sync python -m backend.main
 ```
 
-使用本地虚拟环境：
+With a local virtual environment:
 
 ```powershell
 .\.venv\Scripts\python -m backend.main
 ```
 
-后端会在 `127.0.0.1` 上选择随机空闲端口，随后打开 LumiView 应用窗口。前端开发服务器不能独立替代桌面入口，因为大部分功能依赖本地后端 API。
+The backend picks a random free port on `127.0.0.1` and then opens the LumiView application window. A standalone frontend dev server cannot replace the desktop entry because most features depend on the local backend API.
 
-如需在当前进程中隐藏右下角测试版本水印，可在启动命令或发行版可执行文件后添加 `--no-watermark`。该参数不会修改持久设置，也不会关闭测试版本提示弹窗。
+To hide the beta watermark in the bottom-right corner for the current process, append `--no-watermark` to the launch command or release executable. This flag does not modify persistent settings nor dismiss the beta warning dialog.
 
-## 开发与测试
+## Development & Testing
 
-### 前端
+### Frontend
 
 ```powershell
 npm run dev --prefix frontend
@@ -119,96 +134,114 @@ npm run build --prefix frontend
 npm run preview --prefix frontend
 ```
 
-前端使用 React 19、TypeScript、Vite、HeroUI 3、Tailwind CSS 4 和 React Router。
+The frontend uses React 19, TypeScript, Vite, HeroUI 3, Tailwind CSS 4 and React Router.
 
-### 后端测试
+### Backend Tests
 
 ```powershell
 uv run --project backend --no-sync python -m unittest discover -s backend/tests -p "test_*.py"
 ```
 
-测试覆盖本地 FastAPI 服务、设置管理、插件、主题、网页嗅探、动态壁纸、自动化、托盘和部分在线来源。涉及第三方网络接口或 Windows 桌面的能力仍可能受运行环境影响。
+Tests cover the local FastAPI service, settings management, plugins, themes, web sniffing, dynamic wallpapers, automation, the tray and some online sources. Capabilities involving third-party network services or the Windows desktop may still depend on the runtime environment.
 
-### 构建应用
+### Building the App
 
-完整构建会同步构建元数据、编译前端并调用 PyInstaller：
+A full build syncs build metadata, compiles the frontend and invokes PyInstaller:
 
 ```powershell
 uv run --project backend --no-sync python tools/build.py
 ```
 
-常用构建选项：
+Common build options:
 
 ```powershell
-# 构建稳定渠道版本
+# Build a stable-channel version
 uv run --project backend --no-sync python tools/build.py --build-type stable --built-by pyinstaller
 
-# 复用已有 frontend/dist，仅重新打包
+# Reuse an existing frontend/dist and only repackage
 uv run --project backend --no-sync python tools/build.py --no-frontend
 
-# 生成目录形式产物（dist/LittleTreeWallpaper/）
+# Produce a directory artifact (dist/LittleTreeWallpaper/)
 uv run --project backend --no-sync python tools/build.py --mode folder
 
-# 生成目录产物并编译多语言 NSIS 安装程序（需要 NSIS 3）
+# Produce a directory artifact plus a multilingual NSIS installer (requires NSIS 3)
 uv run --project backend --no-sync python tools/build.py --mode installer
 
-# 只预览元数据变化
+# Only preview metadata changes
 uv run --project backend --no-sync python tools/build.py --dry-run
 ```
 
-PyInstaller 产物默认位于根目录 `dist/`。构建只针对当前宿主平台，不会一次生成所有平台的可执行文件。更多元数据同步、打包选项和插件打包说明见 [`docs/TOOLING.md`](docs/TOOLING.md)。
+PyInstaller artifacts land in the root `dist/` directory by default. Builds target the current host platform only; they do not produce executables for every platform at once. See [`docs/TOOLING.md`](docs/TOOLING.md) for metadata syncing, packaging options and plugin packaging details.
 
-## 项目结构
+## Project Structure
 
 ```text
 Little-Tree-Wallpaper-Next/
-├── backend/             Python 后端、桌面入口、服务与测试
-│   ├── plugins/         插件校验、上下文与生命周期管理
-│   ├── services/        壁纸源、存储、主题、动态壁纸和自动化
-│   └── tests/           unittest 测试
-├── frontend/            React + HeroUI 前端
-│   ├── public/          应用图标等静态资源
-│   └── src/             页面、组件、主题、插件渲染与 API 客户端
-├── docs/                插件、主题与构建工具文档
-├── tools/               元数据同步、应用构建与插件打包工具
-├── build/               应用静态元数据
-├── build.json           版本与构建来源信息
-└── build.spec           PyInstaller 构建配置
+├── backend/             Python backend, desktop entry point, services and tests
+│   ├── plugins/         Plugin validation, context and lifecycle management
+│   ├── services/        Wallpaper sources, storage, themes, dynamic wallpaper and automation
+│   └── tests/           unittest tests
+├── frontend/            React + HeroUI frontend
+│   ├── public/          App icon and other static assets
+│   └── src/             Pages, components, themes, plugin rendering and the API client
+├── docs/                Plugin, theme, build tooling and versioning documentation
+├── tools/               Metadata syncing, app build and plugin packaging tools
+├── build/               Static app metadata
+├── build.json           Version and build provenance information
+└── build.spec           PyInstaller build configuration
 ```
 
-## 扩展开发
+## Extension Development
 
-- [插件开发文档](docs/PLUGINS.md)：`.ltp` 格式、清单、权限、声明式 UI、Python 生命周期和打包限制。
-- [主题系统文档](docs/THEMES.md)：`.lttheme` 格式、语义颜色、背景媒体、字体资源和自定义 CSS。
-- [工具说明](docs/TOOLING.md)：构建元数据、PyInstaller 流程和可复现插件打包。
+- [Plugin development](docs/PLUGINS.md): `.ltp` format, manifests, permissions, declarative UI, Python lifecycle and packaging limits.
+- [Theme system](docs/THEMES.md): `.lttheme` format, semantic colors, background media, font resources and custom CSS.
+- [Versioning spec](docs/VERSIONING.md): version formats, comparison rules and release conventions for the app, plugins, themes, wallpaper sources and store resources.
+- [Tooling guide](docs/TOOLING.md): build metadata, PyInstaller workflow and reproducible plugin packaging.
 
-## 数据目录
+### Publishing Store Resources
 
-应用通过 `platformdirs` 选择当前系统的标准用户目录，并分别保存：
+Extension authors publish themes, wallpaper sources and plugins through the official resources repository: [Little-Tree-Wallpaper-Resources](https://github.com/shu-shu-1/Little-Tree-Wallpaper-Resources). Add your entry TOML (following the templates there) and its assets via a pull request; once merged, they appear in the built-in store.
 
-- 配置：应用设置、主题和插件配置
-- 数据：下载内容、壁纸源、插件及插件数据
-- 缓存：图片缓存、日志、网页嗅探结果和异常退出报告
+The store reads `index.json` and TOML metadata from a store source (official source: `https://wallpaper.api.zsxiaoshu.cn`; a custom source can be configured in settings). Each entry needs a download address via `download_path`/`download_url` or `assets`, optionally with `sha256` for install verification. Wallpaper source entries must declare `protocol_version >= 4`; see the [versioning spec](docs/VERSIONING.md).
 
-具体路径可在应用的“设置”和“帮助与反馈”页面中查看或打开。API Key 等提供商配置保存在本地配置文件中，请勿将个人配置目录提交到仓库或直接分享给他人。
+## Data Directories
 
-## 注意事项
+The app uses standard per-user directories chosen by `platformdirs`, storing separately:
 
-- **动态壁纸仅支持 Windows**：当前实现依赖未公开的 Explorer WorkerW 桌面窗口行为，Windows 更新或 Explorer 状态变化可能影响兼容性。
-- **自动化依赖应用进程**：定时任务只在小树壁纸仍在运行时执行；“应用启动”触发不等同于操作系统开机启动。
-- **谨慎导入高级自动化**：高级节点可以执行程序、读写文件、打开 URL 或触发系统电源操作，只应导入可信来源的 `.ltauto` 文件。
-- **插件不是沙箱**：插件 Python 代码与应用拥有相同的当前用户权限，可以访问文件、网络、进程和环境变量。当前没有数字签名或发布者认证，只安装可信、可审计的插件。
-- **主题也需要信任**：主题的自定义 CSS 会作用于整个应用界面，远程媒体和字体也可能发起网络请求，只导入可信主题。
-- **在线来源由第三方提供**：内容、接口、限流策略和区域可用性可能随时变化。使用和传播图片时，请遵守来源站点条款并确认相应版权授权。
-- **资源商店仍在建设中**：当前商店页面为预留入口，插件、主题和壁纸源主要通过本地文件导入。
+- Config: app settings, themes and plugin configuration
+- Data: downloads, wallpaper sources, plugins and plugin data
+- Cache: image cache, logs, sniff results and crash reports
 
-## 反馈与贡献
+Exact paths can be viewed or opened from the "Settings" and "Help & Feedback" pages. Provider configuration such as API keys is stored in local config files; never commit your personal config directory to the repository or share it with others.
 
-- 使用问题与常见说明：[项目文档](https://docs.zsxiaoshu.cn/docs/wallpaper/)
-- Bug 与功能建议：[GitHub Issues](https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/issues)
+## Important Notes
 
-提交问题时建议附上应用版本、操作系统、复现步骤和日志。日志与异常退出报告可在“帮助与反馈”页面中查看和导出。
+- **Dynamic wallpapers are Windows-only**: the current implementation relies on undocumented Explorer WorkerW desktop window behavior; Windows updates or Explorer state changes may affect compatibility.
+- **Automation depends on the app process**: scheduled tasks run only while Little Tree Wallpaper is running; the "app launch" trigger is not the same as OS autostart.
+- **Import advanced automations carefully**: advanced nodes can execute programs, read/write files, open URLs or trigger system power actions; only import `.ltauto` files from trusted sources.
+- **Plugins are not sandboxed**: plugin Python code runs with the same current-user permissions as the app and can access files, network, processes and environment variables. There is no digital signing or publisher authentication today; only install trusted, auditable plugins.
+- **Themes deserve the same trust**: theme custom CSS applies to the entire app UI, and remote media/fonts may issue network requests; only import trusted themes.
+- **Online content is provided by third parties**: content, APIs, rate limits and regional availability may change at any time. Respect the source site's terms and confirm copyright authorization when using or redistributing images.
+- **Store content comes from third parties**: themes, wallpaper sources and plugins in the store are provided by their authors; verify trustworthiness before installing. Wallpaper source entries require `protocol_version >= 4`; plugin installation follows the same trust confirmation flow as local imports.
 
-## 许可证
+## Feedback & Contributing
 
-本仓库根目录的 [`LICENSES`](LICENSES) 为 [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) 全文。复制、修改或分发本项目时，请遵守该许可证的条款。
+- Usage questions and FAQs: [project documentation](https://docs.zsxiaoshu.cn/docs/wallpaper/)
+- Bugs and feature requests: [GitHub Issues](https://github.com/Little-Tree-Studio/Little-Tree-Wallpaper-Next/issues)
+- Contributing guidelines: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Security policy and vulnerability reporting: [`SECURITY.md`](SECURITY.md)
+- Disclaimer: [`DISCLAIMER.md`](DISCLAIMER.md)
+
+When filing an issue, please include the app version, operating system, reproduction steps and logs. Logs and crash reports can be viewed and exported from the "Help & Feedback" page.
+
+<!-- ## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Little-Tree-Studio/Little-Tree-Wallpaper-Next&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Little-Tree-Studio/Little-Tree-Wallpaper-Next&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Little-Tree-Studio/Little-Tree-Wallpaper-Next&type=Date">
+</picture> -->
+
+## License
+
+[`LICENSES`](LICENSES) at the repository root contains the full text of the [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html). When copying, modifying or distributing this project, please comply with its terms.

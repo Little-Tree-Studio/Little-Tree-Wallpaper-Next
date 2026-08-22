@@ -11,7 +11,14 @@ export default function History() {
   }, []);
 
   const reasonText = (r: string) => {
-    const map: Record<string, string> = { startup: '启动更换', refresh: '手动刷新', set: '手动设置' };
+    const map: Record<string, string> = {
+      startup: '启动更换',
+      refresh: '手动刷新',
+      set: '手动设置',
+      record: '手动记录',
+      external: '外部更换',
+      dynamic: '动态壁纸画面',
+    };
     return map[r] || r;
   };
 

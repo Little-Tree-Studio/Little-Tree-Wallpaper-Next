@@ -88,6 +88,57 @@ class SettingsStoreMigrationTests(unittest.TestCase):
             providers = store.get("generate.providers")
             self.assertEqual(providers[0]["id"], POLLINATIONS_PROVIDER_ID)
 
+    def test_updates_mirror_defaults_and_legacy_proxy_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({
+                    "updates": {
+                        "proxy": {
+                            "enabled": True,
+                            "selected_index": 2,
+                            "mirrors": ["https://www.ghproxy.cn/"],
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            store = SettingsStore(path)
+
+            self.assertEqual(store.get("updates.mirror"), "https://gh-proxy.org/")
+            self.assertIsNone(store.get("updates.proxy"))
+
+    def test_updates_mirror_normalization_and_direct_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({
+                    "updates": {"mirror": "axisnow.gh-proxy.org/"},
+                }),
+                encoding="utf-8",
+            )
+            store = SettingsStore(path)
+            self.assertEqual(store.get("updates.mirror"), "https://axisnow.gh-proxy.org/")
+
+            path.write_text(
+                json.dumps({
+                    "updates": {"mirror": ""},
+                }),
+                encoding="utf-8",
+            )
+            store = SettingsStore(path)
+            self.assertEqual(store.get("updates.mirror"), "")
+
+            path.write_text(
+                json.dumps({
+                    "updates": {"mirror": "https://evil.example/"},
+                }),
+                encoding="utf-8",
+            )
+            store = SettingsStore(path)
+            self.assertEqual(store.get("updates.mirror"), "https://gh-proxy.org/")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,7 @@ class WindowsDynamicWallpaperService:
         self._static_snapshot_due_times: deque[float] = deque()
         self._last_static_snapshot_at = ""
         self._last_static_snapshot_error = ""
+        self._last_static_snapshot_written = ""
         self._static_snapshot_generation = 0
         self._last_slideshow_sequence = -1
         self._performance_monitor_stop = threading.Event()
@@ -214,6 +215,7 @@ class WindowsDynamicWallpaperService:
             set_sys_wallpaper(str(path))
             with self._lock:
                 self._static_snapshot_generation += 1
+                self._last_static_snapshot_written = str(path)
                 self._last_static_snapshot_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self._last_static_snapshot_error = ""
             self._record("info", f"已将动态壁纸截图同步为系统静态壁纸（{reason}）")
@@ -927,6 +929,14 @@ class WindowsDynamicWallpaperService:
     def current_type(self) -> str:
         with self._lock:
             return self._runtime_type
+
+    def last_static_snapshot_apply(self) -> dict[str, str]:
+        """Return the wallpaper path and timestamp of the latest static snapshot."""
+        with self._lock:
+            return {
+                "path": self._last_static_snapshot_written,
+                "at": self._last_static_snapshot_at,
+            }
 
     def _run_diagnostic_probe(self) -> None:
         try:

@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -183,6 +184,20 @@ def find_makensis() -> str | None:
     return None
 
 
+def installer_file_version(version: str) -> str:
+    """Reduce a display version to the strict numeric X.X.X.X form.
+
+    ``VIProductVersion`` rejects prerelease suffixes such as ``2.0.0-beta1``.
+    The core version is kept (leading ``v`` ignored), truncated or zero-padded
+    to exactly four segments, and the prerelease/build metadata is dropped so
+    beta builds map to the smallest matching file version (2.0.0-beta1 ->
+    2.0.0.0). The full display version is still written via APP_VERSION.
+    """
+    match = re.match(r"[vV]?(\d+(?:\.\d+){0,3})", str(version).strip())
+    numbers = [int(part) for part in match.group(1).split(".")] if match else [0]
+    return ".".join(str(number) for number in (numbers + [0, 0, 0, 0])[:4])
+
+
 def compile_installer() -> Path:
     if platform.system() != "Windows":
         log("ERROR: installer mode is only supported on Windows (NSIS)")
@@ -218,6 +233,7 @@ def compile_installer() -> Path:
             makensis,
             "/V2",
             f"/DAPP_VERSION={version}",
+            f"/DFILE_VERSION={installer_file_version(version)}",
             f"/DBUILD_CHANNEL={channel}",
             f"/DSOURCE_DIR={source_dir}",
             f"/DOUT_FILE={out_file}",

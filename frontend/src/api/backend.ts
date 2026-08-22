@@ -860,11 +860,11 @@ export async function deleteTag(name: string): Promise<void> {
   return call('delete_tag', name);
 }
 
-export async function getStoreResources(type: string): Promise<StoreResource[]> {
+export async function getStoreResources(type: 'theme' | 'wallpaper_source' | 'plugin'): Promise<StoreResource[]> {
   return call('get_store_resources', type);
 }
 
-export async function installStoreResource(resource: StoreResource): Promise<void> {
+export async function installStoreResource(resource: StoreResource): Promise<{ resource: StoreResource; result: unknown }> {
   return call('install_store_resource', resource);
 }
 

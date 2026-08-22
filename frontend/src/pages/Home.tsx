@@ -12,6 +12,18 @@ import { useImageViewer } from '@/components/ImageViewer';
 import type { Hitokoto } from '@/types';
 import { safeNameForFile } from '@/lib/download';
 
+const clampNumber = (value: unknown, fallback: number, min: number, max: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
+};
+
+// 自动记录模式下，首页与历史检测使用同一轮询节奏，保证壁纸更换后首页同步更新。
+const resolveWallpaperRefreshSeconds = (settings: any) => {
+  const homeInterval = clampNumber(settings?.home_page?.wallpaper_refresh_seconds, 30, 10, 600);
+  if ((settings?.wallpaper?.history?.record_mode ?? 'manual') !== 'auto') return homeInterval;
+  return clampNumber(settings?.wallpaper?.history?.auto_record_interval_seconds, 30, 5, 3600);
+};
+
 export default function Home() {
   const [wallpaper, setWallpaperInfo] = useState<{ path: string; filename: string; preview_url?: string } | null>(null);
   const [bing, setBing] = useState<any>(null);
@@ -50,7 +62,7 @@ export default function Home() {
     if (cache?.settings?.home_page) {
       setShowAuthor(cache.settings.home_page.show_author ?? true);
       setShowSource(cache.settings.home_page.show_source ?? true);
-      setWallpaperRefreshSeconds(Math.max(10, Number(cache.settings.home_page.wallpaper_refresh_seconds) || 30));
+      setWallpaperRefreshSeconds(resolveWallpaperRefreshSeconds(cache.settings));
     }
 
     getCurrentWallpaper().then((wp) => {
@@ -71,7 +83,7 @@ export default function Home() {
     getSettings().then((s) => {
       setShowAuthor(s.home_page.show_author ?? true);
       setShowSource(s.home_page.show_source ?? true);
-      setWallpaperRefreshSeconds(Math.max(10, Number(s.home_page.wallpaper_refresh_seconds) || 30));
+      setWallpaperRefreshSeconds(resolveWallpaperRefreshSeconds(s));
     }).catch(() => { /* ignore */ });
   }, []);
 

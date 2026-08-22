@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from backend.api import BackendAPI, _version_key
+from backend.api import BackendAPI, _apply_update_download_mirror, _version_key
+from backend.settings_manager import normalize_update_mirror
 
 
 class _Response:
@@ -43,6 +44,52 @@ class UpdateApiTests(unittest.TestCase):
         api._configure_application_quit(quit_application)
 
         self.assertIs(api._application_quit, quit_application)
+
+    def test_normalize_update_mirror_accepts_supported_prefixes(self) -> None:
+        self.assertEqual(normalize_update_mirror("https://gh-proxy.org/"), "https://gh-proxy.org/")
+        self.assertEqual(normalize_update_mirror("gh-proxy.org/"), "https://gh-proxy.org/")
+        self.assertEqual(normalize_update_mirror("axisnow.gh-proxy.org/"), "https://axisnow.gh-proxy.org/")
+        self.assertEqual(normalize_update_mirror("https://gh.xmly.dev"), "https://gh.xmly.dev/")
+        self.assertEqual(normalize_update_mirror(""), "")
+        self.assertEqual(normalize_update_mirror(None), "")
+        self.assertEqual(normalize_update_mirror("https://evil.example/"), "")
+
+    def test_apply_update_download_mirror_only_rewrites_github_urls(self) -> None:
+        github_url = "https://github.com/xiaoshuapp/little-tree-wallpaper-next/releases/download/v2.1.0/setup.exe"
+        self.assertEqual(
+            _apply_update_download_mirror(github_url, "https://gh-proxy.org/"),
+            f"https://gh-proxy.org/{github_url}",
+        )
+        self.assertEqual(
+            _apply_update_download_mirror("https://example.com/update.exe", "https://gh-proxy.org/"),
+            "https://example.com/update.exe",
+        )
+        self.assertEqual(_apply_update_download_mirror(github_url, ""), github_url)
+        self.assertEqual(_apply_update_download_mirror(github_url, "https://evil.example/"), github_url)
+
+    @patch("requests.get")
+    def test_update_download_uses_configured_mirror(self, get) -> None:
+        payload = b"mirrored update package"
+        digest = hashlib.sha256(payload).hexdigest()
+        get.return_value = _DownloadResponse(payload)
+
+        with tempfile.TemporaryDirectory() as directory:
+            api = BackendAPI.__new__(BackendAPI)
+            api.store = MagicMock()
+            api.store.get.side_effect = lambda key, default=None: (
+                "https://gh-proxy.org/" if key == "updates.mirror" else directory
+            )
+
+            result = api.download_update_package(
+                "2.1.0",
+                "https://github.com/xiaoshuapp/little-tree-wallpaper-next/releases/download/v2.1.0/setup.exe",
+                digest,
+                len(payload),
+            )
+
+            self.assertEqual(Path(result["path"]).read_bytes(), payload)
+            requested_url = get.call_args.args[0]
+            self.assertTrue(requested_url.startswith("https://gh-proxy.org/https://github.com/"))
 
     def test_version_key_compares_numeric_segments(self) -> None:
         self.assertGreater(_version_key("2.10.0"), _version_key("2.9.9"))
@@ -157,6 +204,29 @@ class UpdateApiTests(unittest.TestCase):
             update_directory = Path(directory) / "updates"
             self.assertFalse((update_directory / "update.exe").exists())
             self.assertFalse((update_directory / "update.exe.part").exists())
+
+    @patch("requests.get")
+    def test_update_download_ignores_size_mismatch(self, get) -> None:
+        payload = b"update package with unexpected size"
+        digest = hashlib.sha256(payload).hexdigest()
+        response = _DownloadResponse(payload)
+        response.headers["Content-Length"] = str(len(payload) + 4096)
+        get.return_value = response
+
+        with tempfile.TemporaryDirectory() as directory:
+            api = BackendAPI.__new__(BackendAPI)
+            api.store = MagicMock()
+            api.store.get.return_value = directory
+
+            result = api.download_update_package(
+                "2.1.0",
+                "https://example.com/update.exe",
+                digest,
+                len(payload) + 999999,
+            )
+
+            self.assertEqual(Path(result["path"]).read_bytes(), payload)
+            self.assertFalse(result["already_downloaded"])
 
     @patch("requests.get")
     def test_background_download_reports_progress_and_completion(self, get) -> None:

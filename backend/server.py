@@ -68,7 +68,9 @@ _BLOCKED_MEMBERS = frozenset(
         "configure_dynamic_editor_runtime",
         "shutdown_dynamic_wallpaper",
         "shutdown_automation",
+        "shutdown_wallpaper_monitor",
         "start_automation_runtime",
+        "start_wallpaper_monitor",
         "update_dynamic_wallpaper_telemetry",
         "safe_roots",
         "is_path_safe",
@@ -145,6 +147,8 @@ _DATA_RPC_METHODS = frozenset(
         "search_pixiv_images",
         "sniff_images",
         "check_intelligent_market_sources_health",
+        "get_store_resources",
+        "install_store_resource",
     }
 )
 

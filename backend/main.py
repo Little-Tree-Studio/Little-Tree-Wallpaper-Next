@@ -365,6 +365,7 @@ def main() -> None:
                     api._configure_application_quit(tray.quit)
                     tray.attach_main_window(main_window)
                     api.start_automation_runtime()
+                    api.start_wallpaper_monitor()
                     tray_started = tray.start()
                     if start_hidden and not tray_started:
                         logger.warning("Hidden launch requested but the system tray is unavailable; showing the main window")
@@ -384,6 +385,7 @@ def main() -> None:
             raise
     finally:
         logger.info("Stopping backend server and plugins")
+        api.shutdown_wallpaper_monitor()
         api.shutdown_automation()
         api.shutdown_dynamic_wallpaper()
         if server is not None:

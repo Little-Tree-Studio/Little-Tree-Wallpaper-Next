@@ -26,6 +26,26 @@ POLLINATIONS_PROVIDER: dict[str, Any] = {
     "modelName": "Flux",
 }
 
+UPDATE_DOWNLOAD_MIRRORS: tuple[str, ...] = (
+    "https://gh-proxy.org/",
+    "https://cdn.gh-proxy.org/",
+    "https://axisnow.gh-proxy.org/",
+    "https://gh.xmly.dev/",
+)
+DEFAULT_UPDATE_MIRROR = "https://gh-proxy.org/"
+
+
+def normalize_update_mirror(value: Any) -> str:
+    """Normalize a mirror prefix and return "" when it is not a supported mirror."""
+    mirror = str(value or "").strip()
+    if not mirror:
+        return ""
+    if "://" not in mirror:
+        mirror = f"https://{mirror}"
+    if mirror != "https://" and not mirror.endswith("/"):
+        mirror = f"{mirror}/"
+    return mirror if mirror in UPDATE_DOWNLOAD_MIRRORS else ""
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "metadata": {"version": VERSION},
     "onboarding": {
@@ -46,16 +66,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "updates": {
         "auto_check": True,
         "channel": "stable",
-        "proxy": {
-            "enabled": False,
-            "selected_index": 0,
-            "mirrors": [
-                "https://www.ghproxy.cn/",
-                "https://gh.llkk.cc/",
-                "https://gh-proxy.com/",
-                "https://github.moeyy.xyz/",
-            ],
-        },
+        "mirror": DEFAULT_UPDATE_MIRROR,
     },
     "storage": {
         "cache_directory": "",
@@ -77,7 +88,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
         "allow_NSFW": False,
         "history_save_copy": False,
-        "history": {"max_items": 200, "preview_items": 20},
+        "history": {
+            "max_items": 200,
+            "preview_items": 20,
+            "record_mode": "auto",
+            "auto_record_interval_seconds": 30,
+            "record_dynamic_snapshot": False,
+        },
         "sources": {"merge_display": True},
         "pixiv": {"include_artwork_tags_in_favorites": True},
         "dynamic": {
@@ -220,6 +237,13 @@ class SettingsStore:
                         set_defaults(src[key], value)
         set_defaults(data, DEFAULT_SETTINGS)
 
+        updates = data["updates"]
+        updates.pop("proxy", None)
+        # Empty string means downloading directly from GitHub; anything invalid
+        # falls back to the default mirror.
+        if updates.get("mirror") != "":
+            updates["mirror"] = normalize_update_mirror(updates.get("mirror")) or DEFAULT_UPDATE_MIRROR
+
         if data["im"].get("mirror_preference") not in {"auto", "github", "jsdelivr", "ghproxy"}:
             data["im"]["mirror_preference"] = "auto"
 
@@ -227,6 +251,16 @@ class SettingsStore:
         for condition, action in performance.items():
             if action not in {"keep_running", "mute", "pause", "stop"}:
                 performance[condition] = "keep_running"
+
+        history = data["wallpaper"]["history"]
+        if history.get("record_mode") not in {"auto", "manual"}:
+            history["record_mode"] = "auto"
+        try:
+            interval = int(history.get("auto_record_interval_seconds", 30))
+        except (TypeError, ValueError):
+            interval = 30
+        history["auto_record_interval_seconds"] = max(5, min(3600, interval))
+        history["record_dynamic_snapshot"] = bool(history.get("record_dynamic_snapshot"))
 
         generate = data["generate"]
         configured = generate.get("providers")

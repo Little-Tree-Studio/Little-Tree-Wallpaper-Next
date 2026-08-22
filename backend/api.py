@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from collections.abc import Callable
@@ -60,17 +61,30 @@ from backend.services.pixivel import PixivelService
 from backend.services.sniff import SniffService
 from backend.services.spotlight import SpotlightService
 from backend.services.storage import StorageService
+from backend.services.store import StoreService
 from backend.services.sys_wallpaper import get_display_resolutions, get_sys_wallpaper
 from backend.services.sys_wallpaper import set_wallpaper as set_sys_wallpaper
 from backend.services.theme import DEFAULT_THEME_ID, ThemeService
 from backend.services.timeline import TimelineService
-from backend.settings_manager import get_settings_store
+from backend.settings_manager import get_settings_store, normalize_update_mirror
 
 AUTOMATION_IMAGE_SUFFIXES = SAFE_IMAGE_SUFFIXES | {".avif", ".bmp"}
 UPDATE_API_ROOT = "https://wallpaper.api.zsxiaoshu.cn/core/update"
 UPDATE_CHANNELS_URL = f"{UPDATE_API_ROOT}/channel.json"
-MAX_UPDATE_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
+UPDATE_GITHUB_DOWNLOAD_HOSTS = ("github.com", "githubusercontent.com")
 _UPDATE_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _apply_update_download_mirror(url: str, mirror: str) -> str:
+    """Prefix GitHub download URLs with a gh-proxy style mirror prefix."""
+    normalized = normalize_update_mirror(mirror)
+    if not normalized:
+        return url
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in UPDATE_GITHUB_DOWNLOAD_HOSTS):
+        return url
+    return f"{normalized}{url}"
 
 ensure_dirs()
 
@@ -177,6 +191,7 @@ class BackendAPI:
             cache_dir=get_cache_dir(),
             settings_store=self.store,
         )
+        self.store_service = StoreService(get_cache_dir(), self.store)
         self.ltws_service = LTWSService(
             sources_dir=get_data_dir() / "wallpaper_sources",
             cache_dir=get_cache_dir(),
@@ -199,6 +214,12 @@ class BackendAPI:
         self._update_task_state = self._new_update_task_state()
         self._favorites_lock = threading.RLock()
         self._automation_rotation_lock = threading.RLock()
+        self._history_monitor_lock = threading.RLock()
+        self._history_monitor_stop = threading.Event()
+        self._history_monitor_thread: threading.Thread | None = None
+        self._history_monitor_last_path = ""
+        self._history_monitor_next_check = 0.0
+        self._recent_applied: dict[str, float] = {}
         self._storage_references_lock = threading.RLock()
         self._storage_task_lock = threading.Lock()
         self._storage_task_state: dict[str, Any] = {
@@ -624,6 +645,142 @@ class BackendAPI:
     def shutdown_automation(self) -> None:
         self.automation_service.shutdown()
 
+    # --- Wallpaper history auto-recording monitor ---
+
+    _HISTORY_APPLY_WINDOW_SECONDS = 600.0
+    _HISTORY_MONITOR_TICK_SECONDS = 0.5
+
+    def _history_record_mode(self) -> str:
+        try:
+            mode = str(self.store.get("wallpaper.history.record_mode", "auto") or "")
+        except Exception:
+            return "auto"
+        return mode if mode in {"auto", "manual"} else "auto"
+
+    def _history_auto_interval(self) -> int:
+        try:
+            value = int(self.store.get("wallpaper.history.auto_record_interval_seconds", 30))
+        except (TypeError, ValueError):
+            return 30
+        return max(5, min(3600, value))
+
+    def _history_record_dynamic(self) -> bool:
+        try:
+            return bool(self.store.get("wallpaper.history.record_dynamic_snapshot", False))
+        except Exception:
+            return False
+
+    def start_wallpaper_monitor(self) -> None:
+        """Start polling the system wallpaper so external changes are recorded."""
+        with self._history_monitor_lock:
+            thread = self._history_monitor_thread
+            if thread is not None and thread.is_alive():
+                return
+            self._history_monitor_stop.clear()
+            self._history_monitor_last_path = get_sys_wallpaper() or ""
+            self._history_monitor_next_check = time.monotonic() + self._history_auto_interval()
+            thread = threading.Thread(
+                target=self._run_wallpaper_monitor,
+                name="wallpaper-history-monitor",
+                daemon=True,
+            )
+            self._history_monitor_thread = thread
+        thread.start()
+        logger.info("Wallpaper history monitor started (mode={})", self._history_record_mode())
+
+    def shutdown_wallpaper_monitor(self) -> None:
+        self._history_monitor_stop.set()
+
+    def _run_wallpaper_monitor(self) -> None:
+        while not self._history_monitor_stop.wait(self._HISTORY_MONITOR_TICK_SECONDS):
+            with self._history_monitor_lock:
+                due = time.monotonic() >= self._history_monitor_next_check
+            if not due:
+                continue
+            interval = self._history_auto_interval()
+            with self._history_monitor_lock:
+                self._history_monitor_next_check = time.monotonic() + interval
+            try:
+                self._check_system_wallpaper_change(interval)
+            except Exception as exc:
+                logger.debug("Wallpaper history monitor check failed: {}", exc)
+
+    def _check_system_wallpaper_change(self, interval: int) -> None:
+        path = get_sys_wallpaper()
+        if not path:
+            # Unreadable wallpaper must not erase the known baseline.
+            return
+        with self._history_monitor_lock:
+            previous = self._history_monitor_last_path
+            self._history_monitor_last_path = path
+        if path == previous:
+            return
+        if self._history_record_mode() != "auto":
+            return
+        if self._is_recently_applied_by_app(path):
+            return
+        if self._matches_recent_dynamic_snapshot(path, interval):
+            if self._history_record_dynamic():
+                self.add_to_history(path, Path(path).name, "dynamic")
+            return
+        self.add_to_history(path, Path(path).name, "external")
+        logger.info("Recorded external wallpaper change: {}", path)
+
+    def _matches_recent_dynamic_snapshot(self, path: str, interval: int) -> bool:
+        service = getattr(self, "dynamic_wallpaper_service", None)
+        getter = getattr(service, "last_static_snapshot_apply", None)
+        if getter is None:
+            return False
+        try:
+            info = getter()
+        except Exception:
+            return False
+        snapshot_path = str(info.get("path") or "")
+        snapshot_at = str(info.get("at") or "")
+        if not snapshot_path or not snapshot_at:
+            return False
+        if os.path.normcase(os.path.abspath(snapshot_path)) != os.path.normcase(os.path.abspath(path)):
+            return False
+        try:
+            applied_at = datetime.fromisoformat(snapshot_at)
+        except ValueError:
+            return False
+        age = datetime.now(applied_at.tzinfo) - applied_at if applied_at.tzinfo else datetime.now() - applied_at
+        window = max(120.0, 2.0 * interval)
+        return 0 <= age.total_seconds() <= window
+
+    def _is_recently_applied_by_app(self, path: str) -> bool:
+        normalized = os.path.normcase(os.path.abspath(path))
+        now = time.monotonic()
+        with self._history_monitor_lock:
+            recent = self._recent_applied
+            applied_at = recent.get(normalized)
+            if applied_at is None:
+                return False
+            if now - applied_at > self._HISTORY_APPLY_WINDOW_SECONDS:
+                recent.pop(normalized, None)
+                return False
+        return True
+
+    def _note_wallpaper_applied(self, path: str) -> None:
+        """Keep the monitor baseline in sync with wallpapers applied by the app."""
+        lock = getattr(self, "_history_monitor_lock", None)
+        if lock is None:
+            return
+        try:
+            normalized = os.path.normcase(os.path.abspath(str(path)))
+        except Exception:
+            return
+        with lock:
+            self._history_monitor_last_path = str(path)
+            recent = getattr(self, "_recent_applied", None)
+            if isinstance(recent, dict):
+                recent[normalized] = time.monotonic()
+                if len(recent) > 16:
+                    cutoff = time.monotonic() - self._HISTORY_APPLY_WINDOW_SECONDS
+                    for key in [k for k, ts in recent.items() if ts < cutoff]:
+                        recent.pop(key, None)
+
     @staticmethod
     def _sanitize_plugin_result(result: dict[str, Any]) -> dict[str, Any]:
         sanitized = dict(result)
@@ -942,6 +1099,7 @@ class BackendAPI:
             if replacement:
                 try:
                     set_sys_wallpaper(replacement)
+                    self._note_wallpaper_applied(replacement)
                 except Exception:
                     preserve_sources.add(Path(current_wallpaper))
         state = {
@@ -1547,6 +1705,7 @@ class BackendAPI:
                 self.dynamic_wallpaper_service.stop()
             set_sys_wallpaper(real_path)
             self.add_to_history(real_path, Path(real_path).name, "set")
+            self._note_wallpaper_applied(real_path)
             logger.info("Wallpaper set to {}", real_path)
             return {"success": True}
         except Exception as e:
@@ -2408,10 +2567,17 @@ class BackendAPI:
         self._save_favorites(data)
 
     def get_store_resources(self, type: str) -> list[dict[str, Any]]:
-        return []
+        resource_type = str(type or "theme").strip()
+        if resource_type == "source":
+            resource_type = "wallpaper_source"
+        if resource_type not in StoreService.RESOURCE_PATHS:
+            raise ValueError("不支持的商店资源类型")
+        return self.store_service.list_resources(resource_type)  # type: ignore[arg-type]
 
-    def install_store_resource(self, resource: dict[str, Any]) -> None:
-        logger.info(f"Installing {resource}")
+    def install_store_resource(self, resource: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(resource, dict):
+            raise ValueError("商店资源格式无效")
+        return self.store_service.install(resource, self)
 
     def list_intelligent_market_sources(self, force: bool = False) -> list[dict[str, Any]]:
         try:
@@ -2787,6 +2953,7 @@ class BackendAPI:
     ) -> dict[str, Any]:
         import requests
 
+        url = _apply_update_download_mirror(str(url), str(self.store.get("updates.mirror", "")))
         parsed = urlparse(str(url))
         if parsed.scheme != "https" or not parsed.hostname:
             raise RuntimeError("更新安装包必须使用有效的 HTTPS 地址")
@@ -2795,9 +2962,9 @@ class BackendAPI:
         if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
             raise RuntimeError("更新安装包缺少有效的 SHA-256 校验值")
 
-        expected_size = int(size_bytes or 0)
-        if expected_size < 0 or expected_size > MAX_UPDATE_PACKAGE_BYTES:
-            raise RuntimeError("更新安装包大小无效")
+        # 公告中的 size_bytes 仅用于展示下载进度，不再参与校验；
+        # 完整性完全由 SHA-256 保证。
+        expected_size = max(0, int(size_bytes or 0))
 
         remote_name = Path(parsed.path).name
         filename = _shared_sanitize_filename(remote_name or f"LittleTreeWallpaper-{version}.bin")
@@ -2808,8 +2975,6 @@ class BackendAPI:
             if not path.is_file():
                 return False
             actual_size = path.stat().st_size
-            if expected_size and actual_size != expected_size:
-                return False
             digest = hashlib.sha256()
             checked = 0
             if progress:
@@ -2846,10 +3011,6 @@ class BackendAPI:
 
                 content_length = response.headers.get("Content-Length", "")
                 response_size = int(content_length) if content_length.isdigit() else 0
-                if response_size > MAX_UPDATE_PACKAGE_BYTES:
-                    raise RuntimeError("更新安装包超过允许的大小")
-                if expected_size and response_size and response_size != expected_size:
-                    raise RuntimeError("更新安装包大小与公告不一致")
                 progress_total = expected_size or response_size
                 if progress:
                     progress("downloading", 0, progress_total)
@@ -2859,8 +3020,6 @@ class BackendAPI:
                         if not chunk:
                             continue
                         received += len(chunk)
-                        if received > MAX_UPDATE_PACKAGE_BYTES:
-                            raise RuntimeError("更新安装包超过允许的大小")
                         digest.update(chunk)
                         output.write(chunk)
                         if progress:
@@ -2869,8 +3028,6 @@ class BackendAPI:
                     with contextlib.suppress(OSError):
                         os.fsync(output.fileno())
 
-                if expected_size and received != expected_size:
-                    raise RuntimeError("更新安装包下载不完整")
                 if progress:
                     progress("verifying", received, expected_size or received)
                 if digest.hexdigest() != expected_sha256:
@@ -4043,6 +4200,7 @@ class BackendAPI:
         info = self.get_current_wallpaper()
         if info and info.get("path"):
             self.add_to_history(info["path"], info.get("filename", "当前壁纸"), "record")
+            self._note_wallpaper_applied(str(info["path"]))
         return info
 
     def runtime_snapshot(self) -> dict[str, Any]:

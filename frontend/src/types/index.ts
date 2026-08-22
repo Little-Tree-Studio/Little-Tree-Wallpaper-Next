@@ -215,11 +215,24 @@ export interface StoreResource {
   version: string;
   summary: string;
   description_md: string;
-  author: string;
+  protocol_version?: number;
+  icon_url?: string | null;
+  author?: {
+    name: string;
+    email?: string | null;
+    url?: string | null;
+    links?: Record<string, string>;
+  } | null;
   tags: string[];
-  download_url: string;
-  homepage_url: string;
-  license: string;
+  download_url?: string | null;
+  download_path?: string | null;
+  assets?: Array<{ name?: string; url?: string | null; sha256?: string | null; size_bytes?: number | null }>;
+  homepage_url?: string | null;
+  repository_url?: string | null;
+  changelog_url?: string | null;
+  license?: string | null;
+  plugin?: Record<string, unknown>;
+  theme?: Record<string, unknown>;
 }
 
 export interface AppSettings {
@@ -246,7 +259,13 @@ export interface AppSettings {
     };
     allow_NSFW: boolean;
     history_save_copy: boolean;
-    history: { max_items: number; preview_items: number };
+    history: {
+      max_items: number;
+      preview_items: number;
+      record_mode: 'auto' | 'manual';
+      auto_record_interval_seconds: number;
+      record_dynamic_snapshot: boolean;
+    };
     sources: { merge_display: boolean };
     pixiv?: { include_artwork_tags_in_favorites: boolean };
     dynamic: {
@@ -257,6 +276,7 @@ export interface AppSettings {
   updates: {
     auto_check: boolean;
     channel: string;
+    mirror?: string;
   };
   home_page: HomePageSettings;
   startup: {
