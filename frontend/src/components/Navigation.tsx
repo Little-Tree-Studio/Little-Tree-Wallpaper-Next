@@ -30,7 +30,7 @@ function coreRouteOwns(route: string): boolean {
   const exactRoutes = new Set([
     '/', '/resource', '/resource/source-management', '/generate', '/create', '/dynamic', '/dynamic/editor', '/dynamic/runtime', '/automation', '/search', '/sniff',
     '/favorite', '/tags', '/store', '/settings', '/help', '/history', '/tools', '/tools/color-palette',
-    '/tools/zhongguose', '/tools/dynamic-wallpaper',
+    '/tools/zhongguose',
   ]);
   return exactRoutes.has(route)
     || /^\/settings\/[^/]+$/.test(route)

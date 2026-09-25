@@ -623,6 +623,78 @@ class DynamicWallpaperWindowLifecycleTests(unittest.TestCase):
 
         self.assertEqual(scene["revision"], 1_800_000_000_000)
 
+    def test_scene_normalizes_widget_style_fields(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({
+            "widgets": [
+                {
+                    "id": "styled",
+                    "type": "builtin:clock",
+                    "text_scale": 9,
+                    "text_color": "dark",
+                    "accent_color": "#12AB34",
+                },
+                {
+                    "id": "invalid",
+                    "type": "builtin:clock",
+                    "text_scale": 0.1,
+                    "text_color": "blue",
+                    "accent_color": "red",
+                },
+            ],
+        })
+
+        styled = scene["widgets"][0]
+        self.assertEqual(styled["text_scale"], 1.6)
+        self.assertEqual(styled["text_color"], "dark")
+        self.assertEqual(styled["accent_color"], "#12AB34")
+        invalid = scene["widgets"][1]
+        self.assertEqual(invalid["text_scale"], 0.8)
+        self.assertEqual(invalid["text_color"], "auto")
+        self.assertEqual(invalid["accent_color"], "")
+
+    def test_scene_normalizes_clock_seconds_setting(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({
+            "widgets": [{"id": "clock", "type": "builtin:clock", "settings": {"showSeconds": True}}],
+        })
+
+        self.assertTrue(scene["widgets"][0]["settings"]["showSeconds"])
+        legacy = api._normalize_dynamic_scene({"widgets": [{"id": "clock", "type": "builtin:clock"}]})
+        self.assertFalse(legacy["widgets"][0]["settings"]["showSeconds"])
+
+    def test_scene_preserves_bounded_plugin_widget_settings(self) -> None:
+        api = BackendAPI.__new__(BackendAPI)
+
+        scene = api._normalize_dynamic_scene({
+            "widgets": [
+                {
+                    "id": "plugin-widget",
+                    "type": "plugin:com.example.sample:weather",
+                    "settings": {
+                        "city": "beijing",
+                        "showDetails": True,
+                        "threshold": 40,
+                        "ignored-nested": {"bad": "object"},
+                        "bad key": "dropped",
+                        "long": "x" * 600,
+                    },
+                },
+                {"id": "unknown", "type": "custom:thing", "settings": {"anything": "dropped"}},
+            ],
+        })
+
+        plugin_settings = scene["widgets"][0]["settings"]
+        self.assertEqual(plugin_settings["city"], "beijing")
+        self.assertTrue(plugin_settings["showDetails"])
+        self.assertEqual(plugin_settings["threshold"], 40)
+        self.assertEqual(len(plugin_settings["long"]), 500)
+        self.assertNotIn("ignored-nested", plugin_settings)
+        self.assertNotIn("bad key", plugin_settings)
+        self.assertEqual(scene["widgets"][1]["settings"], {})
+
     def test_scene_preserves_new_slideshow_transition(self) -> None:
         api = BackendAPI.__new__(BackendAPI)
 

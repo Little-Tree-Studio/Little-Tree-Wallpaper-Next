@@ -1,4 +1,4 @@
-import { Button, Separator } from '@heroui/react';
+import { Button, Checkbox, Input, ListBox, Select, Separator, TextField } from '@heroui/react';
 import { FolderOpen } from 'lucide-react';
 import { selectAutomationDirectory, selectAutomationLocalImage, selectDynamicWallpaperMedia } from '@/api/backend';
 import type { AutomationSettingDescriptor } from './types';
@@ -50,34 +50,63 @@ export default function InlineNodeSettings({
             )}
             <span className="w-16 shrink-0 truncate text-[10px] font-medium text-muted">{setting.label}</span>
             {setting.kind === 'select' && (
-              <select
+              <Select
                 aria-label={setting.label}
-                className="h-6 min-w-0 flex-1 rounded-md border border-border bg-surface px-1 text-[10px] text-foreground outline-none focus:border-primary"
+                variant="secondary"
+                className="min-w-0 flex-1"
+                placeholder="请选择"
                 value={String(setting.value ?? '')}
-                onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => onChange(setting.pointer, event.target.value)}
+                onChange={(key) => onChange(setting.pointer, String(key ?? ''))}
               >
-                {(setting.options || []).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-              </select>
+                <Select.Trigger
+                  className="h-6 min-h-6 gap-1 rounded-md px-1.5 text-[10px]"
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <Select.Value className="text-[10px]" />
+                  <Select.Indicator className="size-3" />
+                </Select.Trigger>
+                <Select.Popover>
+                  <ListBox>
+                    {(setting.options || []).map((option) => (
+                      <ListBox.Item key={option.id} id={option.id} textValue={option.label}>
+                        {option.label}
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
+              </Select>
             )}
             {setting.kind === 'boolean' && (
-              <input
+              <Checkbox
                 aria-label={setting.label}
-                type="checkbox"
-                checked={Boolean(setting.value)}
+                variant="secondary"
+                className="[&_[data-slot='checkbox-default-indicator--checkmark']]:size-2"
+                isSelected={Boolean(setting.value)}
+                onChange={(selected) => onChange(setting.pointer, selected)}
                 onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => onChange(setting.pointer, event.target.checked)}
-              />
+              >
+                <Checkbox.Content>
+                  <Checkbox.Control className="size-3.5 rounded-sm before:rounded-[3px]">
+                    <Checkbox.Indicator />
+                  </Checkbox.Control>
+                </Checkbox.Content>
+              </Checkbox>
             )}
             {(setting.kind === 'text' || setting.kind === 'number') && (
-              <input
-                aria-label={setting.label}
-                type={setting.kind === 'number' ? 'number' : 'text'}
-                className="h-6 min-w-0 flex-1 rounded-md border border-border bg-surface px-1.5 text-[10px] text-foreground outline-none focus:border-primary"
+              <TextField
+                className="min-w-0 flex-1"
                 value={String(setting.value ?? '')}
-                onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => onChange(setting.pointer, setting.kind === 'number' ? Number(event.target.value) : event.target.value)}
-              />
+                onChange={(value) => onChange(setting.pointer, setting.kind === 'number' ? Number(value) : value)}
+              >
+                <Input
+                  aria-label={setting.label}
+                  type={setting.kind === 'number' ? 'number' : 'text'}
+                  variant="secondary"
+                  className="h-6 min-h-6 rounded-md px-1.5 text-[10px]"
+                  onPointerDown={(event) => event.stopPropagation()}
+                />
+              </TextField>
             )}
             {(setting.kind === 'path' || setting.kind === 'directory' || setting.kind === 'video') && (
               <>

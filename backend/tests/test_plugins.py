@@ -156,6 +156,38 @@ def setup(context):
         self.assertTrue((self.data_dir / "plugin_data" / "com.example.sample").is_dir())
         self.assertTrue((self.cache_dir / "plugins" / "com.example.sample").is_dir())
 
+    def test_event_subscription_delivers_json_payload(self) -> None:
+        module = """
+def setup(context):
+    def handle(payload):
+        context.set_setting('last.event', payload)
+    context.subscribe_event('wallpaper-changed', handle)
+"""
+        self.install(module=module)
+        self.assertEqual(self.manager.set_enabled("com.example.sample", True)["status"], "started")
+
+        result = self.manager.publish_event("wallpaper-changed", {"path": "C:/wallpaper.jpg"})
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertEqual(
+            json.loads((self.config_dir / "plugins" / "com.example.sample" / "settings.json").read_text()),
+            {"last": {"event": {"path": "C:/wallpaper.jpg"}}},
+        )
+
+    def test_event_callback_timeout_isolated(self) -> None:
+        module = """
+import time
+def setup(context):
+    context.subscribe_event('slow-event', lambda payload: time.sleep(10))
+"""
+        self.install(module=module, name="slow.ltp")
+        self.manager.set_enabled("com.example.sample", True)
+
+        result = self.manager.publish_event("slow-event", {})
+
+        self.assertEqual(result["delivered"], 0)
+        self.assertIn("timed out", result["errors"][0])
+
     def test_plugin_entrypoint_supports_relative_module_imports(self) -> None:
         module = """
 from .helper import message
@@ -305,6 +337,139 @@ def setup(context):
         )
 
         self.assertEqual(self.manager.install_package(package)["status"], "error")
+
+    def test_widget_settings_and_refresh_are_normalized(self) -> None:
+        descriptor = {
+            "id": "dashboard",
+            "label": "Dashboard",
+            "default_size": {"width": 34, "height": 26},
+            "settings": [
+                {"key": "city", "label": "城市", "type": "select", "default": "beijing", "options": [
+                    {"value": "beijing", "label": "北京"},
+                    {"value": "shanghai", "label": "上海"},
+                ]},
+                {"key": "threshold", "label": "阈值", "type": "slider", "min": 0, "max": 100, "step": 5, "default": 40},
+                {"key": "showDetails", "label": "显示详情", "type": "switch", "default": True},
+            ],
+            "refresh": {"action": "refresh-data", "interval_seconds": 900, "payload": {"units": "metric"}},
+            "blocks": [
+                {"type": "metric", "label": "温度", "value": "{{temperature}}°", "unit": "C", "size": "lg"},
+                {"type": "progress", "label": "进度", "value": "{{progress}}"},
+                {"type": "time", "label": "更新", "format": "datetime"},
+                {"type": "badge", "text": "{{city}}", "tone": "info"},
+                {"type": "rows", "items": [{"label": "天气", "value": "{{condition}}", "emphasis": True}]},
+                {"type": "columns", "blocks": [{"type": "text", "text": "左"}, {"type": "text", "text": "右"}]},
+            ],
+        }
+        package = make_package(
+            self.packages_dir,
+            manifest(
+                id="com.example.dashboard-widget",
+                permissions=["ui.widgets"],
+                contributes={"widgets": [descriptor]},
+            ),
+            name="dashboard-widget.ltp",
+        )
+
+        result = self.manager.install_package(package)
+
+        self.assertEqual(result["status"], "installed")
+        widget = result["manifest"]["contributes"]["widgets"][0]
+        self.assertEqual(widget["settings"][0]["options"][0]["value"], "beijing")
+        self.assertEqual(widget["refresh"]["interval_seconds"], 900)
+        self.assertEqual(len(widget["blocks"]), 6)
+
+    def test_widget_settings_reject_invalid_descriptors(self) -> None:
+        cases = [
+            [{"key": "bad key!", "label": "x", "type": "text"}],
+            [{"key": "a", "label": "x", "type": "unknown"}],
+            [{"key": "a", "label": "", "type": "text"}],
+            [{"key": "a", "label": "x", "type": "select"}],
+            [{"key": "a", "label": "x", "type": "select", "options": [{"value": "b", "label": "B"}], "default": "missing"}],
+            [{"key": "a", "label": "x", "type": "slider", "min": 10, "max": 1}],
+            [{"key": "a", "label": "x", "type": "color", "default": "red"}],
+        ]
+        for index, settings in enumerate(cases):
+            with self.subTest(settings=settings):
+                package = make_package(
+                    self.packages_dir,
+                    manifest(
+                        id="com.example.bad-widget-settings",
+                        permissions=["ui.widgets"],
+                        contributes={"widgets": [{"id": "w", "label": "W", "settings": settings}]},
+                    ),
+                    name=f"bad-widget-settings-{index}.ltp",
+                )
+                self.assertEqual(self.manager.install_package(package)["status"], "error")
+
+    def test_widget_refresh_bounds_and_action_reference(self) -> None:
+        module = """
+def setup(context):
+    context.register_action("refresh-data", lambda payload: {"data": {"temperature": 24}})
+"""
+        for index, refresh in enumerate([
+            {"action": "refresh-data", "interval_seconds": 5},
+            {"action": "refresh-data", "interval_seconds": 100000},
+        ]):
+            with self.subTest(refresh=refresh):
+                package = make_package(
+                    self.packages_dir,
+                    manifest(
+                        id="com.example.refresh-widget",
+                        permissions=["ui.widgets"],
+                        contributes={"widgets": [{"id": "w", "label": "W", "refresh": refresh}]},
+                    ),
+                    module=module,
+                    name=f"refresh-widget-{index}.ltp",
+                )
+                self.assertEqual(self.manager.install_package(package)["status"], "error")
+
+        missing = self.install(
+            plugin_manifest=manifest(
+                id="com.example.refresh-widget-missing",
+                permissions=["ui.widgets"],
+                contributes={"widgets": [{"id": "w", "label": "W", "refresh": {"action": "missing-action", "interval_seconds": 60}}]},
+            ),
+            module=module,
+            name="refresh-widget-missing.ltp",
+        )
+        self.assertEqual(missing["status"], "installed")
+        self.assertEqual(self.manager.set_enabled("com.example.refresh-widget-missing", True)["status"], "error")
+
+        accepted_package = make_package(
+            self.packages_dir,
+            manifest(
+                id="com.example.refresh-widget-ok",
+                permissions=["ui.widgets"],
+                contributes={"widgets": [{"id": "w", "label": "W", "refresh": {"action": "refresh-data", "interval_seconds": 120}}]},
+            ),
+            module=module,
+            name="refresh-widget-ok.ltp",
+        )
+        accepted = self.manager.install_package(accepted_package)
+        self.assertEqual(accepted["status"], "installed")
+        self.assertEqual(self.manager.set_enabled("com.example.refresh-widget-ok", True)["status"], "started")
+
+    def test_widget_blocks_reject_invalid_new_block_shapes(self) -> None:
+        cases = [
+            [{"type": "metric", "value": ""}],
+            [{"type": "progress", "value": 250}],
+            [{"type": "badge", "text": ""}],
+            [{"type": "rows", "items": [{"label": "a"}]}],
+            [{"type": "columns", "blocks": [{"type": "text", "text": "x"} for _ in range(7)]}],
+        ]
+        for index, blocks in enumerate(cases):
+            with self.subTest(blocks=blocks):
+                package = make_package(
+                    self.packages_dir,
+                    manifest(
+                        id="com.example.bad-widget-blocks",
+                        permissions=["ui.widgets"],
+                        contributes={"widgets": [{"id": "w", "label": "W", "blocks": blocks}]},
+                    ),
+                    name=f"bad-widget-blocks-{index}.ltp",
+                )
+                self.assertEqual(self.manager.install_package(package)["status"], "error")
 
     def test_upgrade_rules_and_removal(self) -> None:
         self.install()

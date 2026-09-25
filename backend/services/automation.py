@@ -54,6 +54,7 @@ class AutomationService:
         data_root: Path | None = None,
         notify: Callable[[str, str], None] | None = None,
         manage_dynamic_wallpaper: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        publish_event: Callable[[str, Any], dict[str, Any]] | None = None,
     ) -> None:
         self._path = path
         self._set_wallpaper = set_wallpaper
@@ -65,6 +66,7 @@ class AutomationService:
         self._data_root = data_root or path.parent / "automation_data"
         self._notify = notify
         self._manage_dynamic_wallpaper = manage_dynamic_wallpaper
+        self._publish_event = publish_event
         self._lock = threading.RLock()
         self._execution_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -888,6 +890,17 @@ class AutomationService:
                     finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                     error=error,
                     variables=copy.deepcopy(variables),
+                )
+            if self._publish_event is not None:
+                self._publish_event(
+                    "automation-finished",
+                    {
+                        "automation_id": document["id"],
+                        "name": document["name"],
+                        "status": status,
+                        "error": error,
+                        "trigger": trigger,
+                    },
                 )
             self._execution_lock.release()
             self._wake_event.set()

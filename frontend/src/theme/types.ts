@@ -58,6 +58,22 @@ export interface ThemeNavigationChrome {
   backdrop_blur: number;
 }
 
+export type HomeCardBackgroundStyle = 'default' | 'blur' | 'translucent';
+
+/** Home page card surface shared by built-in and plugin cards. */
+export interface ThemeHomeCards {
+  /** ``default`` keeps the opaque card surface; ``blur`` blurs the theme
+   *  background behind a surface-tinted card; ``translucent`` lowers the card
+   *  background opacity without blurring. */
+  background_style: HomeCardBackgroundStyle;
+  /** Card background opacity for the translucent style (0.05-1). */
+  background_opacity: number;
+  /** Backdrop blur radius in px for the blur style (0-64). */
+  backdrop_blur: number;
+  /** How much of the theme surface color blends into blurred cards (0-1). */
+  blur_tint: number;
+}
+
 export interface ThemeProfile {
   format: 'little-tree-theme';
   format_version: 1;
@@ -71,6 +87,7 @@ export interface ThemeProfile {
   typography: ThemeTypography;
   window_chrome: ThemeWindowChrome;
   navigation_chrome: ThemeNavigationChrome;
+  home_cards: ThemeHomeCards;
   custom_css: string;
   created_at: string;
   updated_at: string;

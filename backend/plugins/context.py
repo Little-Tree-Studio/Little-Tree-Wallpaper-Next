@@ -25,6 +25,7 @@ class PluginContext:
     __slots__ = (
         "_actions",
         "_contributions",
+        "_event_subscriptions",
         "_lock",
         "_permissions",
         "_settings_path",
@@ -34,6 +35,7 @@ class PluginContext:
         "logger",
         "plugin_id",
         "plugin_path",
+        "_subscribe_event",
     )
 
     def __init__(
@@ -45,6 +47,7 @@ class PluginContext:
         cache_path: Path,
         permissions: set[str] | frozenset[str],
         logger: Any,
+        subscribe_event: Callable[[str, Callable[[Any], Any]], None] | None = None,
     ) -> None:
         self.plugin_id = plugin_id
         self.plugin_path = plugin_path
@@ -52,9 +55,11 @@ class PluginContext:
         self.config_path = config_path
         self.cache_path = cache_path
         self.logger = logger
+        self._subscribe_event = subscribe_event
         self._permissions = frozenset(permissions)
         self._actions: dict[str, Callable[[Any], Any]] = {}
         self._contributions: dict[str, list[dict[str, Any]]] = {}
+        self._event_subscriptions: set[str] = set()
         self._settings_path = config_path / "settings.json"
         self._lock = threading.RLock()
         for path in (data_path, config_path, cache_path):
@@ -94,6 +99,17 @@ class PluginContext:
             if checked_id in self._actions:
                 raise PluginValidationError(f"Duplicate action ID: {checked_id}")
             self._actions[checked_id] = action
+
+    def subscribe_event(self, event: str, callback: Callable[[Any], Any]) -> None:
+        """Subscribe to a bounded host event while the plugin is running."""
+        checked_event = validate_identifier(event, "event name", max_length=80)
+        if not callable(callback):
+            raise PluginValidationError("Event callback must be callable")
+        if self._subscribe_event is None:
+            raise PluginValidationError("Event subscriptions are unavailable")
+        self._subscribe_event(checked_event, callback)
+        with self._lock:
+            self._event_subscriptions.add(checked_event)
 
     def contribute(self, kind: str, descriptor: dict[str, Any]) -> None:
         checked = validate_contribution(

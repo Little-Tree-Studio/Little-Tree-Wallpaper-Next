@@ -998,6 +998,66 @@ export default function ThemeSettingsPanel() {
                         </div>
                       </div>
                     </section>
+
+                    <Separator />
+
+                    <section className="space-y-4">
+                      <div>
+                        <h3 className="text-sm font-semibold">主页卡片</h3>
+                        <p className="mt-1 text-xs text-muted">主页所有卡片（含插件卡片）共享同一背景层：模糊样式在磨砂化的同时融入主题表面色（不透明度即着色浓度）；半透明样式为无模糊的半透明底色。两种样式的不透明度相互独立。</p>
+                      </div>
+                      <div className="grid gap-5 md:grid-cols-2">
+                        <SelectControl
+                          label="背景样式"
+                          value={draft.home_cards?.background_style ?? 'default'}
+                          options={[
+                            { id: 'default', label: '默认（不透明）' },
+                            { id: 'blur', label: '模糊' },
+                            { id: 'translucent', label: '半透明' },
+                          ]}
+                          onChange={(value) => updateDraft((next) => {
+                            next.home_cards.background_style = value as ThemeProfile['home_cards']['background_style'];
+                          })}
+                          isDisabled={isReadonly}
+                        />
+                        <Slider
+                          minValue={(draft.home_cards?.background_style ?? 'default') === 'blur' ? 0 : 0.05}
+                          maxValue={1}
+                          step={0.05}
+                          value={(draft.home_cards?.background_style ?? 'default') === 'blur'
+                            ? (draft.home_cards?.blur_tint ?? 0.35)
+                            : (draft.home_cards?.background_opacity ?? 0.8)}
+                          onChange={(value) => updateDraft((next) => {
+                            if ((draft.home_cards?.background_style ?? 'default') === 'blur') {
+                              next.home_cards.blur_tint = Number(value);
+                            } else {
+                              next.home_cards.background_opacity = Number(value);
+                            }
+                          })}
+                          isDisabled={isReadonly || (draft.home_cards?.background_style ?? 'default') === 'default'}
+                        >
+                          <Label>卡片不透明度</Label>
+                          <Slider.Output>
+                            {Math.round(((draft.home_cards?.background_style ?? 'default') === 'blur'
+                              ? (draft.home_cards?.blur_tint ?? 0.35)
+                              : (draft.home_cards?.background_opacity ?? 0.8)) * 100)}%
+                          </Slider.Output>
+                          <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                        </Slider>
+                        <Slider
+                          minValue={0}
+                          maxValue={64}
+                          step={1}
+                          value={draft.home_cards?.backdrop_blur ?? 16}
+                          onChange={(value) => updateDraft((next) => { next.home_cards.backdrop_blur = Number(value); })}
+                          isDisabled={isReadonly || (draft.home_cards?.background_style ?? 'default') !== 'blur'}
+                        >
+                          <Label>模糊程度</Label>
+                          <Slider.Output>{draft.home_cards?.backdrop_blur ?? 16}px</Slider.Output>
+                          <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
+                        </Slider>
+                      </div>
+                    </section>
                   </div>
                 </Tabs.Panel>
 

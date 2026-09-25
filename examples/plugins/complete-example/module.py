@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 
@@ -43,6 +44,30 @@ def setup(context: Any) -> CompleteExamplePlugin:
             "data_path": str(context.data_path),
         }
 
+    def widget_refresh(payload: Any) -> dict[str, Any]:
+        request = payload if isinstance(payload, dict) else {}
+        settings = request.get("settings") if isinstance(request.get("settings"), dict) else {}
+        cities = {
+            "beijing": "北京",
+            "shanghai": "上海",
+            "guangzhou": "广州",
+        }
+        city = settings.get("city", "beijing")
+        city_label = cities.get(city, "北京")
+        now = datetime.now()
+        day_progress = round((now.hour * 60 + now.minute) / 14.4, 1)
+        return {
+            "data": {
+                "city": city_label,
+                "temperature": 18 + (hash(city) % 12),
+                "condition": "晴",
+                "humidity": 40 + (now.minute % 20),
+                "count": context.get_setting("counter.value", 0),
+                "day_progress": day_progress,
+            }
+        }
+
     context.register_action("increment", increment)
     context.register_action("get-status", get_status)
+    context.register_action("widget-refresh", widget_refresh)
     return CompleteExamplePlugin()

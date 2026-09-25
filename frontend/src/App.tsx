@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Route, Router, Switch } from 'wouter';
 import Layout from '@/components/Layout';
 import Home from '@/pages/Home';
@@ -20,7 +20,6 @@ import Tools from '@/pages/Tools';
 import ColorPalette from '@/pages/ColorPalette';
 import ZhongguoseColors from '@/pages/ZhongguoseColors';
 import ImageEditor from '@/pages/ImageEditor';
-import DynamicWallpaperDebug from '@/pages/DynamicWallpaperDebug';
 import DynamicWallpaper from '@/pages/DynamicWallpaper';
 import DynamicWidgetEditor from '@/pages/DynamicWidgetEditor';
 import DynamicWallpaperRuntime from '@/pages/DynamicWallpaperRuntime';
@@ -29,7 +28,13 @@ import { ImageViewerProvider, ImageViewer } from '@/components/ImageViewer';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import BetaWarningModal from '@/components/BetaWarningModal';
 import BetaWatermark from '@/components/BetaWatermark';
-import { getBuildInfo, getSettings } from '@/api/backend';
+import ConflictWarningModal from '@/components/ConflictWarningModal';
+import {
+  getBuildInfo,
+  getSettings,
+  getWallpaperConflicts,
+  type WallpaperConflictStatus,
+} from '@/api/backend';
 import { Toast } from '@heroui/react';
 import { logError } from '@/lib/log';
 import { PluginProvider } from '@/plugins/context';
@@ -40,7 +45,11 @@ import TextContextMenu from '@/components/TextContextMenu';
 import WindowTitleBar from '@/components/WindowTitleBar';
 import ForcedUpdateBanner from '@/components/ForcedUpdateBanner';
 import FirstRunSetup from '@/components/FirstRunSetup';
+import DebugPanel from '@/pages/DebugPanel';
 import { useHashRouterLocation, useNavigate, usePathname } from '@/lib/router';
+
+/** Re-check interval for the competing-wallpaper-app indicator. */
+const CONFLICT_RECHECK_MS = 30_000;
 
 function AppContent() {
   const pathname = usePathname();
@@ -53,6 +62,30 @@ function AppContent() {
     ? '小组件编辑器'
     : pathname === '/image-editor' ? '图片编辑' : '小树壁纸 Next';
   const [betaVersion, setBetaVersion] = useState<string | null>(null);
+  const [conflictStatus, setConflictStatus] = useState<WallpaperConflictStatus | null>(null);
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+
+  const refreshConflicts = useCallback(async (openOnDetect: boolean) => {
+    try {
+      const status = await getWallpaperConflicts();
+      setConflictStatus(status);
+      if (!status.detected) {
+        setConflictModalOpen(false);
+      } else if (openOnDetect) {
+        setConflictModalOpen(true);
+      }
+    } catch (e) {
+      logError('getWallpaperConflicts failed', e);
+    }
+  }, []);
+
+  // 启动时检测同类壁纸软件（Wallpaper Engine 等），之后周期性刷新右上角提示状态。
+  useEffect(() => {
+    if (isWallpaperRuntime) return undefined;
+    void refreshConflicts(true);
+    const timer = window.setInterval(() => void refreshConflicts(false), CONFLICT_RECHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [isWallpaperRuntime, refreshConflicts]);
 
   useEffect(() => {
     currentPathRef.current = pathname;
@@ -104,14 +137,18 @@ function AppContent() {
     <ThemeProvider>
       <FirstRunSetup>
         <div className="relative z-10 flex h-screen w-screen min-h-0 flex-col overflow-hidden">
-          <WindowTitleBar title={windowTitle} />
+          <WindowTitleBar
+            title={windowTitle}
+            conflictDetected={Boolean(conflictStatus?.detected)}
+            onConflictClick={() => setConflictModalOpen(true)}
+          />
           <div className="flex min-h-0 flex-1 flex-col">
-            <ForcedUpdateBanner />
             <div className="min-h-0 flex-1">
               <StaticWallpaperGuardProvider>
                 <PluginProvider>
                   <ImageViewerProvider>
                     <Layout hideWatermark={hideWatermark}>
+                      <ForcedUpdateBanner />
                       <Switch>
                       <Route path="/" component={Home} />
                       <Route path="/resource" component={Resource} />
@@ -130,14 +167,14 @@ function AppContent() {
                       <Route path="/tags" component={Tags} />
                       <Route path="/store" component={Store} />
                       <Route path="/settings" component={Settings} />
-                      <Route path="/settings/:tab" component={Settings} />
+                       <Route path="/settings/:tab" component={Settings} />
+                       <Route path="/debug" component={DebugPanel} />
                       <Route path="/help" component={Help} />
                       <Route path="/history" component={History} />
                       <Route path="/tools" component={Tools} />
                       <Route path="/tools/color-palette" component={ColorPalette} />
                       <Route path="/tools/zhongguose" component={ZhongguoseColors} />
                       <Route path="/image-editor" component={ImageEditor} />
-                      <Route path="/tools/dynamic-wallpaper" component={DynamicWallpaperDebug} />
                       <Route component={PluginPage} />
                       </Switch>
                     </Layout>
@@ -146,6 +183,14 @@ function AppContent() {
                       <BetaWarningModal
                         version={betaVersion}
                         onDismiss={() => setBetaVersion(null)}
+                      />
+                    )}
+                    {conflictStatus && (
+                      <ConflictWarningModal
+                        status={conflictStatus}
+                        isOpen={conflictModalOpen}
+                        onIgnore={() => setConflictModalOpen(false)}
+                        onTerminated={() => void refreshConflicts(false)}
                       />
                     )}
                     {!hideWatermark && <BetaWatermark />}

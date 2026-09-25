@@ -98,6 +98,12 @@ class SpotlightService:
         logger.debug("Spotlight local scan complete: {} kept, {} skipped", len(items), skipped)
         return items
 
+    @staticmethod
+    def _request_country(market: str) -> str:
+        parts = market.replace("_", "-").split("-")
+        region = parts[-1].upper() if len(parts) > 1 else ""
+        return region if len(region) == 2 else "CN"
+
     def list_online_candidates(
         self, limit: int = 20, market: str = "zh-CN", force_refresh: bool = False
     ) -> list[dict[str, Any]]:
@@ -115,7 +121,7 @@ class SpotlightService:
                 params={
                     "placement": "88000820",
                     "bcnt": 4,
-                    "country": "CN",
+                    "country": self._request_country(market),
                     "locale": market,
                     "fmt": "json",
                 },

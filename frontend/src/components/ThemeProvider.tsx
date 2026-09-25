@@ -20,6 +20,8 @@ interface ThemeContextValue {
   theme: ThemeMode;
   resolvedTheme: ResolvedTheme;
   activeTheme: ThemeProfile;
+  /** Preview draft during theme editing, otherwise ``activeTheme``. */
+  effectiveTheme: ThemeProfile;
   isPreviewing: boolean;
   setTheme: (theme: ThemeMode) => Promise<void>;
   activateTheme: (themeId: string) => Promise<ThemeProfile>;
@@ -32,6 +34,9 @@ interface PreviewState {
   theme: ThemeProfile;
   assets: ThemePreviewAssets;
 }
+
+/** blur_tint 缺失时的回退值（旧主题文件无此字段）。 */
+const HOME_CARD_BLUR_TINT = 0.35;
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
@@ -153,6 +158,26 @@ function applyTheme(theme: ThemeProfile, resolved: ResolvedTheme, assets: ThemeP
   else html.style.removeProperty('--window-close-hover-foreground');
   html.style.setProperty('--navigation-chrome-opacity', `${theme.navigation_chrome.background_opacity * 100}%`);
   html.style.setProperty('--navigation-chrome-blur', `${theme.navigation_chrome.backdrop_blur}px`);
+
+  // 主页卡片统一背景层：default 保持不透明表面；blur 在模糊背景的同时融入一层
+  // 主题表面色（毛玻璃着色，浓度由 blur_tint 控制）；translucent 为无模糊的
+  // 半透明底色。
+  const homeCards = theme.home_cards;
+  const homeCardStyle = homeCards?.background_style ?? 'default';
+  html.style.setProperty(
+    '--home-card-opacity',
+    homeCardStyle === 'translucent'
+      ? `${(homeCards?.background_opacity ?? 0.8) * 100}%`
+      : homeCardStyle === 'blur' ? `${(homeCards?.blur_tint ?? HOME_CARD_BLUR_TINT) * 100}%` : '100%',
+  );
+  html.style.setProperty(
+    '--home-card-blur',
+    homeCardStyle === 'blur' ? `${homeCards?.backdrop_blur ?? 16}px` : '0px',
+  );
+  // 模糊卡片依赖 backdrop-filter 取样主题背景，但滚动容器的 mask 渐隐会把
+  // backdrop-filter 隔离在滚动区内部，导致模糊失效，因此该模式下禁用 mask
+  // （见 index.css 中 data-home-card-blur 规则）。
+  html.toggleAttribute('data-home-card-blur', homeCardStyle === 'blur');
   const nativeAcrylicSupported = /Win|Mac/.test(navigator.platform) && Boolean(window.lumiview?.windowTheme);
   html.toggleAttribute('data-navigation-acrylic', theme.navigation_chrome.acrylic && nativeAcrylicSupported);
   const navigationBlur = theme.navigation_chrome.acrylic ? 0 : theme.navigation_chrome.backdrop_blur;
@@ -353,6 +378,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       theme,
       resolvedTheme,
       activeTheme,
+      effectiveTheme,
       isPreviewing: preview !== null,
       setTheme,
       activateTheme,

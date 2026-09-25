@@ -140,6 +140,7 @@
 | --- | --- |
 | `ui.buttons` | `buttons` |
 | `ui.global_style` | `styles` 中的 `scope: "global"` |
+| `ui.home_cards` | `home_cards` |
 | `ui.navigation` | `navigation` |
 | `ui.overlay` | `overlays` |
 | `ui.pages` | `pages` |
@@ -180,6 +181,14 @@
 
 需要 `label`，可包含 `blocks`。`position` 可选 `top-left`、`top-right`、`bottom-left`、`bottom-right`，由宿主固定定位并限制尺寸；插件 CSS 不能自行改变浮层的宿主定位。
 
+### `home_cards`
+
+向主页贡献一张卡片，需要 `label`，可选 `description`（最长 500，用于设置页说明）：
+
+- `blocks`：与页面相同的声明式 block，主页是交互区域，允许使用 `button` block 调用插件动作。
+- 卡片与内置主页卡片共享统一背景层（由主题「主页卡片」设置控制），并出现在 设置 → 主页 的卡片列表中，用户可调整显隐与顺序。
+- 宿主用 `插件ID:卡片ID` 标识每张卡片；插件停用后其卡片自动从主页消失，用户此前的显隐与顺序配置会保留，重新启用后恢复。
+
 ### `styles`
 
 需要非空 `css`，UTF-8 大小不超过 64 KiB。`scope` 可为：
@@ -195,7 +204,7 @@
 
 ## 7. 页面 block
 
-页面和 overlay 使用同一组声明式 block。它们是 JSON 数据，不是 HTML，也不能携带 JavaScript。每个 descriptor 最多 64 个 block，计数包含嵌套 block，嵌套深度最多 3。
+页面、overlay 和小组件使用同一组声明式 block。它们是 JSON 数据，不是 HTML，也不能携带 JavaScript。每个 descriptor 最多 64 个 block，计数包含嵌套 block，嵌套深度最多 3。
 
 ### `widgets`
 
@@ -207,14 +216,59 @@
   "label": "天气卡片",
   "description": "显示插件提供的天气摘要",
   "default_size": {"width": 28, "height": 20},
+  "settings": [
+    {
+      "key": "city",
+      "label": "城市",
+      "type": "select",
+      "default": "beijing",
+      "options": [
+        {"value": "beijing", "label": "北京"},
+        {"value": "shanghai", "label": "上海"}
+      ]
+    }
+  ],
+  "refresh": {"action": "refresh-weather", "interval_seconds": 900},
   "blocks": [
-    {"type": "heading", "text": "今日天气", "level": 3},
-    {"type": "text", "text": "晴，24°C"}
+    {"type": "heading", "text": "{{city}}天气", "level": 3},
+    {"type": "metric", "label": "当前温度", "value": "{{temperature}}°", "unit": "C"}
   ]
 }
 ```
 
-`default_size.width` 和 `default_size.height` 使用桌面百分比，范围均为 8 到 100。桌面背景层不接收鼠标交互，因此小组件不能包含 `button` block；所有可见内容必须在贡献声明或宿主编辑器中预先确定。
+`default_size.width` 和 `default_size.height` 使用桌面百分比，范围均为 8 到 100。桌面背景层不接收鼠标交互，因此小组件不能包含 `button` block。
+
+#### `settings`（可选）
+
+声明用户可在小组件编辑器中调整的设置项，最多 16 项；`key` 需匹配 `^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$` 且最长 64，`label` 非空且最长 80。每个设置项的 `type` 支持：
+
+| `type` | 附加字段 |
+| --- | --- |
+| `text` / `textarea` | `default`（字符串 ≤500）、`placeholder`、`help`（≤200）、`maxLength`（1–1000）。 |
+| `number` | `default`（有限数字）、`min`、`max`、`step`（有限数字，`min < max`、`step > 0`）。 |
+| `switch` | `default`（布尔值）。 |
+| `select` | `options` 1–12 项，每项 `{value, label}` 均 ≤80 且 value 不可重复；`default` 必须是其中一个 value。 |
+| `slider` | 同 `number`，缺省边界为 0–100、步长 1。 |
+| `color` | `default` 必须是 `#RRGGBB`。 |
+| `date` | `default` 为 `YYYY-MM-DD` 字符串。 |
+
+实例设置保存在宿主场景中（键 ≤32、字符串值 ≤500、总序列化 ≤4 KiB），并通过刷新动作回传给插件。
+
+#### `refresh`（可选）
+
+```json
+{"action": "refresh-weather", "interval_seconds": 900, "payload": {"units": "metric"}}
+```
+
+宿主会按 `interval_seconds`（15–86400，缺省 300）周期调用该 action，`payload` 可选且 ≤64 KiB。调用时宿主会合并传入 `{...payload, settings: {...}}`。action 的返回值可以是：
+
+- 数组：直接作为新的 block 列表渲染（宿主会过滤未知类型与 `button`）；
+- 对象 `{"blocks": [...], "data": {...}}`：同时替换 block 与绑定数据；
+- 其他对象：作为绑定数据合并。
+
+#### 数据绑定
+
+block 的文本字段支持 `{{path}}` 模板插值，路径以点号访问刷新数据与设置项（设置项可省略前缀直接写 `{{city}}`）。未匹配到数据时保留原样显示，方便调试。返回数据仍受 action 结果 256 KiB 限制。
 
 | `type` | 字段与规则 |
 | --- | --- |
@@ -222,8 +276,14 @@
 | `heading` | `text` 同上；`level` 可省略，默认 2，只能为 1 至 6。 |
 | `image` | `src` 是包内安全相对图片路径且文件必须存在；`alt` 可选，最长 300。 |
 | `card` | `title` 可选、最长 200；`blocks` 可选并递归使用本表。 |
-| `button` | `label` 必填、最长 120；`action` 必须引用已注册动作；`payload` 可选，最大 64 KiB。 |
+| `button` | `label` 必填、最长 120；`action` 必须引用已注册动作；`payload` 可选，最大 64 KiB。仅页面可用，小组件中禁止。 |
 | `divider` | 无必填附加字段。 |
+| `metric` | `value` 必填、≤200（支持模板）；`label` ≤200、`unit` ≤24 可选；`size` 为 `sm`/`md`/`lg`，`align` 为 `left`/`center`/`right`。 |
+| `progress` | `value` 为 0–100 数字或 ≤64 的模板字符串；`label` ≤200、`unit` ≤24 可选。 |
+| `time` | 宿主渲染的实时时钟；`format` 为 `time`/`date`/`datetime`，`use24Hour` 布尔，`label` ≤80。 |
+| `badge` | `text` 必填 ≤120；`tone` 为 `neutral`/`success`/`warning`/`danger`/`info`。 |
+| `rows` | `items` 1–12 项，每项 `{label ≤120, value ≤200, emphasis?}`。 |
+| `columns` | `blocks` ≤6 个子 block，横向排列。 |
 
 图片 `src` 只能指向 `.gif`、`.jpeg`、`.jpg`、`.png`、`.webp`。不要使用绝对路径、URL、Data URL 或 `..`。当前完整示例不需要图片，因此没有附带占位资源。
 
@@ -246,12 +306,30 @@
 context.get_setting(key: str, default=None) -> JSONValue
 context.set_setting(key: str, value: JSONValue) -> None
 context.register_action(action_id: str, callback) -> None
+context.subscribe_event(event: str, callback) -> None
 context.contribute(kind: str, descriptor: dict) -> None
 ```
 
 设置键最长 160，只能由字母、数字、下划线组成的段以 `.` 分隔，例如 `counter.value`。点号创建嵌套对象。值和默认值必须可 JSON 序列化，不允许非字符串对象键、非有限浮点数或自定义对象；读取返回 JSON 副本。设置文件使用临时文件、`fsync` 和原子替换写入，并由进程内锁串行访问。
 
-动作 ID 最长 80，必须唯一。callback 接收一个已经复制并限制到 64 KiB 的 JSON payload，同步返回最大 256 KiB 的 JSON 值。返回 coroutine、自定义对象、字节串或非有限浮点数会导致调用失败。未启用、未完成启动或未知动作也会失败。不要在动作中执行长时间阻塞工作；当前调用路径是同步的。
+动作 ID 最长 80，必须唯一。callback 接收一个已经复制并限制到 64 KiB 的 JSON payload，同步返回最大 256 KiB 的 JSON 值。返回 coroutine、自定义对象、字节串或非有限浮点数会导致调用失败。未启用、未完成启动或未知动作也会失败。宿主动作调用最多等待 30 秒，超时后向调用方返回错误；不要在动作中执行长时间阻塞工作。
+
+`subscribe_event()` 可以订阅宿主事件。事件回调接收受 JSON 限制且最大 64 KiB 的 payload，不允许返回值；宿主最多等待单个回调 5 秒，回调异常或超时只记录错误，不会阻止壁纸或自动化主流程。插件停用、重载或启动失败时，订阅会自动清理。
+
+当前事件：
+
+- `wallpaper-changed`：应用成功设置静态壁纸时发布，payload 包含 `path`、`filename` 和 `source: "app"`。
+- `automation-finished`：自动化执行结束时发布，payload 包含 `automation_id`、`name`、`status`、`error` 和 `trigger`。
+
+示例：
+
+```python
+def setup(context):
+    def on_wallpaper_changed(payload):
+        context.set_setting("last_wallpaper", payload.get("path", ""))
+
+    context.subscribe_event("wallpaper-changed", on_wallpaper_changed)
+```
 
 `context.contribute()` 可以在 `setup` 或 `on_start` 动态追加 descriptor，使用与清单相同的校验和权限。它不能与同 kind、同 ID 的已有清单 contribution 重复。插件启动末尾会再次检查所有页面按钮和全局按钮引用的 action 是否已注册。
 

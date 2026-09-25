@@ -1,62 +1,50 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Card, Chip } from '@heroui/react';
-import { CalendarClock, CalendarDays, Clock3, FileText, Folder, Gauge, Image, MoonStar, Quote, Sparkles, StickyNote, Sunrise, Trash2, TrendingUp, Volume2, Wifi } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { Button, Chip } from '@heroui/react';
+import { Clock3, FileText, Folder, Image, PackageOpen, Trash2, Volume2, Wifi } from 'lucide-react';
 import { dynamicWallpaperAssetUrl } from '@/api/backend';
 import type { DynamicWallpaperScene, DynamicWidgetInstance } from '@/api/backend';
-import PluginRenderer from '@/plugins/PluginRenderer';
 import { usePlugins } from '@/plugins/context';
+import { BuiltinWidget, WidgetSurface } from './widgets/BuiltinWidgets';
+import PluginWidget from './widgets/PluginWidget';
+import { useWidgetDefinitions, widgetMinimumSize } from './widgets/registry';
 
-export interface WidgetDefinition {
-  type: string;
-  label: string;
-  description: string;
-  width: number;
-  height: number;
-  icon: LucideIcon;
-  pluginId?: string;
+export { useWidgetDefinitions, widgetMinimumSize } from './widgets/registry';
+export type { WidgetDefinition, WidgetSettingDescriptor } from './widgets/registry';
+
+export interface WidgetDragStatus {
+  mode: 'move' | 'resize';
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
 }
 
-export function widgetMinimumSize(type: string): { width: number; height: number } {
-  const minimums: Record<string, { width: number; height: number }> = {
-    'builtin:clock': { width: 20, height: 14 },
-    'builtin:date': { width: 16, height: 18 },
-    'builtin:note': { width: 20, height: 18 },
-    'builtin:status': { width: 20, height: 14 },
-    'builtin:greeting': { width: 22, height: 14 },
-    'builtin:countdown': { width: 18, height: 18 },
-    'builtin:quote': { width: 22, height: 18 },
-    'builtin:progress': { width: 22, height: 14 },
-  };
-  return minimums[type] ?? { width: 8, height: 8 };
+interface DragState {
+  id: string;
+  pointerId: number;
+  offsetX: number;
+  offsetY: number;
 }
 
-const BUILTIN_WIDGETS: WidgetDefinition[] = [
-  { type: 'builtin:clock', label: '数字时钟', description: '显示当前时间与星期', width: 28, height: 18, icon: Clock3 },
-  { type: 'builtin:date', label: '日期', description: '简洁的日历日期卡片', width: 20, height: 24, icon: CalendarDays },
-  { type: 'builtin:note', label: '便笺', description: '桌面上的快速提醒', width: 28, height: 24, icon: StickyNote },
-  { type: 'builtin:status', label: '运行状态', description: '显示动态壁纸服务状态', width: 26, height: 18, icon: Gauge },
-  { type: 'builtin:greeting', label: '时段问候', description: '随一天时段变化的问候卡片', width: 30, height: 18, icon: Sunrise },
-  { type: 'builtin:countdown', label: '日期倒计时', description: '记录距离重要日期还有多少天', width: 24, height: 22, icon: CalendarClock },
-  { type: 'builtin:quote', label: '文字卡片', description: '展示一句喜欢的话', width: 32, height: 22, icon: Quote },
-  { type: 'builtin:progress', label: '目标进度', description: '用进度条展示当前完成情况', width: 30, height: 18, icon: TrendingUp },
+interface ResizeState {
+  id: string;
+  pointerId: number;
+  handle: string;
+  pointerX: number;
+  pointerY: number;
+  origin: { x: number; y: number; width: number; height: number };
+}
+
+const RESIZE_HANDLES: { key: string; cursor: string; left: number; top: number }[] = [
+  { key: 'nw', cursor: 'nwse-resize', left: 0, top: 0 },
+  { key: 'n', cursor: 'ns-resize', left: 50, top: 0 },
+  { key: 'ne', cursor: 'nesw-resize', left: 100, top: 0 },
+  { key: 'e', cursor: 'ew-resize', left: 100, top: 50 },
+  { key: 'se', cursor: 'nwse-resize', left: 100, top: 100 },
+  { key: 's', cursor: 'ns-resize', left: 50, top: 100 },
+  { key: 'sw', cursor: 'nesw-resize', left: 0, top: 100 },
+  { key: 'w', cursor: 'ew-resize', left: 0, top: 50 },
 ];
-
-export function useWidgetDefinitions(): WidgetDefinition[] {
-  const { contributions } = usePlugins();
-  return [
-    ...BUILTIN_WIDGETS,
-    ...contributions.widgets.map((widget) => ({
-      type: `plugin:${widget.pluginId}:${widget.id}`,
-      label: widget.label,
-      description: widget.description || `由 ${widget.plugin.name} 提供`,
-      width: widget.default_size.width,
-      height: widget.default_size.height,
-      icon: Sparkles,
-      pluginId: widget.pluginId,
-    })),
-  ];
-}
 
 function ImageOverlay({ scene, isPaused }: { scene: DynamicWallpaperScene; isPaused: boolean }) {
   const { background } = scene;
@@ -316,167 +304,20 @@ function Background({
   );
 }
 
-function stringSetting(widget: DynamicWidgetInstance, key: string, fallback: string): string {
-  const value = widget.settings[key];
-  return typeof value === 'string' ? value : fallback;
-}
-
-function booleanSetting(widget: DynamicWidgetInstance, key: string, fallback: boolean): boolean {
-  const value = widget.settings[key];
-  return typeof value === 'boolean' ? value : fallback;
-}
-
-function numberSetting(widget: DynamicWidgetInstance, key: string, fallback: number): number {
-  const value = widget.settings[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function widgetBackground(widget: DynamicWidgetInstance, color: string): React.CSSProperties {
-  const opacity = Math.max(0, Math.min(1, widget.background_opacity ?? 1));
-  const blur = widget.background_blur === false ? 'none' : 'blur(24px)';
-  return {
-    backgroundColor: `color-mix(in srgb, ${color} ${opacity * 100}%, transparent)`,
-    backdropFilter: blur,
-    WebkitBackdropFilter: blur,
-    borderColor: opacity === 0 ? 'transparent' : undefined,
-    boxShadow: opacity === 0 ? 'none' : undefined,
-  };
-}
-
-function BuiltinWidget({ widget }: { widget: DynamicWidgetInstance }) {
-  const { type } = widget;
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    if (!['builtin:clock', 'builtin:date', 'builtin:greeting', 'builtin:countdown'].includes(type)) return undefined;
-    const timer = window.setInterval(() => setNow(new Date()), 1000);
-    return () => window.clearInterval(timer);
-  }, [type]);
-
-  if (type === 'builtin:clock') {
-    const label = stringSetting(widget, 'label', '');
-    const showDate = booleanSetting(widget, 'showDate', true);
-    const use24Hour = booleanSetting(widget, 'use24Hour', true);
-    return (
-      <div className="relative flex size-full flex-col justify-end overflow-hidden rounded-3xl border border-white/15 bg-black/45 p-5 text-white shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(0 0 0 / 45%)')}>
-        <div className="absolute -right-8 -top-10 size-32 rounded-full bg-white/10 blur-2xl" />
-        <div className="relative flex items-center justify-between gap-3">
-          <span className="truncate text-xs font-medium uppercase tracking-[0.18em] text-white/55">{label || 'Local time'}</span>
-          <Clock3 size={17} className="shrink-0 text-white/55" />
-        </div>
-        <span className="relative mt-1 text-5xl font-semibold tabular-nums tracking-[-0.06em]">{now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: !use24Hour })}</span>
-        {showDate && <span className="relative mt-1 truncate text-sm text-white/65">{now.toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' })}</span>}
-      </div>
-    );
-  }
-  if (type === 'builtin:date') {
-    const title = stringSetting(widget, 'title', '');
-    const showWeekday = booleanSetting(widget, 'showWeekday', true);
-    return (
-      <div className="flex size-full flex-col overflow-hidden rounded-3xl border border-white/70 bg-white/85 text-black shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(255 255 255 / 85%)')}>
-        <div className="flex items-center justify-between border-b border-black/10 px-5 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-black/45">
-          <span className="truncate">{title || now.getFullYear()}</span><CalendarDays size={17} />
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4">
-          <span className="text-6xl font-semibold tabular-nums tracking-tighter">{now.getDate()}</span>
-          <span className="mt-1 text-sm font-medium text-black/50">{now.toLocaleDateString('zh-CN', { month: 'long', ...(showWeekday ? { weekday: 'short' } : {}) })}</span>
-        </div>
-      </div>
-    );
-  }
-  if (type === 'builtin:note') {
-    const title = stringSetting(widget, 'title', '便笺');
-    const content = stringSetting(widget, 'content', '今天也要记得看看喜欢的风景。');
-    return (
-      <div className="relative size-full overflow-hidden rounded-3xl border border-white/25 bg-warning/90 p-5 text-warning-foreground shadow-2xl" style={widgetBackground(widget, 'color-mix(in srgb, var(--color-warning) 90%, transparent)')}>
-        <div className="absolute right-0 top-0 size-12 bg-white/20 [clip-path:polygon(100%_0,100%_100%,0_0)]" />
-        <div className="mb-4 flex items-center gap-2 text-sm font-semibold"><span className="flex size-8 items-center justify-center rounded-xl bg-black/10"><StickyNote size={16} /></span><span className="truncate">{title}</span></div>
-        <p className="line-clamp-5 whitespace-pre-wrap text-[15px] leading-6 opacity-75">{content}</p>
-      </div>
-    );
-  }
-  if (type === 'builtin:status') {
-    const title = stringSetting(widget, 'title', '动态服务');
-    const subtitle = stringSetting(widget, 'subtitle', '场景正在运行');
-    return (
-      <div className="flex size-full items-center gap-4 overflow-hidden rounded-3xl border border-white/15 bg-black/55 p-5 text-white shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(0 0 0 / 55%)')}>
-        <div className="relative flex size-12 shrink-0 items-center justify-center rounded-2xl bg-white/10"><Gauge size={24} /><span className="absolute -right-1 -top-1 size-3 rounded-full border-2 border-black/50 bg-success" /></div>
-        <div className="min-w-0"><p className="truncate text-lg font-semibold">{title}</p><p className="mt-1 truncate text-sm text-white/55">{subtitle}</p></div>
-      </div>
-    );
-  }
-  if (type === 'builtin:greeting') {
-    const hour = now.getHours();
-    const isDay = hour >= 6 && hour < 18;
-    const title = stringSetting(widget, 'title', '') || (hour < 6 ? '夜深了' : hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好');
-    const subtitle = stringSetting(widget, 'subtitle', '愿今天也有好风景');
-    const GreetingIcon = isDay ? Sunrise : MoonStar;
-    return (
-      <div className="relative flex size-full items-end overflow-hidden rounded-3xl border border-white/20 bg-black/55 p-5 text-white shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(0 0 0 / 55%)')}>
-        <GreetingIcon className="absolute right-5 top-5 text-white/60" size={28} />
-        <div className="absolute -left-12 -top-16 size-44 rounded-full bg-warning/20 blur-3xl" />
-        <div className="relative min-w-0"><p className="truncate text-3xl font-semibold tracking-tight">{title}</p><p className="mt-1 truncate text-sm text-white/60">{subtitle}</p></div>
-      </div>
-    );
-  }
-  if (type === 'builtin:countdown') {
-    const title = stringSetting(widget, 'title', '倒计时');
-    const target = stringSetting(widget, 'target', '');
-    const targetParts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(target);
-    const targetDate = targetParts ? new Date(Number(targetParts[1]), Number(targetParts[2]) - 1, Number(targetParts[3])) : null;
-    const validTarget = Boolean(targetDate
-      && targetDate.getFullYear() === Number(targetParts?.[1])
-      && targetDate.getMonth() === Number(targetParts?.[2]) - 1
-      && targetDate.getDate() === Number(targetParts?.[3]));
-    const todayIndex = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000;
-    const targetIndex = validTarget && targetDate ? Date.UTC(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()) / 86_400_000 : null;
-    const days = targetIndex === null ? null : Math.max(0, targetIndex - todayIndex);
-    const completed = targetIndex !== null && targetIndex <= todayIndex;
-    return (
-      <div className="flex size-full flex-col justify-between overflow-hidden rounded-3xl border border-white/20 bg-black/55 p-5 text-white shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(0 0 0 / 55%)')}>
-        <div className="flex items-center justify-between gap-3 text-sm text-white/70"><span className="truncate font-medium">{title}</span><CalendarClock size={19} /></div>
-        <div><div className="flex items-end gap-2"><span className="text-6xl font-semibold tabular-nums tracking-tighter">{completed ? '✓' : days ?? '--'}</span>{!completed && days !== null && <span className="mb-2 text-sm text-white/65">天</span>}</div><p className="mt-1 truncate text-xs text-white/65">{completed ? stringSetting(widget, 'completeText', '时间到了') : validTarget && targetDate ? targetDate.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }) : '请设置目标日期'}</p></div>
-      </div>
-    );
-  }
-  if (type === 'builtin:quote') {
-    const quote = stringSetting(widget, 'quote', '慢一点，也没关系。');
-    const author = stringSetting(widget, 'author', '');
-    return (
-      <div className="relative flex size-full flex-col justify-between overflow-hidden rounded-3xl border border-white/20 bg-white/90 p-6 text-black shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(255 255 255 / 90%)')}>
-        <Quote size={54} className="absolute -right-1 -top-2 text-black/5" fill="currentColor" />
-        <Sparkles size={18} className="text-black/35" />
-        <blockquote className="line-clamp-4 text-xl font-medium leading-relaxed tracking-tight">{quote}</blockquote>
-        <p className="truncate text-xs font-medium uppercase tracking-[0.15em] text-black/55">{author ? `— ${author}` : 'Daily note'}</p>
-      </div>
-    );
-  }
-  const title = stringSetting(widget, 'title', '本周进度');
-  const value = Math.max(0, Math.min(100, numberSetting(widget, 'value', 50)));
-  const unit = stringSetting(widget, 'unit', '%');
-  return (
-    <div className="flex size-full flex-col justify-between overflow-hidden rounded-3xl border border-white/15 bg-black/55 p-5 text-white shadow-2xl backdrop-blur-xl" style={widgetBackground(widget, 'rgb(0 0 0 / 55%)')}>
-      <div className="flex items-center justify-between text-sm text-white/70"><span className="truncate font-medium">{title}</span><TrendingUp size={19} /></div>
-      <div><div className="mb-3 flex items-end gap-1"><span className="text-4xl font-semibold tabular-nums tracking-tight">{Math.round(value)}</span><span className="mb-1 max-w-24 truncate text-sm text-white/65">{unit}</span></div><div className="h-2 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-white transition-[width] duration-500" style={{ width: `${value}%` }} /></div></div>
-    </div>
-  );
-}
-
-function WidgetContent({ widget }: { widget: DynamicWidgetInstance }) {
+function WidgetContent({ widget, editing }: { widget: DynamicWidgetInstance; editing: boolean }) {
   const { contributions } = usePlugins();
   if (widget.type.startsWith('builtin:')) return <BuiltinWidget widget={widget} />;
   const [, pluginId, widgetId] = widget.type.split(':');
   const definition = contributions.widgets.find((item) => item.pluginId === pluginId && item.id === widgetId);
-  if (!definition) return <Card className="size-full justify-center p-4"><Card.Title>小组件不可用</Card.Title></Card>;
-  return (
-    <Card data-plugin-id={pluginId} className="size-full overflow-auto p-4" style={widgetBackground(widget, 'var(--surface)')}>
-      <PluginRenderer
-        pluginId={pluginId}
-        pluginName={definition.plugin.name}
-        packageHash={definition.packageHash}
-        blocks={definition.blocks}
-      />
-    </Card>
-  );
+  if (!definition) {
+    return (
+      <WidgetSurface widget={widget} className="items-center justify-center gap-[0.5em] p-[1.2em] text-center">
+        <PackageOpen size="1.4em" className="opacity-50" />
+        <span className="text-[0.85em] opacity-60">小组组件不可用（插件已停用或移除）</span>
+      </WidgetSurface>
+    );
+  }
+  return <PluginWidget widget={widget} definition={definition} editing={editing} />;
 }
 
 interface DynamicDesktopProps {
@@ -489,7 +330,7 @@ interface DynamicDesktopProps {
   onChange?: (widgets: DynamicWidgetInstance[]) => void;
   preview?: { name: string; width: number; height: number } | null;
   showDragStatus?: boolean;
-  onDragStatusChange?: (status: { x: number; y: number } | null) => void;
+  onDragStatusChange?: (status: WidgetDragStatus | null) => void;
 }
 
 export function DesktopPreviewOverlay({ display }: { display: NonNullable<DynamicDesktopProps['preview']> }) {
@@ -511,6 +352,32 @@ export function DesktopPreviewOverlay({ display }: { display: NonNullable<Dynami
   );
 }
 
+function resizeRect(
+  origin: { x: number; y: number; width: number; height: number },
+  handle: string,
+  dx: number,
+  dy: number,
+  minWidth: number,
+  minHeight: number,
+): { x: number; y: number; width: number; height: number } {
+  let { x, y, width, height } = origin;
+  if (handle.includes('e')) width = origin.width + dx;
+  if (handle.includes('s')) height = origin.height + dy;
+  if (handle.includes('w')) {
+    width = origin.width - dx;
+    x = origin.x + dx;
+  }
+  if (handle.includes('n')) {
+    height = origin.height - dy;
+    y = origin.y + dy;
+  }
+  width = Math.round(Math.max(minWidth, Math.min(100, width)));
+  height = Math.round(Math.max(minHeight, Math.min(100, height)));
+  x = Math.round(Math.max(0, Math.min(100 - width, x)));
+  y = Math.round(Math.max(0, Math.min(100 - height, y)));
+  return { x, y, width, height };
+}
+
 export default function DynamicDesktop({
   scene,
   onPlaybackStateChange,
@@ -524,9 +391,15 @@ export default function DynamicDesktop({
   onDragStatusChange,
 }: DynamicDesktopProps) {
   const desktopRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{ id: string; pointerId: number; offsetX: number; offsetY: number } | null>(null);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const resizeRef = useRef<ResizeState | null>(null);
+  const [interaction, setInteraction] = useState<{ id: string; mode: 'move' | 'resize' } | null>(null);
+  const definitions = useWidgetDefinitions();
   const visibleEditingScale = Math.max(0.1, Math.min(1, editingScale));
+  const patchWidget = (id: string, updates: Partial<DynamicWidgetInstance>) => {
+    if (!onChange) return;
+    onChange(scene.widgets.map((item) => item.id === id ? { ...item, ...updates } : item));
+  };
   const moveWidget = (id: string, x: number, y: number) => {
     const widget = scene.widgets.find((item) => item.id === id);
     if (!widget || !onChange) return;
@@ -538,10 +411,20 @@ export default function DynamicDesktop({
   };
 
   const finishPointerDrag = (event: React.PointerEvent) => {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
+    if (dragRef.current?.pointerId !== event.pointerId && resizeRef.current?.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    setDraggingId(null);
+    resizeRef.current = null;
+    setInteraction(null);
     onDragStatusChange?.(null);
+  };
+
+  const pointerPercent = (event: React.PointerEvent) => {
+    const rect = desktopRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * 100,
+      y: ((event.clientY - rect.top) / rect.height) * 100,
+    };
   };
 
   return (
@@ -550,21 +433,32 @@ export default function DynamicDesktop({
       className={`dynamic-desktop relative size-full overflow-hidden bg-black ${editing ? 'dynamic-desktop--editing touch-none' : ''}`}
       onClick={() => editing && onSelect?.(null)}
       onPointerMove={(event) => {
+        const position = pointerPercent(event);
+        if (!position) return;
         const drag = dragRef.current;
-        const rect = desktopRef.current?.getBoundingClientRect();
-        if (!drag || drag.pointerId !== event.pointerId || !rect) return;
-        event.preventDefault();
-        moveWidget(
-          drag.id,
-          ((event.clientX - rect.left) / rect.width) * 100 - drag.offsetX,
-          ((event.clientY - rect.top) / rect.height) * 100 - drag.offsetY,
-        );
-        const widget = scene.widgets.find((item) => item.id === drag.id);
-        if (widget) {
-          onDragStatusChange?.({
-            x: Math.round(Math.max(0, Math.min(100 - widget.width, ((event.clientX - rect.left) / rect.width) * 100 - drag.offsetX))),
-            y: Math.round(Math.max(0, Math.min(100 - widget.height, ((event.clientY - rect.top) / rect.height) * 100 - drag.offsetY))),
-          });
+        if (drag && drag.pointerId === event.pointerId) {
+          event.preventDefault();
+          const widget = scene.widgets.find((item) => item.id === drag.id);
+          if (!widget) return;
+          const nextX = Math.round(Math.max(0, Math.min(100 - widget.width, position.x - drag.offsetX)));
+          const nextY = Math.round(Math.max(0, Math.min(100 - widget.height, position.y - drag.offsetY)));
+          if (nextX !== widget.x || nextY !== widget.y) {
+            moveWidget(drag.id, position.x - drag.offsetX, position.y - drag.offsetY);
+          }
+          onDragStatusChange?.({ mode: 'move', x: nextX, y: nextY });
+          return;
+        }
+        const resize = resizeRef.current;
+        if (resize && resize.pointerId === event.pointerId) {
+          event.preventDefault();
+          const widget = scene.widgets.find((item) => item.id === resize.id);
+          if (!widget) return;
+          const minimum = widgetMinimumSize(widget.type);
+          const next = resizeRect(resize.origin, resize.handle, position.x - resize.pointerX, position.y - resize.pointerY, minimum.width, minimum.height);
+          if (next.x !== widget.x || next.y !== widget.y || next.width !== widget.width || next.height !== widget.height) {
+            patchWidget(resize.id, next);
+          }
+          onDragStatusChange?.({ mode: 'resize', ...next });
         }
       }}
       onPointerUp={finishPointerDrag}
@@ -573,67 +467,120 @@ export default function DynamicDesktop({
       <Background scene={scene} onPlaybackStateChange={onPlaybackStateChange} />
       <div className="absolute inset-0 bg-black/5" />
       {preview && <DesktopPreviewOverlay display={preview} />}
-      {scene.widgets.map((widget) => (
-        <div
-          key={widget.id}
-          tabIndex={editing ? 0 : -1}
-          aria-label={editing ? `移动小组件 ${widget.type}` : undefined}
-          onPointerDown={(event) => {
-            if (!editing || event.button !== 0) return;
-            const rect = desktopRef.current?.getBoundingClientRect();
-            if (!rect) return;
-            event.preventDefault();
-            event.stopPropagation();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            dragRef.current = {
-              id: widget.id,
-              pointerId: event.pointerId,
-              offsetX: ((event.clientX - rect.left) / rect.width) * 100 - widget.x,
-              offsetY: ((event.clientY - rect.top) / rect.height) * 100 - widget.y,
-            };
-            setDraggingId(widget.id);
-            onDragStatusChange?.({ x: Math.round(widget.x), y: Math.round(widget.y) });
-            onSelect?.(widget.id);
-          }}
-          onClick={(event) => { event.stopPropagation(); onSelect?.(widget.id); }}
-          onFocus={() => editing && onSelect?.(widget.id)}
-          onKeyDown={(event) => {
-            if (!editing) return;
-            if (event.key === 'Enter' || event.key === ' ') {
+      {scene.widgets.map((widget, index) => {
+        const definition = definitions.find((item) => item.type === widget.type);
+        const isSelected = selectedId === widget.id;
+        return (
+          <div
+            key={widget.id}
+            tabIndex={editing ? 0 : -1}
+            aria-label={editing ? `${definition?.label ?? '小组件'} ${widget.type}` : undefined}
+            onPointerDown={(event) => {
+              if (!editing || event.button !== 0) return;
+              const position = pointerPercent(event);
+              if (!position) return;
               event.preventDefault();
+              event.stopPropagation();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              dragRef.current = {
+                id: widget.id,
+                pointerId: event.pointerId,
+                offsetX: position.x - widget.x,
+                offsetY: position.y - widget.y,
+              };
+              setInteraction({ id: widget.id, mode: 'move' });
+              onDragStatusChange?.({ mode: 'move', x: Math.round(widget.x), y: Math.round(widget.y) });
               onSelect?.(widget.id);
-              return;
-            }
-            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-            event.preventDefault();
-            const step = event.shiftKey ? 5 : 1;
-            const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
-            const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
-            moveWidget(widget.id, widget.x + dx, widget.y + dy);
-          }}
-          className={`absolute z-20 min-h-12 min-w-12 ${editing ? 'cursor-grab rounded-2xl ring-1 ring-white/35 outline-offset-2 active:cursor-grabbing' : ''} ${selectedId === widget.id ? 'outline-2 outline-primary' : ''} ${draggingId === widget.id ? 'scale-[1.01] shadow-2xl' : ''}`}
-          style={{ left: `${widget.x}%`, top: `${widget.y}%`, width: `${widget.width}%`, height: `${widget.height}%` }}
-        >
-          <div className={editing ? 'pointer-events-none size-full select-none' : 'size-full'} style={{ opacity: editing ? Math.max(widget.opacity ?? 1, 0.16) : widget.opacity ?? 1 }}>
-            <WidgetContent widget={widget} />
+            }}
+            onClick={(event) => { event.stopPropagation(); onSelect?.(widget.id); }}
+            onFocus={() => editing && onSelect?.(widget.id)}
+            onKeyDown={(event) => {
+              if (!editing) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onSelect?.(widget.id);
+                return;
+              }
+              if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+              event.preventDefault();
+              const step = event.shiftKey ? 5 : 1;
+              const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+              const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+              moveWidget(widget.id, widget.x + dx, widget.y + dy);
+            }}
+            className={`absolute min-h-12 min-w-12 ${editing ? `cursor-grab rounded-2xl outline-offset-2 active:cursor-grabbing ${isSelected ? 'outline-2 outline-primary' : 'ring-1 ring-white/30'}` : ''} ${interaction?.id === widget.id ? 'z-40' : ''}`}
+            style={{
+              left: `${widget.x}%`,
+              top: `${widget.y}%`,
+              width: `${widget.width}%`,
+              height: `${widget.height}%`,
+              zIndex: interaction?.id === widget.id ? 40 : index + 1,
+            }}
+          >
+            <div className={editing ? 'pointer-events-none size-full select-none' : 'size-full'} style={{ opacity: editing ? Math.max(widget.opacity ?? 1, 0.16) : widget.opacity ?? 1 }}>
+              <WidgetContent widget={widget} editing={editing} />
+            </div>
+            {editing && isSelected && (
+              <>
+                <div
+                  className="pointer-events-none absolute bottom-full left-0 mb-1.5 whitespace-nowrap rounded-md bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground shadow-lg"
+                  style={{ transform: `scale(${1 / visibleEditingScale})`, transformOrigin: 'bottom left' }}
+                >
+                  {definition?.label ?? widget.type}
+                </div>
+                {RESIZE_HANDLES.map((handle) => (
+                  <span
+                    key={handle.key}
+                    role="presentation"
+                    aria-hidden="true"
+                    className="absolute size-2.5 rounded-full border border-white bg-primary shadow-md"
+                    style={{
+                      left: `${handle.left}%`,
+                      top: `${handle.top}%`,
+                      transform: `translate(-50%, -50%) scale(${1 / visibleEditingScale})`,
+                      cursor: handle.cursor,
+                      touchAction: 'none',
+                    }}
+                    onPointerDown={(event) => {
+                      if (!editing || event.button !== 0) return;
+                      const position = pointerPercent(event);
+                      if (!position) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      resizeRef.current = {
+                        id: widget.id,
+                        pointerId: event.pointerId,
+                        handle: handle.key,
+                        pointerX: position.x,
+                        pointerY: position.y,
+                        origin: { x: widget.x, y: widget.y, width: widget.width, height: widget.height },
+                      };
+                      setInteraction({ id: widget.id, mode: 'resize' });
+                      onDragStatusChange?.({ mode: 'resize', x: Math.round(widget.x), y: Math.round(widget.y), width: Math.round(widget.width), height: Math.round(widget.height) });
+                    }}
+                  />
+                ))}
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="danger"
+                  aria-label="删除小组件"
+                  className="absolute right-0 top-0 z-20 rounded-full"
+                  style={{
+                    transform: `scale(${1 / visibleEditingScale})`,
+                    transformOrigin: 'top right',
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onPress={() => onChange?.(scene.widgets.filter((item) => item.id !== widget.id))}
+                >
+                  <Trash2 size={16} />
+                </Button>
+              </>
+            )}
           </div>
-          {editing && selectedId === widget.id && (
-            <Button
-              isIconOnly
-              size="sm"
-              variant="danger"
-              aria-label="删除小组件"
-              className="absolute right-0 top-0 z-20 rounded-full"
-              style={{
-                transform: `scale(${1 / visibleEditingScale})`,
-                transformOrigin: 'top right',
-              }}
-              onPointerDown={(event) => event.stopPropagation()}
-              onPress={() => onChange?.(scene.widgets.filter((item) => item.id !== widget.id))}
-            ><Trash2 size={16} /></Button>
-          )}
-        </div>
-      ))}
+        );
+      })}
       {editing && scene.widgets.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <Chip
@@ -644,11 +591,16 @@ export default function DynamicDesktop({
           ><Clock3 size={18} />从下方抽屉拖入小组件</Chip>
         </div>
       )}
-      {editing && showDragStatus && draggingId && (
-        <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2 rounded-lg bg-black/65 px-3 py-1.5 text-xs text-white backdrop-blur-md">
-          {Math.round(scene.widgets.find((item) => item.id === draggingId)?.x ?? 0)}%, {Math.round(scene.widgets.find((item) => item.id === draggingId)?.y ?? 0)}% · 已吸附 1% 网格
-        </div>
-      )}
+      {editing && showDragStatus && interaction && (() => {
+        const widget = scene.widgets.find((item) => item.id === interaction.id);
+        if (!widget) return null;
+        return (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2 rounded-lg bg-black/70 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md">
+            {Math.round(widget.x)}%, {Math.round(widget.y)}%
+            {interaction.mode === 'resize' ? ` · ${Math.round(widget.width)}% x ${Math.round(widget.height)}%` : ' · 已吸附 1% 网格'}
+          </div>
+        );
+      })()}
     </div>
   );
 }

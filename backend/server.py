@@ -40,6 +40,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
 from backend.app_meta import APP_NAME_EN, VERSION
+from backend.settings_manager import DEFAULT_PIXIV_IMAGE_PROXY, PIXIV_IMAGE_PROXIES
 
 # API members that must never be callable over RPC even though they are public.
 # * service objects -> would bypass the intended API surface
@@ -90,11 +91,21 @@ _MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 _CNU_IMAGE_HOSTS = frozenset({"imgoss.cnu.cc", "img.cnu.cc"})
 
 # Pixiv CDN hostnames allowed for the /api/pixiv-image proxy (SSRF guard).
-_PIXIV_IMAGE_HOSTS = frozenset({"i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh"})
+_PIXIV_IMAGE_HOSTS = frozenset({
+    "i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh",
+    "pixiv.azuremio.top", "pximg.0080417.xyz",
+})
 
-# Bounds for the general sniff-image proxy. The endpoint is authenticated, but
-# it still must not become an unbounded memory sink or an SSRF primitive.
-_SNIFF_IMAGE_MAX_BYTES = 64 * 1024 * 1024
+
+def _active_pixiv_image_proxy(api: Any) -> dict[str, str]:
+    selected_id = str(api.store.get("wallpaper.pixiv.image_proxy", DEFAULT_PIXIV_IMAGE_PROXY) or "")
+    return next(
+        (proxy for proxy in PIXIV_IMAGE_PROXIES if proxy["id"] == selected_id),
+        PIXIV_IMAGE_PROXIES[0],
+    )
+
+# Bound all remote image bodies, including responses without Content-Length.
+_IMAGE_PROXY_MAX_BYTES = 64 * 1024 * 1024
 _SNIFF_IMAGE_CONTENT_TYPES = frozenset(
     {
         "image/avif",
@@ -158,6 +169,26 @@ def _rpc_limiter_for_method(method: str) -> CapacityLimiter:
     return _DATA_RPC_LIMITER if method in _DATA_RPC_METHODS else _CONTROL_RPC_LIMITER
 
 
+def _read_image_body(response: requests.Response) -> bytes:
+    """Read a streamed image without trusting its declared size."""
+    content_length = response.headers.get("Content-Length", "")
+    if content_length.isdigit() and int(content_length) > _IMAGE_PROXY_MAX_BYTES:
+        raise requests.RequestException("image is too large")
+
+    chunks: list[bytes] = []
+    received = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        received += len(chunk)
+        if received > _IMAGE_PROXY_MAX_BYTES:
+            raise requests.RequestException("image is too large")
+        chunks.append(chunk)
+    if received == 0:
+        raise requests.RequestException("image is empty")
+    return b"".join(chunks)
+
+
 def _validate_public_http_url(value: str) -> tuple[str, str, int]:
     """Validate a remote URL before the backend makes an outbound request."""
     parsed = urlparse(value)
@@ -196,9 +227,10 @@ def _validate_referer(value: str | None) -> str:
 
 
 # RPC methods that must not themselves produce log entries. Log inspection would
-# otherwise inflate its own counts, while scene reads may come from a long-lived
-# dynamic wallpaper runtime where routine refreshes are not actionable events.
-_QUIET_RPC_METHODS = frozenset({"get_log_stats", "get_debug_log", "get_dynamic_wallpaper_scene"})
+# otherwise inflate its own counts, scene reads may come from a long-lived
+# dynamic wallpaper runtime where routine refreshes are not actionable events,
+# and frontend log ingestion writes its own explicit entry instead.
+_QUIET_RPC_METHODS = frozenset({"get_log_stats", "get_debug_log", "get_dynamic_wallpaper_scene", "log_frontend"})
 
 
 def _rpc_method_from_path(path: str) -> str | None:
@@ -662,18 +694,39 @@ report('player-ready',true);
             raise HTTPException(status_code=403, detail="forbidden image source")
 
         def _fetch() -> tuple[bytes, str]:
-            resp = requests.get(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LittleTreeWallpaperNext/2.0",
-                    "Referer": "http://www.cnu.cc/",
-                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-            return resp.content, content_type or "image/jpeg"
+            current_url = url
+            visited: set[str] = set()
+            for _ in range(5):
+                current = urlparse(current_url)
+                if current.scheme not in ("http", "https") or (current.hostname or "").lower() not in _CNU_IMAGE_HOSTS:
+                    raise requests.RequestException("CNU image redirect target is not allowed")
+                if current_url in visited:
+                    raise requests.RequestException("CNU image redirect loop detected")
+                visited.add(current_url)
+                resp = requests.get(
+                    current_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LittleTreeWallpaperNext/2.0",
+                        "Referer": "http://www.cnu.cc/",
+                        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    },
+                    timeout=30,
+                    allow_redirects=False,
+                    stream=True,
+                )
+                try:
+                    if resp.is_redirect or resp.is_permanent_redirect:
+                        location = resp.headers.get("Location")
+                        if not location:
+                            raise requests.RequestException("CNU image redirect has no target")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+                    return _read_image_body(resp), content_type or "image/jpeg"
+                finally:
+                    resp.close()
+            raise requests.RequestException("too many CNU image redirects")
 
         try:
             data, content_type = await to_thread.run_sync(_fetch, limiter=_IMAGE_PROXY_LIMITER)
@@ -697,15 +750,17 @@ report('player-ready',true);
         referer: str | None = None,
         _: None = Depends(verify_token),
     ) -> Response:
-        """Proxy a sniffed image with the source page's Referer.
+        """Proxy a remote image for same-origin reads (sniff, download, edit).
 
         Browsers cannot set a cross-origin Referer for an image reliably, and
         they cannot fetch many hotlink-protected images because of CORS. This
         same-origin endpoint keeps the remote request server-side.
         """
         try:
-            upstream_url, initial_host, _ = _validate_public_http_url(url)
             upstream_referer = _validate_referer(referer)
+            upstream_url, initial_host, _ = await to_thread.run_sync(
+                _validate_public_http_url, url, limiter=_IMAGE_PROXY_LIMITER
+            )
         except ValueError as exc:
             raise HTTPException(status_code=403, detail="forbidden image source") from exc
 
@@ -719,6 +774,16 @@ report('player-ready',true);
             timeout_seconds = max(5, min(configured_timeout, 120))
             user_agent = str(api.store.get("sniff.user_agent", "Mozilla/5.0"))[:512]
 
+            # Pixiv CDN images are hotlink-protected and their mirrors are not
+            # CORS-readable. Fetch them through the selected mirror with its
+            # Referer, exactly like the dedicated Pixiv proxy endpoint does.
+            pixiv_proxy: dict[str, str] | None = None
+            if initial_host in _PIXIV_IMAGE_HOSTS:
+                pixiv_proxy = _active_pixiv_image_proxy(api)
+                current_url = urlparse(upstream_url)._replace(
+                    scheme="https", netloc=urlparse(pixiv_proxy["base_url"]).netloc
+                ).geturl()
+
             for _ in range(5):
                 current_url, current_host, _ = _validate_public_http_url(current_url)
                 if current_url in visited:
@@ -731,11 +796,16 @@ report('player-ready',true);
                 }
                 if upstream_referer:
                     headers["Referer"] = upstream_referer
+                elif pixiv_proxy is not None:
+                    headers["Referer"] = pixiv_proxy["referer"]
 
+                # Original Pixiv files are large; keep the same generous read
+                # budget the backend download service uses for them.
+                read_timeout = 120 if pixiv_proxy is not None else timeout_seconds
                 response = requests.get(
                     current_url,
                     headers=headers,
-                    timeout=(min(10, timeout_seconds), timeout_seconds),
+                    timeout=(min(10, read_timeout), read_timeout),
                     allow_redirects=False,
                     stream=True,
                 )
@@ -757,22 +827,7 @@ report('player-ready',true);
                     ):
                         raise requests.RequestException("sniff image upstream returned non-image content")
 
-                    content_length = response.headers.get("Content-Length", "")
-                    if content_length.isdigit() and int(content_length) > _SNIFF_IMAGE_MAX_BYTES:
-                        raise requests.RequestException("sniff image is too large")
-
-                    chunks: list[bytes] = []
-                    received = 0
-                    for chunk in response.iter_content(chunk_size=64 * 1024):
-                        if not chunk:
-                            continue
-                        received += len(chunk)
-                        if received > _SNIFF_IMAGE_MAX_BYTES:
-                            raise requests.RequestException("sniff image is too large")
-                        chunks.append(chunk)
-                    if received == 0:
-                        raise requests.RequestException("sniff image is empty")
-                    data = b"".join(chunks)
+                    data = _read_image_body(response)
                     if content_type in generic_content_types:
                         from PIL import Image
 
@@ -825,9 +880,11 @@ report('player-ready',true);
         if parsed.scheme not in ("http", "https") or host not in _PIXIV_IMAGE_HOSTS:
             raise HTTPException(status_code=403, detail="forbidden image source")
 
-        upstream_url = url
-        if host in {"i.pximg.net", "pximg.cocomi.eu.org"}:
-            upstream_url = parsed._replace(scheme="https", netloc="i.yuki.sh").geturl()
+        proxy = _active_pixiv_image_proxy(api)
+        upstream_url = parsed._replace(
+            scheme="https",
+            netloc=urlparse(proxy["base_url"]).netloc,
+        ).geturl()
 
         def _fetch() -> tuple[bytes, str]:
             current_url = upstream_url
@@ -841,9 +898,9 @@ report('player-ready',true);
                 if current_parsed.scheme not in ("http", "https") or current_host not in _PIXIV_IMAGE_HOSTS:
                     raise requests.RequestException("Pixiv image redirect target is not allowed")
                 referer = (
-                    "https://pxelk.cocomi.eu.org/"
-                    if current_host in {"pximg.cocomi.eu.org", "i.yuki.sh"}
-                    else "https://www.pixiv.net/"
+                    "https://www.pixiv.net/"
+                    if current_host in {"i.pximg.net", "i.pximg.org"}
+                    else proxy["referer"]
                 )
                 resp = requests.get(
                     current_url,
@@ -857,31 +914,34 @@ report('player-ready',true);
                     },
                     timeout=30,
                     allow_redirects=False,
+                    stream=True,
                 )
-                if resp.is_redirect or resp.is_permanent_redirect:
-                    location = resp.headers.get("Location")
-                    resp.close()
-                    if not location:
-                        raise requests.RequestException("Pixiv image redirect has no target")
-                    current_url = urljoin(current_url, location)
-                    continue
-                resp.raise_for_status()
-                content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
-                if content_type not in {
-                    "image/avif",
-                    "image/bmp",
-                    "image/gif",
-                    "image/jpeg",
-                    "image/png",
-                    "image/webp",
-                }:
-                    raise requests.RequestException("Pixiv image upstream returned non-image content")
-                data = resp.content
-                from PIL import Image
+                try:
+                    if resp.is_redirect or resp.is_permanent_redirect:
+                        location = resp.headers.get("Location")
+                        if not location:
+                            raise requests.RequestException("Pixiv image redirect has no target")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                    if content_type not in {
+                        "image/avif",
+                        "image/bmp",
+                        "image/gif",
+                        "image/jpeg",
+                        "image/png",
+                        "image/webp",
+                    }:
+                        raise requests.RequestException("Pixiv image upstream returned non-image content")
+                    data = _read_image_body(resp)
+                    from PIL import Image
 
-                with Image.open(io.BytesIO(data)) as image:
-                    image.verify()
-                return data, content_type
+                    with Image.open(io.BytesIO(data)) as image:
+                        image.verify()
+                    return data, content_type
+                finally:
+                    resp.close()
             raise requests.RequestException("Too many Pixiv image redirects")
 
         try:

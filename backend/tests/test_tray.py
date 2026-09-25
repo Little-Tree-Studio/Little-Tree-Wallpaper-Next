@@ -31,7 +31,7 @@ class ApplicationTrayTests(unittest.TestCase):
         icon = MagicMock()
         self.tray._tray_icon = icon
 
-        self.tray.notify("Title", "Message")
+        self.assertTrue(self.tray.notify("Title", "Message"))
 
         icon.notify.assert_called_once_with("Message", "Title")
 

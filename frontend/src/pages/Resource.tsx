@@ -11,10 +11,12 @@ import {
   queryBing, querySpotlight,
   copyToClipboard, addFavorite,
   downloadWithProgress, saveAsWithProgress, setWallpaperWithProgress, openUrl,
+  getSettings, updateSettings,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer';
 import { logError } from '@/lib/log';
 import { safeNameForFile } from '@/lib/download';
+import { WALLPAPER_MARKETS, DEFAULT_WALLPAPER_MARKET, resolveWallpaperMarket } from '@/lib/wallpaperMarkets';
 import IntelliMarketsPanel from '@/components/IntelliMarketsPanel';
 import WallpaperSourceBrowser from './WallpaperSourceBrowser';
 import CnuPanel from '@/components/CnuPanel';
@@ -134,6 +136,10 @@ export default function Resource() {
   const [spotlightGallery, setSpotlightGallery] = useState<any[]>([]);
   const [bingLoading, setBingLoading] = useState(false);
   const [spotlightLoading, setSpotlightLoading] = useState(false);
+  const [bingMarket, setBingMarket] = useState(DEFAULT_WALLPAPER_MARKET);
+  const [bingMarketReady, setBingMarketReady] = useState(false);
+  const [spotlightMarket, setSpotlightMarket] = useState(DEFAULT_WALLPAPER_MARKET);
+  const [spotlightMarketReady, setSpotlightMarketReady] = useState(false);
   const [bingLoadedFor, setBingLoadedFor] = useState<string | null>(null);
   const [spotlightLoadedFor, setSpotlightLoadedFor] = useState<string | null>(null);
   const [selectedBingIndex, setSelectedBingIndex] = useState(0);
@@ -151,35 +157,35 @@ export default function Resource() {
     }
   }, [pluginTabs]);
 
-  const fetchBing = useCallback(async (category: string = 'daily', forceRefresh: boolean = false) => {
+  const fetchBing = useCallback(async (category: string, market: string, forceRefresh: boolean = false) => {
     setBingLoading(true);
     setBingGallery([]);
     setSelectedBingIndex(0);
     try {
-      const items = await queryBing(category, 'zh-CN', category === 'daily' ? 1 : 12, 'highDef', forceRefresh);
+      const items = await queryBing(category, market, category === 'daily' ? 1 : 12, 'highDef', forceRefresh);
       setBingGallery(items || []);
-      setBingLoadedFor(category);
+      setBingLoadedFor(`${category}:${market}`);
     } catch (e) {
       logError('Bing load failed', e);
       setBingGallery([]);
-      setBingLoadedFor(category);
+      setBingLoadedFor(`${category}:${market}`);
     } finally {
       setBingLoading(false);
     }
   }, []);
 
-  const fetchSpotlight = useCallback(async (source: string = 'online', forceRefresh: boolean = false) => {
+  const fetchSpotlight = useCallback(async (source: string, market: string, forceRefresh: boolean = false) => {
     setSpotlightLoading(true);
     setSpotlightGallery([]);
     setSelectedSpotlightIndex(0);
     try {
-      const items = await querySpotlight(source, 18, 'zh-CN', forceRefresh);
+      const items = await querySpotlight(source, 18, market, forceRefresh);
       setSpotlightGallery(items || []);
-      setSpotlightLoadedFor(source);
+      setSpotlightLoadedFor(`${source}:${market}`);
     } catch (e) {
       logError('Spotlight load failed', e);
       setSpotlightGallery([]);
-      setSpotlightLoadedFor(source);
+      setSpotlightLoadedFor(`${source}:${market}`);
     } finally {
       setSpotlightLoading(false);
     }
@@ -188,17 +194,41 @@ export default function Resource() {
   useEffect(() => {
     if (mountedRef.current) return;
     mountedRef.current = true;
-    fetchBing('daily');
-  }, [fetchBing]);
+    getSettings()
+      .then((s) => {
+        setBingMarket(resolveWallpaperMarket(s.wallpaper?.bing?.market));
+        setSpotlightMarket(resolveWallpaperMarket(s.wallpaper?.spotlight?.market));
+      })
+      .catch(() => { /* keep default market */ })
+      .finally(() => {
+        setBingMarketReady(true);
+        setSpotlightMarketReady(true);
+      });
+  }, []);
+
+  const bingRequestKey = `${bingTab}:${bingMarket}`;
+  const spotlightRequestKey = `${spotlightTab}:${spotlightMarket}`;
 
   useEffect(() => {
-    if (activeTab === 'bing' && bingTab !== bingLoadedFor && !bingLoading) {
-      fetchBing(bingTab);
+    if (activeTab === 'bing' && bingMarketReady && bingRequestKey !== bingLoadedFor && !bingLoading) {
+      fetchBing(bingTab, bingMarket);
     }
-    if (activeTab === 'spotlight' && spotlightTab !== spotlightLoadedFor && !spotlightLoading) {
-      fetchSpotlight(spotlightTab);
+    if (activeTab === 'spotlight' && spotlightMarketReady && spotlightRequestKey !== spotlightLoadedFor && !spotlightLoading) {
+      fetchSpotlight(spotlightTab, spotlightMarket);
     }
-  }, [activeTab, bingTab, spotlightTab, bingLoadedFor, spotlightLoadedFor, bingLoading, spotlightLoading, fetchBing, fetchSpotlight]);
+  }, [activeTab, bingTab, bingMarket, bingRequestKey, bingMarketReady, spotlightTab, spotlightMarket, spotlightRequestKey, spotlightMarketReady, bingLoadedFor, spotlightLoadedFor, bingLoading, spotlightLoading, fetchBing, fetchSpotlight]);
+
+  const handleBingMarketChange = (market: string) => {
+    if (market === bingMarket) return;
+    setBingMarket(market);
+    void updateSettings({ 'wallpaper.bing.market': market }).catch((e) => logError('Bing market save failed', e));
+  };
+
+  const handleSpotlightMarketChange = (market: string) => {
+    if (market === spotlightMarket) return;
+    setSpotlightMarket(market);
+    void updateSettings({ 'wallpaper.spotlight.market': market }).catch((e) => logError('Spotlight market save failed', e));
+  };
 
   const handleSetWallpaper = (url: string, title: string, localPath?: string | null) => {
     const safeName = safeNameForFile(title, 'wallpaper');
@@ -222,8 +252,8 @@ export default function Resource() {
   const currentBing = bingGallery[selectedBingIndex];
   const currentSpotlight = spotlightGallery[selectedSpotlightIndex];
 
-  const bingEmpty = bingLoadedFor === bingTab && !bingLoading && bingGallery.length === 0;
-  const spotlightEmpty = spotlightLoadedFor === spotlightTab && !spotlightLoading && spotlightGallery.length === 0;
+  const bingEmpty = bingLoadedFor === bingRequestKey && !bingLoading && bingGallery.length === 0;
+  const spotlightEmpty = spotlightLoadedFor === spotlightRequestKey && !spotlightLoading && spotlightGallery.length === 0;
 
   const openBingViewer = (startIndex = 0) => {
     const items = bingGallery.map((item) => ({
@@ -284,10 +314,31 @@ export default function Resource() {
         </Tabs.ListContainer>
 
         <Tabs.Panel id="bing">
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             <Button size="sm" variant={bingTab === 'daily' ? 'primary' : 'ghost'} onPress={() => setBingTab('daily')}>每日</Button>
             <Button size="sm" variant={bingTab === 'recent' ? 'primary' : 'ghost'} onPress={() => setBingTab('recent')}>近期</Button>
-            <Button size="sm" variant="ghost" onPress={() => fetchBing(bingTab, true)} isDisabled={bingLoading}><RefreshCw size={14} className={bingLoading ? 'animate-spin' : ''} /></Button>
+            <ComboBox
+              className="w-36"
+              menuTrigger="focus"
+              selectedKey={bingMarket}
+              onSelectionChange={(key) => key && handleBingMarketChange(String(key))}
+            >
+              <Label className="sr-only">地区</Label>
+              <ComboBox.InputGroup>
+                <Input placeholder="选择地区" />
+                <ComboBox.Trigger />
+              </ComboBox.InputGroup>
+              <ComboBox.Popover>
+                <ListBox>
+                  {WALLPAPER_MARKETS.map((market) => (
+                    <ListBox.Item key={market.id} id={market.id} textValue={market.label}>
+                      {market.label}<ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </ComboBox.Popover>
+            </ComboBox>
+            <Button size="sm" variant="ghost" onPress={() => fetchBing(bingTab, bingMarket, true)} isDisabled={bingLoading}><RefreshCw size={14} className={bingLoading ? 'animate-spin' : ''} /></Button>
           </div>
 
           {bingLoading ? (
@@ -389,10 +440,33 @@ export default function Resource() {
         </Tabs.Panel>
 
         <Tabs.Panel id="spotlight">
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             <Button size="sm" variant={spotlightTab === 'online' ? 'primary' : 'ghost'} onPress={() => setSpotlightTab('online')}>在线</Button>
             <Button size="sm" variant={spotlightTab === 'local' ? 'primary' : 'ghost'} onPress={() => setSpotlightTab('local')}>本地</Button>
-            <Button size="sm" variant="ghost" onPress={() => fetchSpotlight(spotlightTab, true)} isDisabled={spotlightLoading}><RefreshCw size={14} className={spotlightLoading ? 'animate-spin' : ''} /></Button>
+            {spotlightTab === 'online' && (
+              <ComboBox
+                className="w-36"
+                menuTrigger="focus"
+                selectedKey={spotlightMarket}
+                onSelectionChange={(key) => key && handleSpotlightMarketChange(String(key))}
+              >
+                <Label className="sr-only">地区</Label>
+                <ComboBox.InputGroup>
+                  <Input placeholder="选择地区" />
+                  <ComboBox.Trigger />
+                </ComboBox.InputGroup>
+                <ComboBox.Popover>
+                  <ListBox>
+                    {WALLPAPER_MARKETS.map((market) => (
+                      <ListBox.Item key={market.id} id={market.id} textValue={market.label}>
+                        {market.label}<ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </ComboBox.Popover>
+              </ComboBox>
+            )}
+            <Button size="sm" variant="ghost" onPress={() => fetchSpotlight(spotlightTab, spotlightMarket, true)} isDisabled={spotlightLoading}><RefreshCw size={14} className={spotlightLoading ? 'animate-spin' : ''} /></Button>
           </div>
 
           {spotlightLoading ? (

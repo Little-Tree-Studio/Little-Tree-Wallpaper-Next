@@ -1,6 +1,8 @@
 import { Button, Card, Description, Input, Label, ListBox, Select, Switch, TextField } from '@heroui/react';
 import { Clock3, FolderOpen, Image, MonitorUp, RefreshCw } from 'lucide-react';
-import { selectAutomationDirectory, selectAutomationLocalImage } from '@/api/backend';
+import { useEffect, useState } from 'react';
+import { getAutomationResourceCatalog, selectAutomationDirectory, selectAutomationLocalImage } from '@/api/backend';
+import type { AutomationResourceCatalog } from '@/api/backend';
 import type { AutomationDocument, SimpleAutomationSettings } from './types';
 import { DEFAULT_SIMPLE_SETTINGS, applySimpleSettings } from './types';
 
@@ -21,11 +23,35 @@ const SOURCES = [
   { id: 'resource', label: '在线壁纸', description: '自动获取新的在线壁纸' },
 ] as const;
 
+const RESOURCE_OPTIONS: Array<{ id: SimpleAutomationSettings['resource']; label: string }> = [
+  { id: 'bing', label: 'Bing 每日壁纸' },
+  { id: 'spotlight', label: 'Windows 聚焦' },
+  { id: 'timeline', label: '拾光壁纸' },
+  { id: 'cnu', label: 'CNU 精选' },
+  { id: 'pixiv', label: 'Pixiv 日榜' },
+  { id: 'im', label: 'IntelliMarkets' },
+  { id: 'ltws', label: '壁纸源' },
+];
+
 export default function SimpleAutomationEditor({ document, onChange }: SimpleAutomationEditorProps) {
   const settings = document.simple || DEFAULT_SIMPLE_SETTINGS;
   const change = (patch: Partial<SimpleAutomationSettings>) => onChange(applySimpleSettings(document, { ...settings, ...patch }));
   const triggerLabel = TRIGGERS.find((item) => item.id === settings.trigger)?.label || '';
   const sourceLabel = SOURCES.find((item) => item.id === settings.source)?.label || '';
+  const resourceLabel = RESOURCE_OPTIONS.find((item) => item.id === settings.resource)?.label || '';
+
+  const needsCatalog = settings.source === 'resource' && (settings.resource === 'im' || settings.resource === 'ltws');
+  const [catalog, setCatalog] = useState<AutomationResourceCatalog | null>(null);
+  useEffect(() => {
+    if (!needsCatalog) return;
+    let active = true;
+    getAutomationResourceCatalog().then((data) => { if (active) setCatalog(data); }).catch(() => {});
+    return () => { active = false; };
+  }, [needsCatalog]);
+
+  const imSources = catalog?.intelligent_market ?? [];
+  const ltwsSources = (catalog?.wallpaper_sources ?? []).filter((item) => item.enabled !== false && !item.invalid);
+  const ltwsApis = ltwsSources.find((item) => item.identifier === settings.resourceSourceId)?.apis ?? [];
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-background p-5 sm:p-8">
@@ -75,16 +101,40 @@ export default function SimpleAutomationEditor({ document, onChange }: SimpleAut
             ))}
           </Card.Content>
           <Card.Footer className="flex-wrap gap-3">
-            {settings.source === 'resource' ? <Select className="w-60" value={settings.resource} onChange={(key) => change({ resource: String(key) as SimpleAutomationSettings['resource'] })}>
-              <Label>在线壁纸来源</Label>
-              <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-              <Select.Popover><ListBox>
-                <ListBox.Item id="bing" textValue="Bing 每日壁纸">Bing 每日壁纸</ListBox.Item>
-                <ListBox.Item id="spotlight" textValue="Windows 聚焦">Windows 聚焦</ListBox.Item>
-                <ListBox.Item id="cnu" textValue="CNU 精选">CNU 精选</ListBox.Item>
-                <ListBox.Item id="pixiv" textValue="Pixiv 日榜">Pixiv 日榜</ListBox.Item>
-              </ListBox></Select.Popover>
-            </Select> : <>
+            {settings.source === 'resource' ? <>
+              <Select className="w-60" value={settings.resource} onChange={(key) => change({ resource: String(key) as SimpleAutomationSettings['resource'], resourceSourceId: '', resourceApiName: '' })}>
+                <Label>在线壁纸来源</Label>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover><ListBox>
+                  {RESOURCE_OPTIONS.map((item) => <ListBox.Item key={item.id} id={item.id} textValue={item.label}>{item.label}</ListBox.Item>)}
+                </ListBox></Select.Popover>
+              </Select>
+              {settings.resource === 'im' && <Select className="w-60" value={settings.resourceSourceId || ''} onChange={(key) => change({ resourceSourceId: String(key) })}>
+                <Label>IntelliMarkets 来源</Label>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover><ListBox>
+                  {imSources.map((item) => <ListBox.Item key={item.id} id={item.id} textValue={item.friendly_name}>{item.friendly_name}</ListBox.Item>)}
+                </ListBox></Select.Popover>
+              </Select>}
+              {settings.resource === 'ltws' && <>
+                <Select className="w-60" value={settings.resourceSourceId || ''} onChange={(key) => change({ resourceSourceId: String(key), resourceApiName: '' })}>
+                  <Label>壁纸源</Label>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover><ListBox>
+                    {ltwsSources.map((item) => <ListBox.Item key={item.identifier} id={item.identifier} textValue={item.name}>{item.name}</ListBox.Item>)}
+                  </ListBox></Select.Popover>
+                </Select>
+                <Select className="w-60" value={settings.resourceApiName || ''} onChange={(key) => change({ resourceApiName: String(key) })}>
+                  <Label>API</Label>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover><ListBox>
+                    {ltwsApis.map((item) => <ListBox.Item key={item.name} id={item.name} textValue={item.description ? `${item.name} · ${item.description}` : item.name}>{item.description ? `${item.name} · ${item.description}` : item.name}</ListBox.Item>)}
+                  </ListBox></Select.Popover>
+                </Select>
+              </>}
+              {needsCatalog && catalog && ((settings.resource === 'im' && !imSources.length) || (settings.resource === 'ltws' && !ltwsSources.length)) &&
+                <Description>没有可用的{resourceLabel}来源，请先在资源页添加或启用。</Description>}
+            </> : <>
               <Button variant="secondary" onPress={async () => {
                 const path = settings.source === 'folder' ? await selectAutomationDirectory() : await selectAutomationLocalImage();
                 if (path) change({ path });
@@ -101,7 +151,7 @@ export default function SimpleAutomationEditor({ document, onChange }: SimpleAut
           <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent-soft-foreground"><RefreshCw size={20} /></div>
           <Card.Header className="flex-1">
             <Card.Title>任务摘要</Card.Title>
-            <Card.Description>{triggerLabel}，使用{sourceLabel}更换桌面壁纸。三个模式中的任务可以分别启用并同时生效。</Card.Description>
+            <Card.Description>{triggerLabel}，使用{sourceLabel}{settings.source === 'resource' && resourceLabel ? `（${resourceLabel}）` : ''}更换桌面壁纸。三个模式中的任务可以分别启用并同时生效。</Card.Description>
           </Card.Header>
         </Card>
       </div>

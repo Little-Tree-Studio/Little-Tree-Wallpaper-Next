@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, ProgressBar, Spinner } from '@heroui/react';
+import { Alert, Button, Modal, ProgressBar, Spinner } from '@heroui/react';
 import { Download, ExternalLink, Package, RefreshCw } from 'lucide-react';
 import {
   checkForUpdates,
   FORCED_UPDATE_DETECTED_EVENT,
+  TEST_UPDATE_DETECTED_EVENT,
   getUpdateDownloadStatus,
   installDownloadedUpdate,
   openUrl,
@@ -32,6 +33,7 @@ function checkForcedUpdate(): Promise<UpdateCheckResult> {
 export default function ForcedUpdateBanner() {
   const [state, setState] = useState<DownloadState | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const startDownload = async (update: UpdateCheckResult) => {
     try {
@@ -84,7 +86,21 @@ export default function ForcedUpdateBanner() {
       const update = (event as CustomEvent<UpdateCheckResult>).detail;
       if (update?.has_update && update.force_update) void startDownload(update);
     };
+    const handleTestDetected = (event: Event) => {
+      const update = (event as CustomEvent<UpdateCheckResult>).detail;
+      if (!update?.has_update || !update.force_update) return;
+      setState({
+        update,
+        download: {
+          id: 'debug-test', phase: 'downloaded', version: update.latest_version,
+          filename: 'debug-test-update.exe', path: '', received_bytes: 0,
+          total_bytes: update.package?.size_bytes || 0, progress: 100,
+          error: '', already_downloaded: true, started_at: '', finished_at: '',
+        },
+      });
+    };
     window.addEventListener(FORCED_UPDATE_DETECTED_EVENT, handleDetected);
+    window.addEventListener(TEST_UPDATE_DETECTED_EVENT, handleTestDetected);
     checkForcedUpdate()
       .then((update) => {
         if (!cancelled && update.has_update && update.force_update) void startDownload(update);
@@ -93,6 +109,7 @@ export default function ForcedUpdateBanner() {
     return () => {
       cancelled = true;
       window.removeEventListener(FORCED_UPDATE_DETECTED_EVENT, handleDetected);
+      window.removeEventListener(TEST_UPDATE_DETECTED_EVENT, handleTestDetected);
     };
   }, []);
 
@@ -110,12 +127,13 @@ export default function ForcedUpdateBanner() {
           : `自动下载安装包失败：${state.download.error}`;
 
   return (
-    <div className="shrink-0 px-3 pt-2">
+    <div className="mb-4 shrink-0 px-3 pt-0">
       <Alert status="danger" className="items-center py-2.5">
         <Alert.Indicator />
         <Alert.Content>
           <Alert.Title>必须更新到 v{state.update.latest_version}</Alert.Title>
-          <Alert.Description>{description}</Alert.Description>
+           <Alert.Description>{description}</Alert.Description>
+           <Button size="sm" variant="ghost" className="mt-1" onPress={() => setDetailsOpen(true)}>查看详情</Button>
           {(phase === 'downloading' || phase === 'verifying') && (
             <ProgressBar
               aria-label="强制更新下载进度"
@@ -152,6 +170,26 @@ export default function ForcedUpdateBanner() {
           )}
         </div>
       </Alert>
+      <Modal.Backdrop isOpen={detailsOpen} onOpenChange={setDetailsOpen}>
+        <Modal.Container size="md">
+          <Modal.Dialog>
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Heading>强制更新到 v{state.update.latest_version}</Modal.Heading>
+              <p className="text-sm text-muted">当前版本 v{state.update.current_version} · {state.update.release_date || '暂无发布日期'}</p>
+            </Modal.Header>
+            <Modal.Body className="max-h-[60vh] overflow-y-auto">
+              <div className="rounded-lg bg-surface-secondary p-4 text-sm leading-6 whitespace-pre-wrap">
+                {state.update.release_note?.trim() || '此版本未提供更新说明。'}
+              </div>
+            </Modal.Body>
+            <Modal.Footer>
+              {state.update.release_notes_url && <Button variant="secondary" onPress={() => void openUrl(state.update.release_notes_url)}>查看发布页面</Button>}
+              <Button onPress={() => setDetailsOpen(false)}>关闭</Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
     </div>
   );
 }

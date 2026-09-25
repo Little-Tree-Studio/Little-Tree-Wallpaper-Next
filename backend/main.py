@@ -361,6 +361,9 @@ def main() -> None:
                         create_main_window=create_main_window,
                         on_quit=stop_runtime,
                     )
+                    api.desktop_environment.set_notification_fallback(
+                        lambda request: tray.notify(request.title, request.message)
+                    )
                     api._configure_desktop_notifications(tray.notify)
                     api._configure_application_quit(tray.quit)
                     tray.attach_main_window(main_window)

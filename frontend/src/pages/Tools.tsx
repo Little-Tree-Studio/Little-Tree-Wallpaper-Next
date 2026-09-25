@@ -1,12 +1,13 @@
 import { Card } from '@heroui/react';
-import { Palette, ArrowRight, MonitorPlay, SwatchBook } from 'lucide-react';
+import type { ElementType } from 'react';
+import { ArrowRight, Clock3, Image, Palette, Settings2, SwatchBook, Tags, Wrench } from 'lucide-react';
 import { useNavigate } from '@/lib/router';
 
 interface ToolItem {
   id: string;
   title: string;
   description: string;
-  icon: React.ElementType;
+  icon: ElementType;
   path: string;
 }
 
@@ -19,11 +20,11 @@ const tools: ToolItem[] = [
     path: '/tools/color-palette',
   },
   {
-    id: 'dynamic-wallpaper',
-    title: '动态壁纸调试台',
-    description: '探测 Windows WorkerW，加载本地视频并观察桌面宿主状态',
-    icon: MonitorPlay,
-    path: '/tools/dynamic-wallpaper',
+    id: 'image-editor',
+    title: '图片编辑',
+    description: '裁剪、调整和导出图片，快速制作适合桌面的壁纸',
+    icon: Image,
+    path: '/image-editor',
   },
   {
     id: 'zhongguose',
@@ -32,6 +33,27 @@ const tools: ToolItem[] = [
     icon: SwatchBook,
     path: '/tools/zhongguose',
   },
+  {
+    id: 'history',
+    title: '壁纸历史',
+    description: '查看最近使用过的壁纸，快速恢复或重新应用',
+    icon: Clock3,
+    path: '/history',
+  },
+  {
+    id: 'tags',
+    title: '标签管理',
+    description: '整理壁纸标签，让收藏和资源查找更加高效',
+    icon: Tags,
+    path: '/tags',
+  },
+  {
+    id: 'source-management',
+    title: '壁纸来源管理',
+    description: '管理在线和本地壁纸来源，控制资源展示内容',
+    icon: Settings2,
+    path: '/resource/source-management',
+  },
 ];
 
 export default function Tools() {
@@ -39,7 +61,13 @@ export default function Tools() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      <h1 className="text-2xl font-bold">工具</h1>
+      <div>
+        <div className="flex items-center gap-2">
+          <Wrench size={22} className="text-primary" />
+          <h1 className="text-2xl font-bold">常用工具</h1>
+        </div>
+        <p className="mt-1 text-sm text-muted">快速访问壁纸制作、整理和管理功能。</p>
+      </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {tools.map((tool) => {
           const Icon = tool.icon;

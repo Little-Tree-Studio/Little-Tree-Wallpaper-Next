@@ -63,6 +63,12 @@ export const DEFAULT_THEME: ThemeProfile = {
     background_opacity: 1,
     backdrop_blur: 0,
   },
+  home_cards: {
+    background_style: 'default',
+    background_opacity: 0.8,
+    backdrop_blur: 16,
+    blur_tint: 0.35,
+  },
   custom_css: '',
   created_at: '',
   updated_at: '',

@@ -125,10 +125,14 @@ def get_display_resolutions() -> list[dict[str, object]]:
 
 
 def _try_subprocess(cmd: list[str], **kwargs) -> str | None:
+    kwargs.setdefault("timeout", 5)
     try:
         return subprocess.check_output(cmd, text=True, **kwargs).strip()
     except FileNotFoundError:
         logger.debug("命令未找到: {}", cmd[0])
+        return None
+    except subprocess.TimeoutExpired as e:
+        logger.debug("命令超时 {}: timeout={}", cmd, e.timeout)
         return None
     except subprocess.CalledProcessError as e:
         logger.debug("命令失败 {}: returncode={}, stderr={}", cmd, e.returncode, e.stderr)

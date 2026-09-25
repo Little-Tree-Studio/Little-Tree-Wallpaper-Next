@@ -34,6 +34,29 @@ UPDATE_DOWNLOAD_MIRRORS: tuple[str, ...] = (
 )
 DEFAULT_UPDATE_MIRROR = "https://gh-proxy.org/"
 
+PIXIV_IMAGE_PROXIES: tuple[dict[str, str], ...] = (
+    {
+        "id": "yuki",
+        "name": "yuki.sh（默认）",
+        "base_url": "https://i.yuki.sh",
+        "referer": "https://pxelk.cocomi.eu.org/",
+    },
+    {
+        "id": "azuremio",
+        "name": "AzureMio EdgeOne",
+        "base_url": "https://pixiv.azuremio.top",
+        "referer": "https://www.pixiv.net/",
+    },
+    {
+        "id": "qiusyan",
+        "name": "QiuSYan Cloudflare",
+        "base_url": "https://pximg.0080417.xyz",
+        "referer": "https://www.pixiv.net/",
+    },
+)
+PIXIV_IMAGE_PROXY_IDS = frozenset(proxy["id"] for proxy in PIXIV_IMAGE_PROXIES)
+DEFAULT_PIXIV_IMAGE_PROXY = PIXIV_IMAGE_PROXIES[0]["id"]
+
 
 def normalize_update_mirror(value: Any) -> str:
     """Normalize a mirror prefix and return "" when it is not a supported mirror."""
@@ -68,6 +91,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "channel": "stable",
         "mirror": DEFAULT_UPDATE_MIRROR,
     },
+    "classifier": {
+        "auto_tag_favorites": False,
+        "directory": "",
+    },
     "storage": {
         "cache_directory": "",
         "log_directory": "",
@@ -87,6 +114,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "slideshow": {"value": 5, "unit": "minutes", "items": []},
         },
         "allow_NSFW": False,
+        "bing": {"market": "zh-CN"},
+        "spotlight": {"market": "zh-CN"},
         "history_save_copy": False,
         "history": {
             "max_items": 200,
@@ -96,7 +125,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "record_dynamic_snapshot": False,
         },
         "sources": {"merge_display": True},
-        "pixiv": {"include_artwork_tags_in_favorites": True},
+        "pixiv": {"include_artwork_tags_in_favorites": True, "image_proxy": DEFAULT_PIXIV_IMAGE_PROXY},
         "dynamic": {
             "static_snapshot": {"enabled": False},
             "performance": {
@@ -165,6 +194,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "show_author": True,
         "show_source": True,
         "wallpaper_refresh_seconds": 30,
+        # Ordered home page cards; the list order is the display order.
+        "cards": [
+            {"id": "current_wallpaper", "visible": True},
+            {"id": "bing_daily", "visible": True},
+            {"id": "daily_quote", "visible": True},
+        ],
         "hitokoto": {
             "region": "domestic",
             "categories": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "k", "l"],
@@ -246,6 +281,9 @@ class SettingsStore:
 
         if data["im"].get("mirror_preference") not in {"auto", "github", "jsdelivr", "ghproxy"}:
             data["im"]["mirror_preference"] = "auto"
+
+        if data["wallpaper"]["pixiv"].get("image_proxy") not in PIXIV_IMAGE_PROXY_IDS:
+            data["wallpaper"]["pixiv"]["image_proxy"] = DEFAULT_PIXIV_IMAGE_PROXY
 
         performance = data["wallpaper"]["dynamic"]["performance"]
         for condition, action in performance.items():

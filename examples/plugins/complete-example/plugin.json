@@ -9,6 +9,7 @@
   "permissions": [
     "ui.buttons",
     "ui.global_style",
+    "ui.home_cards",
     "ui.navigation",
     "ui.overlay",
     "ui.pages",
@@ -145,6 +146,24 @@
         ]
       }
     ],
+    "home_cards": [
+      {
+        "id": "example-home-card",
+        "label": "插件主页卡片",
+        "description": "由 complete-example 插件贡献，与内置卡片共享统一背景层。",
+        "blocks": [
+          {
+            "type": "text",
+            "text": "此卡片出现在主页卡片列表中，可在 设置 → 主页 调整显隐与顺序。"
+          },
+          {
+            "type": "button",
+            "label": "读取状态",
+            "action": "get-status"
+          }
+        ]
+      }
+    ],
     "styles": [
       {
         "id": "example-scoped-style",
@@ -166,6 +185,44 @@
         "blocks": [
           {"type": "heading", "text": "插件小组件", "level": 3},
           {"type": "text", "text": "此内容由宿主安全渲染，不执行插件前端代码。"}
+        ]
+      },
+      {
+        "id": "desktop-dashboard",
+        "label": "示例数据面板",
+        "description": "演示小组组件设置、定时刷新动作与数据绑定。",
+        "default_size": {"width": 34, "height": 26},
+        "settings": [
+          {"key": "title", "label": "标题", "type": "text", "default": "插件面板", "maxLength": 30, "placeholder": "面板标题"},
+          {
+            "key": "city",
+            "label": "城市",
+            "type": "select",
+            "default": "beijing",
+            "options": [
+              {"value": "beijing", "label": "北京"},
+              {"value": "shanghai", "label": "上海"},
+              {"value": "guangzhou", "label": "广州"}
+            ]
+          },
+          {"key": "showCounter", "label": "显示计数器", "type": "switch", "default": true},
+          {"key": "accent", "label": "示例颜色", "type": "color", "default": "#86b6ff"}
+        ],
+        "refresh": {"action": "widget-refresh", "interval_seconds": 60},
+        "blocks": [
+          {"type": "heading", "text": "{{title}}", "level": 3},
+          {"type": "badge", "text": "{{city_label}}", "tone": "info"},
+          {"type": "metric", "label": "当前温度", "value": "{{temperature}}°", "unit": "C", "size": "lg"},
+          {
+            "type": "rows",
+            "items": [
+              {"label": "天气", "value": "{{condition}}"},
+              {"label": "湿度", "value": "{{humidity}}%"},
+              {"label": "计数", "value": "{{count}}", "emphasis": true}
+            ]
+          },
+          {"type": "progress", "label": "今日进度", "value": "{{day_progress}}"},
+          {"type": "time", "label": "本地时间", "format": "time"}
         ]
       }
     ],

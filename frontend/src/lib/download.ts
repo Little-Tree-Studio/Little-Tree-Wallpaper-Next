@@ -37,6 +37,21 @@ export interface FetchOptions {
 }
 
 /**
+ * Ensure a download failure names the URL it failed on. Network-level fetch
+ * errors ("Failed to fetch") carry no URL of their own, which would leave the
+ * forwarded log entry impossible to act on.
+ */
+function includeUrl(error: unknown, url: string): Error {
+  if (error instanceof Error) {
+    if (error.message.includes(url)) return error;
+    const wrapped = new Error(`${error.message || '下载失败'} (${url})`);
+    wrapped.name = error.name;
+    return wrapped;
+  }
+  return new Error(`${String(error ?? '') || '下载失败'} (${url})`);
+}
+
+/**
  * Stream ``url`` into a Blob, calling ``onProgress`` as chunks arrive.
  *
  * Validates that the received byte count matches the advertised
@@ -54,12 +69,14 @@ export async function fetchBlobWithProgress(
   const controller = new AbortController();
   const onExternalAbort = () => controller.abort(externalSignal?.reason);
   externalSignal?.addEventListener('abort', onExternalAbort);
-  const timeoutId = setTimeout(() => controller.abort(new Error('fetch timeout')), timeoutMs);
+  // The URL is part of the message so a failed download stays diagnosable in
+  // the console and in the forwarded application log.
+  const timeoutId = setTimeout(() => controller.abort(new Error(`下载超时: ${url}`)), timeoutMs);
 
   try {
     const res = await fetch(url, { headers, signal: controller.signal });
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      throw new Error(`HTTP ${res.status}: ${url}`);
     }
 
     const totalHeader = res.headers.get('content-length');
@@ -68,7 +85,7 @@ export async function fetchBlobWithProgress(
     if (!res.body) {
       // Server returned no body — treat as empty download.
       if (total !== null && total !== 0) {
-        throw new Error('下载不完整: 服务器未返回正文');
+        throw new Error(`下载不完整: 服务器未返回正文 (${url})`);
       }
       onProgress({ percent: 100, received: 0, total: 0 });
       return new Blob([], { type: contentType });
@@ -95,10 +112,12 @@ export async function fetchBlobWithProgress(
     }
 
     if (total !== null && received !== total) {
-      throw new Error(`下载不完整: 收到 ${received} 字节, 预期 ${total} 字节`);
+      throw new Error(`下载不完整: 收到 ${received} 字节, 预期 ${total} 字节 (${url})`);
     }
 
     return new Blob(chunks, { type: contentType });
+  } catch (e) {
+    throw includeUrl(e, url);
   } finally {
     clearTimeout(timeoutId);
     externalSignal?.removeEventListener('abort', onExternalAbort);
@@ -175,7 +194,7 @@ export async function runWithProgressToast<T>(
       toast.close(toastId);
       toastId = undefined;
     }
-    logError(options.loadingLabel, e);
+    logError(options.failureLabel ?? options.loadingLabel, e);
     toast.danger(options.failureLabel ?? '操作失败', {
       timeout: options.failureTimeout ?? 0,
     });

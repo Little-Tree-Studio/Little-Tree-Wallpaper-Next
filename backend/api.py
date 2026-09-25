@@ -33,13 +33,21 @@ from backend.app_meta import (
     get_build_info,
     get_metadata,
 )
+from backend.desktop_bridge import DesktopEnvironment
 from backend.paths import BASE_DIR, ensure_dirs, get_cache_dir, get_config_dir, get_data_dir
 from backend.plugins import PluginManager
 from backend.plugins.validation import SAFE_IMAGE_SUFFIXES
 from backend.services.automation import AutomationService
 from backend.services.autostart import AutostartService
-from backend.services.bing import BingService
+from backend.services.bing import SUPPORTED_MARKETS, BingService
+from backend.services.classifier import ClassifierService
 from backend.services.cnu import CNUService
+from backend.services.conflict import (
+    CONFLICT_APP_LABEL,
+    CONFLICT_DESCRIPTION,
+    detect_conflicting_processes,
+    terminate_conflicting_processes,
+)
 from backend.services.download import (
     DownloadError,
     WriteResult,
@@ -66,7 +74,12 @@ from backend.services.sys_wallpaper import get_display_resolutions, get_sys_wall
 from backend.services.sys_wallpaper import set_wallpaper as set_sys_wallpaper
 from backend.services.theme import DEFAULT_THEME_ID, ThemeService
 from backend.services.timeline import TimelineService
-from backend.settings_manager import get_settings_store, normalize_update_mirror
+from backend.settings_manager import (
+    DEFAULT_PIXIV_IMAGE_PROXY,
+    PIXIV_IMAGE_PROXIES,
+    get_settings_store,
+    normalize_update_mirror,
+)
 
 AUTOMATION_IMAGE_SUFFIXES = SAFE_IMAGE_SUFFIXES | {".avif", ".bmp"}
 UPDATE_API_ROOT = "https://wallpaper.api.zsxiaoshu.cn/core/update"
@@ -192,6 +205,7 @@ class BackendAPI:
             settings_store=self.store,
         )
         self.store_service = StoreService(get_cache_dir(), self.store)
+        self.classifier_service = ClassifierService(self.store)
         self.ltws_service = LTWSService(
             sources_dir=get_data_dir() / "wallpaper_sources",
             cache_dir=get_cache_dir(),
@@ -199,6 +213,14 @@ class BackendAPI:
             settings=self.store,
             preview_url_builder=self._build_preview_url,
         )
+        # All OS integration is routed through this facade. The lambdas keep
+        # module-level patch points stable for tests and downstream adapters.
+        self.desktop_environment = DesktopEnvironment(
+            wallpaper_getter=lambda: get_sys_wallpaper(),
+            wallpaper_setter=lambda path: set_sys_wallpaper(path),
+            display_getter=lambda: get_display_resolutions(),
+        )
+
         # Per-session secret token injected by the launcher (main.py). It is used
         # to build authenticated preview URLs and is never written to disk.
         self._api_token: str | None = None
@@ -255,9 +277,32 @@ class BackendAPI:
             self.control_dynamic_wallpaper,
             self.stop_dynamic_wallpaper,
             data_root=get_data_dir() / "automation_data",
-            notify=lambda title, message: self._desktop_notify(title, message) if self._desktop_notify else None,
+            notify=lambda title, message: self._notify_desktop(title, message),
             manage_dynamic_wallpaper=self.automation_dynamic_wallpaper,
+            publish_event=self.plugin_manager.publish_event,
         )
+        self._configure_pixiv_image_proxy()
+
+    def _active_pixiv_image_proxy(self) -> dict[str, str]:
+        selected_id = str(self.store.get("wallpaper.pixiv.image_proxy", DEFAULT_PIXIV_IMAGE_PROXY) or "")
+        return next(
+            (proxy for proxy in PIXIV_IMAGE_PROXIES if proxy["id"] == selected_id),
+            PIXIV_IMAGE_PROXIES[0],
+        )
+
+    @staticmethod
+    def _pixiv_image_hosts() -> set[str]:
+        return {
+            "i.pximg.net",
+            "i.pximg.org",
+            "pximg.cocomi.eu.org",
+            "i.yuki.sh",
+            "pixiv.azuremio.top",
+            "pximg.0080417.xyz",
+        }
+
+    def _configure_pixiv_image_proxy(self) -> None:
+        self.pixivel_service.image_proxy = self._active_pixiv_image_proxy()["id"]
 
     @staticmethod
     def _automation_config_value(config: dict[str, Any], pointer: str) -> Any:
@@ -289,9 +334,10 @@ class BackendAPI:
             ("system_action", "/action"): ["shutdown", "restart", "logout", "sleep"],
             ("write_file", "/action"): ["create", "write", "append"],
             ("datetime", "/timezone"): ["local", "utc"],
-            ("fetch_resource", "/source"): ["im", "bing", "spotlight", "cnu", "pixiv", "ltws", "folder", "favorites"],
+            ("fetch_resource", "/source"): ["im", "bing", "spotlight", "timeline", "cnu", "pixiv", "ltws", "folder", "favorites"],
             ("fetch_resource", "/category"): ["daily", "recent"],
-            ("fetch_resource", "/market"): ["zh-CN", "en-US", "ja-JP", "de-DE", "fr-FR"],
+            ("fetch_resource", "/timeline_mode"): ["latest", "trending", "random", "topic"],
+            ("fetch_resource", "/market"): list(SUPPORTED_MARKETS),
             ("fetch_resource", "/quality"): ["highDef", "ultraHighDef"],
             ("fetch_resource", "/spotlight_source"): ["online", "local"],
             ("fetch_resource", "/section"): ["selected", "inspiration", "discovery"],
@@ -534,6 +580,18 @@ class BackendAPI:
                 )
                 work = self._select_automation_item(works, config, "work_selection")
                 item = self._select_automation_item(self.get_pixivel_work(str(work["id"])), config, "image_selection")
+            elif source == "timeline":
+                timeline_mode = str(config.get("timeline_mode") or "random")
+                if timeline_mode == "topic" and not str(config.get("topic") or "").strip():
+                    raise ValueError("拾光壁纸专题模式需要填写专题 ID")
+                page = self.query_timeline_wallpapers(
+                    timeline_mode,
+                    None,
+                    str(config.get("topic") or ""),
+                    None,
+                    bool(config.get("force_refresh", False)),
+                )
+                item = self._select_automation_item(list(page.get("items") or []), config)
             elif source == "im":
                 items = self.execute_intelligent_market_source(
                     str(config.get("source_id") or ""),
@@ -627,6 +685,80 @@ class BackendAPI:
         notify: Callable[[str, str], None],
     ) -> None:
         self._desktop_notify = notify
+        environment = getattr(self, "desktop_environment", None)
+        if environment is not None:
+            environment.set_notification_sink(
+                lambda request: bool(notify(request.title, request.message))
+            )
+
+    def _notify_desktop(self, title: str, message: str) -> bool:
+        """Deliver a notification through the unified desktop environment."""
+        notify = getattr(self, "_desktop_notify", None)
+        if notify is not None:
+            try:
+                notify(title, message)
+                return True
+            except Exception as exc:
+                logger.debug("Configured desktop notification failed: {}", exc)
+        environment = getattr(self, "desktop_environment", None)
+        return bool(environment and environment.notify(title, message))
+
+    def get_desktop_capabilities(self) -> dict[str, Any]:
+        """Expose normalized desktop capabilities to the frontend and plugins."""
+        environment = getattr(self, "desktop_environment", None)
+        if environment is None:
+            return {}
+        return environment.capabilities()
+
+    def notify_desktop(
+        self,
+        title: str,
+        message: str,
+        urgency: str = "normal",
+        timeout_ms: int = 5_000,
+    ) -> dict[str, Any]:
+        """Send a notification through the active desktop integration."""
+        environment = getattr(self, "desktop_environment", None)
+        delivered = bool(environment and environment.notify(
+            title,
+            message,
+            urgency=urgency,
+            timeout_ms=timeout_ms,
+        ))
+        return {"success": delivered}
+
+    def get_desktop_displays(self) -> list[dict[str, object]]:
+        """Return displays through the unified desktop environment."""
+        environment = getattr(self, "desktop_environment", None)
+        return environment.get_displays() if environment is not None else get_display_resolutions()
+
+    def get_desktop_wallpaper(self) -> str | None:
+        """Return the current wallpaper through the unified desktop environment."""
+        environment = getattr(self, "desktop_environment", None)
+        return environment.get_wallpaper() if environment is not None else get_sys_wallpaper()
+
+    def set_desktop_wallpaper(self, path: str) -> dict[str, Any]:
+        """Set a wallpaper through the unified desktop environment."""
+        try:
+            environment = getattr(self, "desktop_environment", None)
+            if environment is None:
+                set_sys_wallpaper(path)
+            else:
+                environment.set_wallpaper(path)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _get_system_wallpaper(self) -> str | None:
+        environment = getattr(self, "desktop_environment", None)
+        return environment.get_wallpaper() if environment is not None else get_sys_wallpaper()
+
+    def _set_system_wallpaper(self, path: str) -> None:
+        environment = getattr(self, "desktop_environment", None)
+        if environment is None:
+            set_sys_wallpaper(path)
+        else:
+            environment.set_wallpaper(path)
 
     def _configure_application_quit(self, quit_application: Callable[[], None]) -> None:
         self._application_quit = quit_application
@@ -677,7 +809,7 @@ class BackendAPI:
             if thread is not None and thread.is_alive():
                 return
             self._history_monitor_stop.clear()
-            self._history_monitor_last_path = get_sys_wallpaper() or ""
+            self._history_monitor_last_path = self._get_system_wallpaper() or ""
             self._history_monitor_next_check = time.monotonic() + self._history_auto_interval()
             thread = threading.Thread(
                 target=self._run_wallpaper_monitor,
@@ -692,6 +824,7 @@ class BackendAPI:
         self._history_monitor_stop.set()
 
     def _run_wallpaper_monitor(self) -> None:
+        self._record_startup_wallpaper()
         while not self._history_monitor_stop.wait(self._HISTORY_MONITOR_TICK_SECONDS):
             with self._history_monitor_lock:
                 due = time.monotonic() >= self._history_monitor_next_check
@@ -705,8 +838,35 @@ class BackendAPI:
             except Exception as exc:
                 logger.debug("Wallpaper history monitor check failed: {}", exc)
 
+    def _record_startup_wallpaper(self) -> None:
+        """Record the wallpaper already on the desktop when the app starts.
+
+        The monitor only reacts to *changes*, so without this the wallpaper
+        active at launch would never enter the history. Skipped when the
+        latest history entry already points at the same wallpaper (directly
+        or via its recorded source path), so restarts don't churn entries.
+        """
+        try:
+            if self._history_record_mode() != "auto":
+                return
+            path = self._get_system_wallpaper()
+            if not path:
+                return
+            normalized = os.path.normcase(os.path.abspath(path))
+            history = self._load_history()
+            if history:
+                latest = history[0]
+                known = {str(latest.get("path") or ""), str(latest.get("original_path") or "")}
+                for candidate in known:
+                    if candidate and os.path.normcase(os.path.abspath(candidate)) == normalized:
+                        return
+            self.add_to_history(path, Path(path).name, "startup")
+            logger.info("Recorded startup wallpaper: {}", path)
+        except Exception as exc:
+            logger.debug("Startup wallpaper record failed: {}", exc)
+
     def _check_system_wallpaper_change(self, interval: int) -> None:
-        path = get_sys_wallpaper()
+        path = self._get_system_wallpaper()
         if not path:
             # Unreadable wallpaper must not erase the known baseline.
             return
@@ -940,6 +1100,70 @@ class BackendAPI:
     def _history_path(self) -> Path:
         return get_data_dir() / "wallpaper_history.json"
 
+    def _history_copy_dir(self) -> Path:
+        return get_data_dir() / "history"
+
+    def _history_save_copy_enabled(self) -> bool:
+        try:
+            return bool(self.store.get("wallpaper.history_save_copy", False))
+        except Exception:
+            return False
+
+    def _create_history_copy(self, source: str) -> str | None:
+        """Copy ``source`` into the data-directory history folder.
+
+        Copies are named by content hash so identical wallpapers share a
+        single file. Returns the copy path, or ``None`` when the copy could
+        not be created.
+        """
+        try:
+            src = Path(source)
+            if not src.is_file():
+                return None
+            copy_dir = self._history_copy_dir().resolve()
+            resolved = src.resolve()
+            with contextlib.suppress(ValueError):
+                resolved.relative_to(copy_dir)
+                return str(resolved)
+            digest = hashlib.sha1()
+            with resolved.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            suffix = resolved.suffix.lower()[:16]
+            copy_dir.mkdir(parents=True, exist_ok=True)
+            dest = copy_dir / f"{digest.hexdigest()}{suffix}"
+            if not dest.exists():
+                temp = dest.with_name(f"{dest.name}.{uuid.uuid4().hex}.part")
+                try:
+                    shutil.copyfile(resolved, temp)
+                    os.replace(temp, dest)
+                finally:
+                    with contextlib.suppress(OSError):
+                        temp.unlink()
+            return str(dest)
+        except Exception as exc:
+            logger.warning("Failed to create history copy for {}: {}", source, exc)
+            return None
+
+    def _is_history_copy(self, path: str) -> bool:
+        try:
+            Path(path).resolve().relative_to(self._history_copy_dir().resolve())
+            return True
+        except Exception:
+            return False
+
+    def _delete_history_copies(self, removed: list[dict[str, Any]], kept: list[dict[str, Any]]) -> None:
+        """Best-effort removal of data-dir copies no longer referenced."""
+        referenced = {str(item.get("path")) for item in kept if isinstance(item, dict) and item.get("path")}
+        for item in removed:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "")
+            if not path or path in referenced or not self._is_history_copy(path):
+                continue
+            with contextlib.suppress(OSError):
+                Path(path).unlink()
+
     def _generated_images_path(self) -> Path:
         return get_data_dir() / "generated_images.json"
 
@@ -981,7 +1205,7 @@ class BackendAPI:
     def _protected_storage_paths(self) -> set[Path]:
         protected: set[Path] = set()
         protected.add(self._favorites_path())
-        current = get_sys_wallpaper()
+        current = self._get_system_wallpaper()
         if current:
             protected.add(Path(current))
         try:
@@ -1051,7 +1275,7 @@ class BackendAPI:
             "startup.wallpaper_change.fixed_image",
         )
         original_settings = {key: self.store.get(key) for key in setting_keys}
-        current_wallpaper = get_sys_wallpaper()
+        current_wallpaper = self._get_system_wallpaper()
 
         for item in favorites["items"]:
             if not isinstance(item, dict):
@@ -1098,7 +1322,7 @@ class BackendAPI:
             replacement = mapping.get(os.path.normcase(os.path.abspath(current_wallpaper)))
             if replacement:
                 try:
-                    set_sys_wallpaper(replacement)
+                    self._set_system_wallpaper(replacement)
                     self._note_wallpaper_applied(replacement)
                 except Exception:
                     preserve_sources.add(Path(current_wallpaper))
@@ -1120,7 +1344,7 @@ class BackendAPI:
         current_wallpaper = state.get("current_wallpaper")
         if current_wallpaper:
             with contextlib.suppress(Exception):
-                set_sys_wallpaper(current_wallpaper)
+                self._set_system_wallpaper(current_wallpaper)
 
     def _ensure_favorites(self) -> None:
         path = self._favorites_path()
@@ -1131,6 +1355,7 @@ class BackendAPI:
                 "items": [],
                 "all_tags": [],
                 "system_tags": [],
+                "smart_tags": [],
             }
             path.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1163,7 +1388,8 @@ class BackendAPI:
 
     def _migrate_favorite_tags(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         """Backfill source tags and rebuild the global tag collection."""
-        changed = "all_tags" not in data or "system_tags" not in data
+        changed = "all_tags" not in data or "system_tags" not in data or "smart_tags" not in data
+        data.setdefault("smart_tags", [])
         tags: set[str] = set(data.get("all_tags", []))
         previous_system_tags = set(data.get("system_tags", []))
         actual_system_tags: set[str] = set()
@@ -1366,15 +1592,13 @@ class BackendAPI:
             h.setdefault("User-Agent", self.store.get("sniff.user_agent", "Mozilla/5.0"))
             parsed_url = urlparse(url)
             host = (parsed_url.hostname or "").lower()
-            pixiv_hosts = {"i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh"}
-            if host in {"i.pximg.net", "pximg.cocomi.eu.org"}:
-                url = parsed_url._replace(scheme="https", netloc="i.yuki.sh").geturl()
-                host = "i.yuki.sh"
-            if host in {"i.pximg.net", "i.pximg.org"}:
-                h.setdefault("Referer", "https://www.pixiv.net/")
-                h.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-            elif host in {"pximg.cocomi.eu.org", "i.yuki.sh"}:
-                h.setdefault("Referer", "https://pxelk.cocomi.eu.org/")
+            pixiv_hosts = self._pixiv_image_hosts()
+            active_proxy = self._active_pixiv_image_proxy()
+            if host in pixiv_hosts:
+                url = parsed_url._replace(scheme="https", netloc=active_proxy["base_url"].split("://", 1)[1]).geturl()
+                host = urlparse(url).hostname or host
+            if host in pixiv_hosts:
+                h.setdefault("Referer", active_proxy["referer"])
                 h.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
             resp = requests.get(
                 url,
@@ -1463,15 +1687,34 @@ class BackendAPI:
         path = url.split("?", 1)[0].rsplit("/", 1)[-1]
         return path or None
 
-    def get_current_wallpaper(self) -> dict[str, str] | None:
-        path = get_sys_wallpaper()
+    @staticmethod
+    def _image_dimensions(path: str) -> tuple[int, int]:
+        """Return (width, height) from the image header, or (0, 0) if unreadable."""
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                return int(image.size[0]), int(image.size[1])
+        except Exception:  # noqa: BLE001 - dimension display is best-effort
+            return 0, 0
+
+    def get_current_wallpaper(self) -> dict[str, Any] | None:
+        path = self._get_system_wallpaper()
         if not path:
             return None
         preview_url = self._build_preview_url(path)
+        width, height = self._image_dimensions(path)
+        try:
+            size_bytes = os.path.getsize(path)
+        except OSError:
+            size_bytes = 0
         return {
             "path": path,
             "filename": Path(path).name,
             "preview_url": preview_url,
+            "width": width,
+            "height": height,
+            "size_bytes": size_bytes,
         }
 
     # --- Local image serving (no base64: bytes streamed via FastAPI) ---
@@ -1583,27 +1826,27 @@ class BackendAPI:
         return result
 
     def _build_pixivel_proxy_url(self, url: str) -> str:
-        """Wrap a Pixiv CDN image URL with the local same-origin proxy endpoint."""
+        """Rewrite a Pixiv CDN image URL to the configured public image proxy."""
         if not url:
             return url
-        token = self._api_token or ""
-        query = f"url={quote(url, safe='')}"
-        if token:
-            query += f"&token={token}"
-        return f"/api/pixiv-image?{query}"
+        proxy = self._active_pixiv_image_proxy()
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return url
+        if (parsed.hostname or "").lower() not in self._pixiv_image_hosts():
+            return url
+        return parsed._replace(scheme="https", netloc=proxy["base_url"].split("://", 1)[1]).geturl()
 
     @staticmethod
     def _is_pixivel_cdn_url(url: str) -> bool:
         parsed = urlparse(url)
         return parsed.scheme.lower() in {"http", "https"} and (parsed.hostname or "").lower() in {
-            "i.pximg.net",
-            "i.pximg.org",
-            "pximg.cocomi.eu.org",
-            "i.yuki.sh",
+            "i.pximg.net", "i.pximg.org", "pximg.cocomi.eu.org", "i.yuki.sh",
+            "pixiv.azuremio.top", "pximg.0080417.xyz",
         }
 
     def _proxy_pixivel_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Rewrite Pixiv CDN image URLs to same-origin proxy URLs."""
+        """Rewrite Pixiv CDN image URLs to the currently selected proxy."""
         result: list[dict[str, Any]] = []
         for item in items:
             new_item = dict(item)
@@ -1703,7 +1946,7 @@ class BackendAPI:
                 if not self.dynamic_wallpaper_service.wait_until_idle():
                     raise TimeoutError("动态壁纸操作尚未完成，请稍后重试")
                 self.dynamic_wallpaper_service.stop()
-            set_sys_wallpaper(real_path)
+            self._set_system_wallpaper(real_path)
             self.add_to_history(real_path, Path(real_path).name, "set")
             self._note_wallpaper_applied(real_path)
             logger.info("Wallpaper set to {}", real_path)
@@ -1727,13 +1970,11 @@ class BackendAPI:
         with self._pending_wallpaper_lock:
             self._pending_static_wallpaper = task
 
-        notify = self._desktop_notify
-        if notify is not None:
-            with contextlib.suppress(Exception):
-                notify(
-                    "静态壁纸等待确认",
-                    "动态壁纸正在运行。点击通知打开小树壁纸并确认是否停止动态壁纸。",
-                )
+        with contextlib.suppress(Exception):
+            self._notify_desktop(
+                "静态壁纸等待确认",
+                "动态壁纸正在运行。点击通知打开小树壁纸并确认是否停止动态壁纸。",
+            )
         logger.info("Queued background static wallpaper confirmation for {}", real_path)
         return {"success": True, "queued": True, "requires_confirmation": True, "task_id": task["id"]}
 
@@ -1770,6 +2011,7 @@ class BackendAPI:
             meta = item.get("metadata", {})
             return {
                 "url": item.get("image_url", ""),
+                "preview_url": item.get("preview_url", ""),
                 "title": item.get("title", ""),
                 "copyright": item.get("description", ""),
                 "startdate": meta.get("startdate", ""),
@@ -2278,6 +2520,7 @@ class BackendAPI:
             raise ValueError("未知的 Pixiv 搜索 API")
         if not text.strip():
             return []
+        self._configure_pixiv_image_proxy()
         configured_r18 = 2 if self.store.get("wallpaper.allow_NSFW", False) else 0
         count = max(1, min(int(size), 15))
         try:
@@ -2360,6 +2603,8 @@ class BackendAPI:
                     "num": count,
                     "excludeAI": str(bool(exclude_ai)).lower(),
                     "r18": configured_r18,
+                    # Keep Lolicon on its known-good upstream mirror; the
+                    # selected proxy is applied to the returned image path below.
                     "proxy": "pximg.cocomi.eu.org",
                 },
                 headers={"User-Agent": self.store.get("sniff.user_agent", "Mozilla/5.0")},
@@ -2402,6 +2647,79 @@ class BackendAPI:
     def get_favorites(self) -> dict[str, Any]:
         return self._load_favorites()
 
+    def get_classifier_catalog(self) -> dict[str, Any]:
+        return self.classifier_service.get_classifier_catalog()
+
+    def get_classifier_status(self) -> dict[str, Any]:
+        return self.classifier_service.get_classifier_status()
+
+    def pick_classifier_directory(self) -> dict[str, str] | None:
+        return self._pick_directory("选择图片分类模型目录")
+
+    def install_classifier(self, package: dict[str, Any]) -> dict[str, Any]:
+        return self.classifier_service.install_classifier(package)
+
+    def start_classifier_install(self, package: dict[str, Any]) -> dict[str, Any]:
+        return self.classifier_service.start_classifier_install(package)
+
+    def classify_image(self, image_path: str, top_k: int = 3) -> list[dict[str, Any]]:
+        return self.classifier_service.classify(image_path, top_k)
+
+    @_favorites_transaction
+    def classify_favorite_items(self, ids: list[str]) -> dict[str, Any]:
+        data = self._load_favorites()
+        selected = [item for item in data.get("items", []) if str(item.get("id")) in {str(value) for value in ids}]
+        results: list[dict[str, Any]] = []
+        by_id = {str(item.get("id")): item for item in data.get("items", [])}
+        for item in selected:
+            item_id = str(item.get("id") or "")
+            local_path = Path(str(item.get("local_path") or "")).expanduser()
+            if not local_path.is_file():
+                image_url = str(item.get("source_url") or item.get("preview_url") or "").strip()
+                if not image_url.startswith(("http://", "https://")):
+                    results.append({"id": item_id, "status": "skipped", "reason": "missing_local_file", "message": "没有本地文件或可用远程地址"})
+                    continue
+                suffix = Path(urlparse(image_url).path).suffix.lower()
+                if suffix not in AUTOMATION_IMAGE_SUFFIXES:
+                    suffix = ".jpg"
+                filename = f"favorite-{item_id}{suffix}"
+                try:
+                    downloaded = self._download_file_sync(
+                        image_url,
+                        self._downloads_dir() / "automation" / "favorites",
+                        filename=filename,
+                        headers={"Referer": str(item.get("source_page_url"))} if item.get("source_page_url") else None,
+                    )
+                    if downloaded:
+                        local_path = Path(downloaded)
+                        item["local_path"] = str(local_path)
+                        by_id[item_id]["local_path"] = str(local_path)
+                    else:
+                        raise RuntimeError("远程图片下载失败")
+                except Exception as exc:
+                    results.append({"id": item_id, "status": "skipped", "reason": "download_failed", "message": str(exc)})
+                    continue
+            try:
+                predictions = self.classifier_service.classify(str(local_path), 3)
+                next_smart_tags = [str(result["label"]) for result in predictions if result.get("label")]
+                previous_smart_tags = set(item.get("smart_tags", []))
+                user_tags = [tag for tag in item.get("tags", []) if tag not in previous_smart_tags]
+                item["smart_tags"] = next_smart_tags
+                item["tags"] = user_tags + [tag for tag in next_smart_tags if tag not in user_tags]
+                results.append({"id": item_id, "status": "processed", "smart_tags": next_smart_tags})
+            except Exception as exc:
+                results.append({"id": item_id, "status": "skipped", "reason": "classification_failed", "message": str(exc)})
+        data["items"] = [by_id.get(str(item.get("id")), item) for item in data.get("items", [])]
+        data["smart_tags"] = sorted({tag for item in data.get("items", []) for tag in item.get("smart_tags", [])})
+        data["all_tags"] = sorted(set(data.get("all_tags", [])) | {tag for item in data.get("items", []) for tag in item.get("tags", [])})
+        self._save_favorites(data)
+        return {
+            "processed": sum(1 for result in results if result.get("status") == "processed"),
+            "skipped": sum(1 for result in results if result.get("status") == "skipped"),
+            "results": results,
+            "items": self._hydrate_favorite_urls({"items": selected})["items"],
+        }
+
     @_favorites_transaction
     def add_favorite(self, item: dict[str, Any]) -> dict[str, Any]:
         data = self._load_favorites()
@@ -2411,12 +2729,14 @@ class BackendAPI:
         for field in ("preview_url", "source_url"):
             stable_item[field] = self._unwrap_session_url(str(stable_item.get(field) or ""))
         stable_tags = list(stable_item.get("tags", []))
+        smart_tags: list[str] = []
         source_tag = self._favorite_source_tag(stable_item)
         if source_tag == "Pixiv" and not self.store.get("wallpaper.pixiv.include_artwork_tags_in_favorites", True):
             stable_tags = ["Pixiv"]
         elif source_tag and source_tag not in stable_tags:
             stable_tags.append(source_tag)
         stable_item["tags"] = stable_tags
+        stable_item["smart_tags"] = smart_tags
         new_item = {
             **stable_item,
             "id": uuid.uuid4().hex,
@@ -2432,12 +2752,24 @@ class BackendAPI:
         if source_tag:
             system_tags.add(source_tag)
         data["system_tags"] = sorted(system_tags)
+        data.setdefault("smart_tags", [])
+        if self.store.get("classifier.auto_tag_favorites", False) and stable_item.get("local_path"):
+            try:
+                smart_tags = [str(result.get("label")) for result in self.classifier_service.classify(str(stable_item["local_path"])) if result.get("label")]
+                new_item["smart_tags"] = smart_tags
+                data["smart_tags"] = sorted(set(data.get("smart_tags", [])) | set(smart_tags))
+                new_item["tags"] = stable_tags + [tag for tag in smart_tags if tag not in stable_tags]
+                data["all_tags"] = sorted(set(data.get("all_tags", [])) | set(smart_tags))
+            except Exception as exc:
+                logger.warning("Automatic favorite classification skipped: {}", exc)
         self._save_favorites(data)
         return self._hydrate_favorite_urls({"items": [new_item]})["items"][0]
 
     @_favorites_transaction
     def ensure_tag(self, name: str) -> None:
         data = self._load_favorites()
+        if name in set(data.get("smart_tags", [])) | set(data.get("system_tags", [])):
+            raise ValueError("智能或系统标签不能手动创建")
         all_tags = set(data.get("all_tags", []))
         all_tags.add(name)
         data["all_tags"] = sorted(all_tags)
@@ -2446,6 +2778,8 @@ class BackendAPI:
     @_favorites_transaction
     def rename_tag(self, old_name: str, new_name: str) -> None:
         data = self._load_favorites()
+        if old_name in set(data.get("system_tags", [])) | set(data.get("smart_tags", [])):
+            raise ValueError("智能或系统标签不能重命名")
         all_tags = data.get("all_tags", [])
         if old_name in all_tags:
             all_tags[all_tags.index(old_name)] = new_name
@@ -2459,6 +2793,8 @@ class BackendAPI:
     @_favorites_transaction
     def delete_tag(self, name: str) -> None:
         data = self._load_favorites()
+        if name in set(data.get("system_tags", [])) | set(data.get("smart_tags", [])):
+            raise ValueError("智能或系统标签不能删除")
         all_tags = data.get("all_tags", [])
         if name in all_tags:
             all_tags.remove(name)
@@ -2478,6 +2814,15 @@ class BackendAPI:
         for field in ("preview_url", "source_url"):
             stable_item[field] = self._unwrap_session_url(str(stable_item.get(field) or ""))
         stable_tags = list(stable_item.get("tags", []))
+        original = next((entry for entry in data["items"] if entry.get("id") == item.get("id")), {})
+        known_smart_tags = set(data.get("smart_tags", []))
+        original_smart_tags = set(original.get("smart_tags", []))
+        # Smart tags may be removed from an individual favorite, but never
+        # added manually through the generic favorite-edit RPC.
+        stable_item["smart_tags"] = [tag for tag in original_smart_tags if tag in stable_tags]
+        stable_tags = [tag for tag in stable_tags if tag not in known_smart_tags]
+        stable_tags.extend(tag for tag in stable_item["smart_tags"] if tag not in stable_tags)
+        stable_tags.extend(tag for tag in original.get("system_tags", []) if tag not in stable_tags)
         source_tag = self._favorite_source_tag(stable_item)
         if source_tag == "Pixiv" and not self.store.get("wallpaper.pixiv.include_artwork_tags_in_favorites", True):
             stable_tags = ["Pixiv"]
@@ -2488,6 +2833,8 @@ class BackendAPI:
             if it["id"] == item["id"]:
                 data["items"][i] = stable_item
                 break
+        data["smart_tags"] = sorted({tag for entry in data["items"] for tag in entry.get("smart_tags", [])})
+        data["all_tags"] = sorted(set(data.get("all_tags", [])) | {tag for entry in data["items"] for tag in entry.get("tags", [])} | set(data.get("system_tags", [])))
         self._save_favorites(data)
 
     @_favorites_transaction
@@ -2628,6 +2975,26 @@ class BackendAPI:
         status["preference_enabled"] = enabled
         return status
 
+    def get_wallpaper_conflicts(self) -> dict[str, Any]:
+        """Detect running wallpaper applications known to conflict with this app."""
+        processes = detect_conflicting_processes()
+        return {
+            "detected": bool(processes),
+            "app_label": CONFLICT_APP_LABEL,
+            "description": CONFLICT_DESCRIPTION,
+            "processes": processes,
+        }
+
+    def terminate_wallpaper_conflicts(self) -> dict[str, Any]:
+        """Close every conflicting wallpaper application and re-check afterwards."""
+        result = terminate_conflicting_processes()
+        logger.info(
+            "Closed {} conflicting wallpaper process(es), {} failed",
+            len(result["terminated"]),
+            len(result["failed"]),
+        )
+        return result
+
     def list_themes(self) -> list[dict[str, Any]]:
         return self.theme_service.list_themes()
 
@@ -2752,20 +3119,57 @@ class BackendAPI:
 
     @_storage_references_transaction
     def add_to_history(self, path: str, title: str, reason: str) -> None:
+        stored_path = path
+        original_path: str | None = None
+        if self._history_save_copy_enabled():
+            copy_path = self._create_history_copy(path)
+            if copy_path and copy_path != path:
+                stored_path, original_path = copy_path, path
         history = self._load_history()
-        history = [h for h in history if h.get("path") != path]
-        history.insert(
-            0,
-            {
-                "path": path,
-                "title": title,
-                "reason": reason,
-                "time": datetime.now().isoformat(),
-            },
-        )
+        removed = [
+            h
+            for h in history
+            if h.get("path") in {stored_path, path}
+            or (original_path and h.get("original_path") == original_path)
+        ]
+        history = [h for h in history if h not in removed]
+        if original_path is None:
+            # Re-recording from a copy keeps the originally recorded source.
+            for h in removed:
+                if isinstance(h.get("original_path"), str) and h["original_path"]:
+                    original_path = h["original_path"]
+                    break
+        entry: dict[str, Any] = {
+            "path": stored_path,
+            "title": title,
+            "reason": reason,
+            "time": datetime.now().isoformat(),
+        }
+        if original_path:
+            entry["original_path"] = original_path
+        history.insert(0, entry)
         max_items = max(10, min(2000, int(self.store.get("wallpaper.history.max_items", 200))))
+        trimmed = history[max_items:]
         history = history[:max_items]
         self._save_history(history)
+        self._delete_history_copies(removed + trimmed, history)
+
+    @_storage_references_transaction
+    def delete_history_item(self, path: str) -> bool:
+        history = self._load_history()
+        removed = [h for h in history if h.get("path") == path or h.get("original_path") == path]
+        if not removed:
+            return False
+        history = [h for h in history if h not in removed]
+        self._save_history(history)
+        self._delete_history_copies(removed, history)
+        return True
+
+    @_storage_references_transaction
+    def clear_history(self) -> None:
+        history = self._load_history()
+        self._save_history([])
+        self._delete_history_copies(history, [])
 
     def _load_generated_images(self) -> list[dict[str, Any]]:
         try:
@@ -3115,9 +3519,7 @@ class BackendAPI:
                         "already_downloaded": result["already_downloaded"],
                         "finished_at": datetime.now().astimezone().isoformat(),
                     })
-                notify = getattr(self, "_desktop_notify", None)
-                if notify:
-                    notify("更新下载完成", f"小树壁纸 v{signature[0]} 已准备好安装")
+                self._notify_desktop("更新下载完成", f"小树壁纸 v{signature[0]} 已准备好安装")
             except Exception as exc:
                 logger.error("Background update download failed: {}", exc)
                 with self._update_task_lock:
@@ -3361,6 +3763,38 @@ class BackendAPI:
             number = default
         return max(minimum, min(maximum, number))
 
+    MAX_PLUGIN_WIDGET_SETTING_KEYS = 32
+    MAX_PLUGIN_WIDGET_SETTINGS_BYTES = 4096
+    PLUGIN_WIDGET_SETTING_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,63})$")
+
+    def _normalize_plugin_widget_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        normalized: dict[str, Any] = {}
+        total = 0
+        for key, value in settings.items():
+            if len(normalized) >= self.MAX_PLUGIN_WIDGET_SETTING_KEYS:
+                break
+            if not isinstance(key, str) or self.PLUGIN_WIDGET_SETTING_KEY_PATTERN.fullmatch(key) is None:
+                continue
+            if isinstance(value, str):
+                cleaned: str | bool | int | float = value[:500]
+            elif isinstance(value, bool):
+                cleaned = value
+            elif isinstance(value, (int, float)):
+                try:
+                    cleaned = max(-1_000_000_000, min(1_000_000_000, float(value)))
+                    if cleaned.is_integer():
+                        cleaned = int(cleaned)
+                except (OverflowError, ValueError):
+                    continue
+            else:
+                continue
+            entry_size = len(json.dumps({key: cleaned}, ensure_ascii=False, default=str))
+            if total + entry_size > self.MAX_PLUGIN_WIDGET_SETTINGS_BYTES:
+                break
+            total += entry_size
+            normalized[key] = cleaned
+        return normalized
+
     def _normalize_dynamic_scene(self, value: Any) -> dict[str, Any]:
         raw = value if isinstance(value, dict) else {}
         try:
@@ -3415,6 +3849,7 @@ class BackendAPI:
                 settings = {
                     "label": widget_text("label", "", 40),
                     "use24Hour": bool(settings_raw.get("use24Hour", True)),
+                    "showSeconds": bool(settings_raw.get("showSeconds", False)),
                     "showDate": bool(settings_raw.get("showDate", True)),
                 }
             elif widget_type == "builtin:date":
@@ -3460,12 +3895,20 @@ class BackendAPI:
                     "value": self._bounded_number(settings_raw.get("value"), 50, 0, 100),
                     "unit": widget_text("unit", "%", 12),
                 }
+            elif widget_type.startswith("plugin:"):
+                settings = self._normalize_plugin_widget_settings(settings_raw)
             minimum_width, minimum_height = {
-                "builtin:clock": (20, 14), "builtin:date": (16, 18),
-                "builtin:note": (20, 18), "builtin:status": (20, 14),
-                "builtin:greeting": (22, 14), "builtin:countdown": (18, 18),
-                "builtin:quote": (22, 18), "builtin:progress": (22, 14),
+                "builtin:clock": (18, 12), "builtin:date": (14, 16),
+                "builtin:note": (18, 14), "builtin:status": (18, 10),
+                "builtin:greeting": (20, 11), "builtin:countdown": (16, 14),
+                "builtin:quote": (20, 14), "builtin:progress": (18, 11),
             }.get(widget_type, (8, 8))
+            text_color = str(item.get("text_color") or "auto")
+            if text_color not in {"auto", "light", "dark"}:
+                text_color = "auto"
+            accent_color = str(item.get("accent_color") or "")
+            if re.fullmatch(r"#[0-9A-Fa-f]{6}", accent_color) is None:
+                accent_color = ""
             widgets.append({
                 "id": instance_id,
                 "type": widget_type,
@@ -3476,6 +3919,9 @@ class BackendAPI:
                 "opacity": self._bounded_number(item.get("opacity"), 1, 0, 1),
                 "background_opacity": self._bounded_number(item.get("background_opacity"), 1, 0, 1),
                 "background_blur": bool(item.get("background_blur", True)),
+                "text_scale": round(self._bounded_number(item.get("text_scale"), 1, 0.8, 1.6), 3),
+                "text_color": text_color,
+                "accent_color": accent_color,
                 "settings": settings,
             })
         return {
@@ -3985,11 +4431,11 @@ class BackendAPI:
         return VERSION
 
     def get_platform(self) -> str:
-        return sys.platform
+        environment = getattr(self, "desktop_environment", None)
+        return environment.platform if environment is not None else sys.platform
 
-    @staticmethod
-    def get_display_resolutions() -> list[dict[str, object]]:
-        return get_display_resolutions()
+    def get_display_resolutions(self) -> list[dict[str, object]]:
+        return self.get_desktop_displays()
 
     @staticmethod
     def get_build_info() -> dict[str, Any]:
@@ -4070,6 +4516,7 @@ class BackendAPI:
         force_refresh: bool = False,
         ranking_date: str | None = None,
     ) -> list[dict[str, Any]]:
+        self._configure_pixiv_image_proxy()
         works = self.pixivel_service.query_ranking(
             mode=mode,
             page=page,
@@ -4083,6 +4530,7 @@ class BackendAPI:
         return works
 
     def get_pixivel_work(self, work_id: str) -> list[dict[str, Any]]:
+        self._configure_pixiv_image_proxy()
         items = self.pixivel_service.fetch_work(work_id)
         return self._proxy_pixivel_items(items)
 
@@ -4152,7 +4600,9 @@ class BackendAPI:
 
     def bootstrap(self) -> dict[str, Any]:
         logger.info("Bootstrapping application")
-        home_bing = self.bing_service.query_daily(market="zh-CN", count=1)
+        home_bing = self.bing_service.query_daily(
+            market=self.store.get("wallpaper.bing.market", "zh-CN"), count=1
+        )
         quote = self.get_sentence()
         plugins = self.list_plugins()["plugins"]
         try:
@@ -4618,6 +5068,26 @@ class BackendAPI:
     def get_automation_runtime(self) -> dict[str, Any]:
         return self.automation_service.snapshot()
 
+    _FRONTEND_LOG_LEVELS = frozenset({"debug", "info", "warning", "error"})
+
+    def log_frontend(self, level: str, message: str, details: str | None = None) -> dict[str, Any]:
+        """Record a frontend (webview) log entry in the application log.
+
+        Packaged builds have no visible console, so errors that only surface as
+        a toast (for example a failed favorite download) are forwarded here to
+        stay diagnosable from the debug panel and the log file.
+        """
+        normalized = str(level or "error").strip().lower()
+        if normalized == "warn":
+            normalized = "warning"
+        if normalized not in self._FRONTEND_LOG_LEVELS:
+            normalized = "error"
+        text = " ".join(str(message or "").split())[:1000] or "(空消息)"
+        detail_text = str(details or "").strip()
+        suffix = f"\n{detail_text[:4000]}" if detail_text else ""
+        logger.log(normalized.upper(), "[前端] {}{}", text, suffix)
+        return {"ok": True}
+
     def get_log_stats(self) -> dict[str, Any]:
         """Return log file counts, total size, entry/error counts and the active file level."""
         from backend import logging_setup
@@ -4779,3 +5249,132 @@ class BackendAPI:
         except Exception as exc:
             logger.error("Failed to open crash report {}: {}", report_path, exc)
             return {"opened_path": "", "error": str(exc)}
+
+    def _collect_diagnostics_report(self) -> dict[str, Any]:
+        """Assemble the runtime part of the diagnostics report.
+
+        Everything is best-effort: a failing subsystem is omitted instead of
+        aborting the export.
+        """
+        from backend import diagnostics
+
+        report = diagnostics.collect_environment()
+        runtime: dict[str, Any] = {}
+
+        with contextlib.suppress(Exception):
+            runtime["favorites_count"] = len(self._load_favorites().get("items", []))
+
+        with contextlib.suppress(Exception):
+            runtime["history_count"] = len(self._load_history())
+
+        with contextlib.suppress(Exception):
+            result = self.list_plugins()
+            plugins: list[dict[str, Any]] = []
+            for plugin in result.get("plugins", []) if isinstance(result, dict) else []:
+                if not isinstance(plugin, dict):
+                    continue
+                manifest = plugin.get("manifest") if isinstance(plugin.get("manifest"), dict) else {}
+                plugins.append(
+                    {
+                        "id": plugin.get("id"),
+                        "name": manifest.get("name"),
+                        "version": manifest.get("version"),
+                        "enabled": bool(plugin.get("enabled")),
+                        "state": plugin.get("state"),
+                        "error": plugin.get("error"),
+                    }
+                )
+            runtime["plugin_summary"] = {
+                "total": len(plugins),
+                "enabled": sum(1 for plugin in plugins if plugin["enabled"]),
+                "errors": sum(1 for plugin in plugins if plugin["state"] == "error"),
+                "plugins": plugins,
+            }
+
+        with contextlib.suppress(Exception):
+            status = self.dynamic_wallpaper_service.diagnose()
+            if isinstance(status, dict):
+                runtime["dynamic_wallpaper"] = {
+                    key: status.get(key)
+                    for key in (
+                        "supported",
+                        "running",
+                        "dynamic_type",
+                        "runtime_mode",
+                        "operation_busy",
+                        "operation_phase",
+                        "media_name",
+                        "media_exists",
+                        "structure_matches_version",
+                        "last_error",
+                        "last_operation",
+                    )
+                }
+
+        with contextlib.suppress(Exception):
+            snapshot = self.automation_service.snapshot()
+            run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+            events = snapshot.get("events") if isinstance(snapshot.get("events"), list) else []
+            runtime["automation"] = {
+                "total_count": snapshot.get("total_count"),
+                "enabled_count": snapshot.get("enabled_count"),
+                "queued_count": snapshot.get("queued_count"),
+                # Variables may hold user data; only status fields are exported.
+                "run": {
+                    key: run.get(key)
+                    for key in ("running", "status", "automation_name", "started_at", "finished_at", "error", "steps")
+                },
+                "recent_events": events[:10],
+            }
+
+        with contextlib.suppress(Exception):
+            runtime["autostart"] = self._autostart_service.status()
+
+        report["runtime"] = runtime
+        return report
+
+    def export_diagnostics(self, target_path: str | None = None) -> dict[str, Any]:
+        """Export a diagnostics ZIP with environment info, logs and crash reports.
+
+        Settings are redacted before export. If ``target_path`` is omitted a
+        native Save dialog is shown; a cancelled dialog returns
+        ``{"cancelled": True}``.
+        """
+        from backend import diagnostics
+
+        try:
+            report = self._collect_diagnostics_report()
+            settings = diagnostics.redact_settings(self.store.as_dict())
+            attachments = diagnostics.collect_attachments(
+                get_cache_dir() / "logs",
+                get_cache_dir() / "crash_reports",
+            )
+        except Exception as exc:
+            logger.error("Failed to collect diagnostics data: {}", exc)
+            return {"saved_path": "", "error": str(exc)}
+
+        if target_path:
+            destination = Path(target_path)
+        else:
+            suggested = f"little-tree-wallpaper-diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+            picked_path = self._show_file_dialog(
+                "save",
+                filetypes=[("诊断数据 (ZIP)", "*.zip"), ("所有文件", "*.*")],
+                defaultextension=".zip",
+                initialfile=suggested,
+            )
+            if not picked_path:
+                return {"saved_path": "", "cancelled": True}
+            destination = Path(picked_path)
+
+        try:
+            summary = diagnostics.write_diagnostics_archive(
+                destination,
+                report=report,
+                settings=settings,
+                attachments=attachments,
+            )
+        except Exception as exc:
+            logger.error("Failed to write diagnostics archive to {}: {}", destination, exc)
+            return {"saved_path": "", "error": str(exc)}
+        return {"saved_path": str(destination), **summary}

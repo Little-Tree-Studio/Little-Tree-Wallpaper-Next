@@ -120,7 +120,12 @@ DEFAULT_THEME: dict[str, Any] = {
         "background_opacity": 1.0,
         "backdrop_blur": 0.0,
     },
-    "custom_css": "",
+    "home_cards": {
+        "background_style": "default",
+        "background_opacity": 0.8,
+        "backdrop_blur": 16.0,
+        "blur_tint": 0.35,
+    },    "custom_css": "",
     "created_at": "",
     "updated_at": "",
     "is_builtin": True,
@@ -308,6 +313,16 @@ def normalize_theme(
     if not isinstance(navigation_chrome, dict):
         raise ValueError("navigation_chrome 必须是对象")
 
+    home_cards = value.get("home_cards", DEFAULT_THEME["home_cards"])
+    if not isinstance(home_cards, dict):
+        raise ValueError("home_cards 必须是对象")
+    home_card_style = _string(home_cards.get("background_style", "default"), "home_cards.background_style", 16, allow_empty=False).lower()
+    if home_card_style == "glass":
+        # 旧主题里的 "glass"（半透明底色 + 模糊）已改为 "blur"（纯模糊、无底色）。
+        home_card_style = "blur"
+    if home_card_style not in {"default", "blur", "translucent"}:
+        raise ValueError("home_cards.background_style 不受支持")
+
     normalized = {
         "format": THEME_FORMAT,
         "format_version": THEME_FORMAT_VERSION,
@@ -378,6 +393,28 @@ def normalize_theme(
                 "navigation_chrome.backdrop_blur",
                 0,
                 64,
+            ),
+        },
+        "home_cards": {
+            "background_style": home_card_style,
+            "background_opacity": _number(
+                home_cards.get("background_opacity", 0.8),
+                "home_cards.background_opacity",
+                0.05,
+                1,
+            ),
+            "backdrop_blur": _number(
+                home_cards.get("backdrop_blur", 16),
+                "home_cards.backdrop_blur",
+                0,
+                64,
+            ),
+            # 模糊样式融入主题表面色的比例；0 表示纯透明模糊。
+            "blur_tint": _number(
+                home_cards.get("blur_tint", 0.35),
+                "home_cards.blur_tint",
+                0,
+                1,
             ),
         },
         "custom_css": custom_css,

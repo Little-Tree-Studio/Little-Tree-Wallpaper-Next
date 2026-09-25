@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import uuid
 from dataclasses import dataclass, field
 from functools import wraps
@@ -35,7 +36,7 @@ from .validation import (
     MAX_MANIFEST_SIZE,
     MAX_PATH_LENGTH,
     MAX_PAYLOAD_SIZE,
-    MAX_RESULT_SIZE,
+MAX_RESULT_SIZE,
     SAFE_IMAGE_SUFFIXES,
     PluginError,
     PluginValidationError,
@@ -74,6 +75,7 @@ class _PluginRecord:
     context: PluginContext | None = None
     instance: Any = None
     actions: dict[str, Any] = field(default_factory=dict)
+    event_subscriptions: dict[str, list[Any]] = field(default_factory=dict)
     contributions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     started: bool = False
     generation: int = 0
@@ -99,6 +101,7 @@ class PluginManager:
         self._lock = threading.RLock()
         self._operation_lock = threading.RLock()
         self._records: dict[str, _PluginRecord] = {}
+        self._event_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="plugin-event")
         for path in (
             self.plugins_dir,
             self.state_path.parent,
@@ -255,7 +258,12 @@ class PluginManager:
                 callback = record.actions.get(checked_action)
                 if callback is None:
                     raise PluginError(f"Unknown plugin action: {checked_action}")
-            result = callback(checked_payload)
+            future = self._event_executor.submit(callback, checked_payload)
+            try:
+                result = future.result(timeout=30)
+            except FutureTimeoutError as exc:
+                future.cancel()
+                raise PluginError("Plugin action timed out after 30 seconds") from exc
             checked_result = json_copy(result, limit=MAX_RESULT_SIZE, label="action result")
             return {
                 "state": "enabled",
@@ -299,7 +307,34 @@ class PluginManager:
             except Exception as exc:
                 self.logger.exception("Failed to stop plugin %s", record.plugin_id)
                 results.append(self._record_error(record.plugin_id, exc))
+        self._event_executor.shutdown(wait=False, cancel_futures=True)
         return {"state": "ok", "status": "ok", "error": None, "plugins": results}
+
+    def publish_event(self, event: str, payload: Any = None) -> dict[str, Any]:
+        """Deliver a JSON event to started plugins without failing the host."""
+        checked_event = validate_identifier(event, "event name", max_length=80)
+        checked_payload = json_copy(payload, limit=MAX_PAYLOAD_SIZE, label="event payload")
+        with self._lock:
+            targets = [
+                (record.plugin_id, callback)
+                for record in self._records.values()
+                if record.enabled and record.started
+                for callback in record.event_subscriptions.get(checked_event, [])
+            ]
+        delivered = 0
+        errors: list[str] = []
+        for plugin_id, callback in targets:
+            future = self._event_executor.submit(callback, json_copy(checked_payload, label="event payload"))
+            try:
+                future.result(timeout=5)
+                delivered += 1
+            except FutureTimeoutError:
+                future.cancel()
+                errors.append(f"{plugin_id}: event callback timed out")
+            except Exception as exc:
+                errors.append(f"{plugin_id}: {exc}")
+                self.logger.exception("Plugin event callback failed: %s.%s", plugin_id, checked_event)
+        return {"event": checked_event, "delivered": delivered, "errors": errors}
 
     def _discover(self, enabled: set[str]) -> None:
         for directory in sorted(self.plugins_dir.iterdir()):
@@ -352,6 +387,7 @@ class PluginManager:
             get_plugin_cache_dir(record.plugin_id, self.cache_dir),
             set(manifest["permissions"]),
             logging.LoggerAdapter(self.logger, {"plugin_id": record.plugin_id}),
+            lambda event, callback: record.event_subscriptions.setdefault(event, []).append(callback),
         )
         for kind, descriptors in manifest["contributes"].items():
             for descriptor in descriptors:
@@ -428,6 +464,7 @@ class PluginManager:
                 record.context = None
                 record.instance = None
                 record.actions = {}
+                record.event_subscriptions = {}
                 record.contributions = {}
                 record.started = False
                 record.status = "error"
@@ -464,6 +501,7 @@ class PluginManager:
             record.context = None
             record.instance = None
             record.actions = {}
+            record.event_subscriptions = {}
             record.contributions = {}
             record.status = "disabled" if not record.enabled else "installed"
             record.error = str(error) if error is not None else None

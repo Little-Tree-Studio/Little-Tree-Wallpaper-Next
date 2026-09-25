@@ -48,17 +48,21 @@ interface RowProps {
   mono?: boolean;
   copyable?: boolean;
   copyLabel?: string;
+  onClick?: () => void;
 }
 
-function Row({ label, value, mono, copyable, copyLabel }: RowProps) {
+function Row({ label, value, mono, copyable, copyLabel, onClick }: RowProps) {
   return (
     <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
       <span className="shrink-0 text-muted">{label}</span>
       {copyable ? (
         <button
           type="button"
-          onClick={() => copyToClipboard(value, copyLabel || label)}
-          className="group flex min-w-0 items-center gap-1 truncate rounded text-foreground transition-colors hover:bg-surface-tertiary hover:px-1.5"
+          onClick={() => {
+            onClick?.();
+            void copyToClipboard(value, copyLabel || label);
+          }}
+          className="group flex min-w-0 select-none items-center gap-1 truncate rounded text-foreground transition-colors hover:bg-surface-tertiary hover:px-1.5"
           title={`点击复制 ${label}`}
         >
           <span className={`truncate ${mono ? 'font-mono' : ''}`}>{value || '—'}</span>

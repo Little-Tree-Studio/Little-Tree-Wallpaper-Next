@@ -1,10 +1,19 @@
 export interface WallpaperInfo {
   path: string;
   filename: string;
+  /** Scaled preview served by the backend; absent for unservable paths. */
+  preview_url?: string;
+  /** Image pixel size; 0 when the file cannot be read. */
+  width?: number;
+  height?: number;
+  /** File size in bytes; 0 when unavailable. */
+  size_bytes?: number;
 }
 
 export interface BingWallpaper {
   url: string;
+  /** Small thumbnail URL (roughly 320x180); falls back to ``url``. */
+  preview_url?: string;
   title: string;
   copyright: string;
   startdate: string;
@@ -156,6 +165,8 @@ export interface HomePageSettings {
   show_author: boolean;
   show_source: boolean;
   wallpaper_refresh_seconds: number;
+  /** Ordered home page cards; order controls display order on the Home page. */
+  cards?: { id: string; visible: boolean }[];
   hitokoto: { region: 'domestic' | 'international'; categories: string[] };
   zhaoyu?: { catalog: string; theme: string; author: string };
   custom: { items: CustomSentence[] };
@@ -167,6 +178,7 @@ export interface FavoriteItem {
   title: string;
   description: string;
   tags: string[];
+  smart_tags?: string[];
   preview_url: string;
   local_path: string | null;
   source_type: string;
@@ -188,6 +200,7 @@ export interface FavoritesData {
   items: FavoriteItem[];
   all_tags: string[];
   system_tags?: string[];
+  smart_tags?: string[];
 }
 
 export interface SniffedImage {
@@ -258,6 +271,8 @@ export interface AppSettings {
       interval: { value: number; unit: string };
     };
     allow_NSFW: boolean;
+    bing?: { market: string };
+    spotlight?: { market: string };
     history_save_copy: boolean;
     history: {
       max_items: number;
@@ -267,7 +282,7 @@ export interface AppSettings {
       record_dynamic_snapshot: boolean;
     };
     sources: { merge_display: boolean };
-    pixiv?: { include_artwork_tags_in_favorites: boolean };
+    pixiv?: { include_artwork_tags_in_favorites: boolean; image_proxy?: string };
     dynamic: {
       static_snapshot: { enabled: boolean };
       performance: DynamicWallpaperPerformanceSettings;
@@ -277,6 +292,10 @@ export interface AppSettings {
     auto_check: boolean;
     channel: string;
     mirror?: string;
+  };
+  classifier: {
+    auto_tag_favorites: boolean;
+    directory?: string;
   };
   home_page: HomePageSettings;
   startup: {
@@ -509,13 +528,86 @@ export interface PluginDividerBlock {
   className?: string;
 }
 
+export interface PluginMetricBlock {
+  type: 'metric';
+  label?: string;
+  value: string;
+  unit?: string;
+  size?: 'sm' | 'md' | 'lg';
+  align?: 'left' | 'center' | 'right';
+  className?: string;
+}
+
+export interface PluginProgressBlock {
+  type: 'progress';
+  label?: string;
+  value: number | string;
+  unit?: string;
+  className?: string;
+}
+
+export interface PluginTimeBlock {
+  type: 'time';
+  label?: string;
+  format?: 'time' | 'date' | 'datetime';
+  use24Hour?: boolean;
+  className?: string;
+}
+
+export interface PluginBadgeBlock {
+  type: 'badge';
+  text: string;
+  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
+  className?: string;
+}
+
+export interface PluginRowsBlock {
+  type: 'rows';
+  items: { label: string; value: string; emphasis?: boolean }[];
+  className?: string;
+}
+
+export interface PluginColumnsBlock {
+  type: 'columns';
+  blocks: PluginBlock[];
+  className?: string;
+}
+
 export type PluginBlock =
   | PluginHeadingBlock
   | PluginTextBlock
   | PluginImageBlock
   | PluginCardBlock
   | PluginButtonBlock
-  | PluginDividerBlock;
+  | PluginDividerBlock
+  | PluginMetricBlock
+  | PluginProgressBlock
+  | PluginTimeBlock
+  | PluginBadgeBlock
+  | PluginRowsBlock
+  | PluginColumnsBlock;
+
+export type PluginWidgetSettingType = 'text' | 'textarea' | 'number' | 'switch' | 'select' | 'slider' | 'color' | 'date';
+
+export interface PluginWidgetSettingDescriptor {
+  key: string;
+  label: string;
+  type: PluginWidgetSettingType;
+  default?: string | number | boolean;
+  placeholder?: string;
+  help?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  maxLength?: number;
+  options?: { value: string; label: string }[];
+}
+
+export interface PluginWidgetRefresh {
+  action: string;
+  interval_seconds: number;
+  payload?: unknown;
+}
 
 export interface PluginPageContribution {
   id: string;
@@ -552,6 +644,16 @@ export interface PluginOverlayContribution {
   className?: string;
 }
 
+/** A card the plugin contributes to the home page, rendered with the shared
+ *  home card background layer and manageable from Settings → 主页. */
+export interface PluginHomeCardContribution {
+  id: string;
+  label: string;
+  description?: string;
+  blocks: PluginBlock[];
+  className?: string;
+}
+
 export interface PluginStyleContribution {
   id: string;
   scope: 'plugin' | 'global';
@@ -570,6 +672,8 @@ export interface PluginWidgetContribution {
   description?: string;
   default_size: { width: number; height: number };
   blocks: PluginBlock[];
+  settings?: PluginWidgetSettingDescriptor[];
+  refresh?: PluginWidgetRefresh | null;
   className?: string;
 }
 
@@ -579,6 +683,7 @@ export interface PluginContributionMap {
   resource_pages?: PluginPageContribution[];
   buttons?: PluginButtonContribution[];
   overlays?: PluginOverlayContribution[];
+  home_cards?: PluginHomeCardContribution[];
   styles?: PluginStyleContribution[];
   theme?: PluginThemeContribution[];
   widgets?: PluginWidgetContribution[];
@@ -646,6 +751,7 @@ export interface BoundPluginContributions {
   resource_pages: BoundPluginContribution<PluginPageContribution>[];
   buttons: BoundPluginContribution<PluginButtonContribution>[];
   overlays: BoundPluginContribution<PluginOverlayContribution>[];
+  home_cards: BoundPluginContribution<PluginHomeCardContribution>[];
   styles: BoundPluginContribution<PluginStyleContribution>[];
   theme: BoundPluginContribution<PluginThemeContribution>[];
   widgets: BoundPluginContribution<PluginWidgetContribution>[];

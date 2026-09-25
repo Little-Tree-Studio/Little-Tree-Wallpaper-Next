@@ -23,6 +23,26 @@ MAX_RESULT_SIZE = 256 * 1024
 MAX_STYLE_SIZE = 64 * 1024
 MAX_PAGE_BLOCKS = 64
 MAX_BLOCK_DEPTH = 3
+MAX_WIDGET_SETTINGS = 16
+MAX_WIDGET_SETTING_OPTIONS = 12
+MIN_WIDGET_REFRESH_SECONDS = 15
+MAX_WIDGET_REFRESH_SECONDS = 86_400
+WIDGET_SETTING_TYPES = {
+    "text",
+    "textarea",
+    "number",
+    "switch",
+    "select",
+    "slider",
+    "color",
+    "date",
+}
+WIDGET_SETTING_DEFAULTS = {
+    "text": {"maxLength": 200},
+    "textarea": {"maxLength": 1000},
+    "slider": {"min": 0, "max": 100, "step": 1},
+}
+HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 SETTING_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*$")
@@ -64,6 +84,7 @@ NATIVE_OR_EXECUTABLE_SUFFIXES = {
 SUPPORTED_PERMISSIONS = {
     "ui.buttons",
     "ui.global_style",
+    "ui.home_cards",
     "ui.navigation",
     "ui.overlay",
     "ui.pages",
@@ -73,6 +94,7 @@ SUPPORTED_PERMISSIONS = {
 }
 CONTRIBUTION_PERMISSIONS = {
     "buttons": "ui.buttons",
+    "home_cards": "ui.home_cards",
     "navigation": "ui.navigation",
     "overlays": "ui.overlay",
     "pages": "ui.pages",
@@ -82,6 +104,7 @@ CONTRIBUTION_PERMISSIONS = {
 }
 SUPPORTED_CONTRIBUTIONS = {
     "buttons",
+    "home_cards",
     "navigation",
     "overlays",
     "pages",
@@ -261,11 +284,17 @@ def validate_contribution(
         raise PluginValidationError(f"{kind} contribution must be an object")
     value["id"] = validate_identifier(value.get("id"), f"{kind} contribution ID", max_length=80)
 
-    if kind in {"buttons", "navigation", "overlays", "pages", "resource_pages", "theme", "widgets"}:
+    if kind in {"buttons", "home_cards", "navigation", "overlays", "pages", "resource_pages", "theme", "widgets"}:
         _validate_label(value.get("label"), kind)
     if kind in {"pages", "resource_pages"}:
         value["route"] = _validate_route(value.get("route"))
         value["blocks"] = _validate_blocks(value.get("blocks", []), source_path, available_files)
+    elif kind == "home_cards":
+        value["blocks"] = _validate_blocks(value.get("blocks", []), source_path, available_files)
+        description = value.get("description", "")
+        if not isinstance(description, str) or len(description) > 500:
+            raise PluginValidationError("home_cards description must be a bounded string")
+        value["description"] = description
     elif kind == "navigation":
         route = value.get("route")
         page = value.get("page")
@@ -323,6 +352,8 @@ def validate_contribution(
             raise PluginValidationError("Widget dimensions must be between 8 and 100 percent")
         value["description"] = description
         value["default_size"] = {"width": width, "height": height}
+        value["settings"] = _validate_widget_settings(value.get("settings", []))
+        value["refresh"] = _validate_widget_refresh(value.get("refresh"))
     _validate_optional_class_name(value.get("className"))
     if kind == "navigation" and "location" in value and value["location"] != "sidebar":
         raise PluginValidationError("Navigation location must be sidebar")
@@ -356,9 +387,13 @@ def validate_contribution_set(contributions: dict[str, list[dict[str, Any]]], ac
         raise PluginValidationError("Plugin page routes must be unique")
     if actions is not None:
         referenced = {item["action"] for item in contributions.get("buttons", [])}
-        for kind in ("pages", "resource_pages", "overlays", "widgets"):
+        for kind in ("pages", "resource_pages", "overlays", "home_cards", "widgets"):
             for item in contributions.get(kind, []):
                 referenced.update(_block_actions(item.get("blocks", [])))
+        for item in contributions.get("widgets", []):
+            refresh = item.get("refresh")
+            if refresh:
+                referenced.add(refresh["action"])
         missing = referenced - actions
         if missing:
             raise PluginValidationError(f"Unknown action reference: {sorted(missing)[0]}")
@@ -537,7 +572,10 @@ def _validate_blocks(
         if not isinstance(value, dict):
             raise PluginValidationError("Page block must be an object")
         block_type = value.get("type")
-        if block_type not in {"text", "heading", "image", "card", "button", "divider"}:
+        if block_type not in {
+            "text", "heading", "image", "card", "button", "divider",
+            "metric", "progress", "time", "badge", "rows", "columns",
+        }:
             raise PluginValidationError(f"Unsupported page block type: {block_type}")
         _validate_optional_class_name(value.get("className"))
         if block_type in {"text", "heading"}:
@@ -561,6 +599,69 @@ def _validate_blocks(
             value["action"] = validate_identifier(value.get("action"), "button block action", max_length=80)
             if "payload" in value:
                 value["payload"] = json_copy(value["payload"], limit=MAX_PAYLOAD_SIZE, label="button payload")
+        elif block_type == "metric":
+            for field, limit in (("label", 200), ("value", 200), ("unit", 24)):
+                if field in value and (not isinstance(value[field], str) or len(value[field]) > limit):
+                    raise PluginValidationError(f"Metric {field} must be a bounded string")
+            if not isinstance(value.get("value"), str) or not value["value"]:
+                raise PluginValidationError("Metric block requires a value")
+            if value.get("size", "md") not in {"sm", "md", "lg"}:
+                raise PluginValidationError("Metric size must be sm, md, or lg")
+            if value.get("align", "left") not in {"left", "center", "right"}:
+                raise PluginValidationError("Metric align must be left, center, or right")
+        elif block_type == "progress":
+            if "label" in value and (not isinstance(value["label"], str) or len(value["label"]) > 200):
+                raise PluginValidationError("Progress label must be a bounded string")
+            progress_value = value.get("value", 0)
+            if not isinstance(progress_value, (int, float, str)) or isinstance(progress_value, bool):
+                raise PluginValidationError("Progress value must be a number or template string")
+            if isinstance(progress_value, (int, float)) and not 0 <= float(progress_value) <= 100:
+                raise PluginValidationError("Progress value must be between 0 and 100")
+            if isinstance(progress_value, str) and len(progress_value) > 64:
+                raise PluginValidationError("Progress value template is too long")
+            if "unit" in value and (not isinstance(value["unit"], str) or len(value["unit"]) > 24):
+                raise PluginValidationError("Progress unit must be a bounded string")
+        elif block_type == "time":
+            if "label" in value and (not isinstance(value["label"], str) or len(value["label"]) > 80):
+                raise PluginValidationError("Time label must be a bounded string")
+            if value.get("format", "time") not in {"time", "date", "datetime"}:
+                raise PluginValidationError("Time format must be time, date, or datetime")
+            if "use24Hour" in value and not isinstance(value["use24Hour"], bool):
+                raise PluginValidationError("Time use24Hour must be a boolean")
+        elif block_type == "badge":
+            badge_text = value.get("text")
+            if not isinstance(badge_text, str) or not badge_text or len(badge_text) > 120:
+                raise PluginValidationError("Badge block requires bounded text")
+            if value.get("tone", "neutral") not in {"neutral", "success", "warning", "danger", "info"}:
+                raise PluginValidationError("Badge tone is invalid")
+        elif block_type == "rows":
+            items = value.get("items", [])
+            if not isinstance(items, list) or len(items) > 12:
+                raise PluginValidationError("Rows block requires at most 12 items")
+            normalized_items: list[dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    raise PluginValidationError("Rows items must be objects")
+                item_label = item.get("label")
+                item_value = item.get("value")
+                if not isinstance(item_label, str) or not item_label or len(item_label) > 120:
+                    raise PluginValidationError("Rows item label must be a bounded string")
+                if not isinstance(item_value, str) or len(item_value) > 200:
+                    raise PluginValidationError("Rows item value must be a bounded string")
+                normalized_item = {"label": item_label, "value": item_value}
+                if item.get("emphasis", False) is not False:
+                    if not isinstance(item.get("emphasis"), bool):
+                        raise PluginValidationError("Rows item emphasis must be a boolean")
+                    normalized_item["emphasis"] = item["emphasis"]
+                normalized_items.append(normalized_item)
+            value["items"] = normalized_items
+        elif block_type == "columns":
+            column_blocks = value.get("blocks", [])
+            if not isinstance(column_blocks, list) or len(column_blocks) > 6:
+                raise PluginValidationError("Columns block requires at most 6 child blocks")
+            value["blocks"] = _validate_blocks(
+                column_blocks, source_path, available_files, depth=depth + 1, count=counter
+            )
         normalized.append(value)
     return normalized
 
@@ -577,6 +678,115 @@ def _validate_asset(value: Any, source_path: Path | None, available_files: set[s
     if source_path is not None and not (source_path / Path(*path.parts)).is_file():
         raise PluginValidationError(f"Image asset does not exist: {normalized}")
     return normalized
+
+
+def _validate_widget_setting_scalar(value: Any, setting_type: str) -> Any:
+    if isinstance(value, bool):
+        return value if setting_type == "switch" else None
+    if isinstance(value, str):
+        return value[:500] if len(value) <= 500 else None
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(float(value)) else None
+    return None
+
+
+def _validate_widget_settings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > MAX_WIDGET_SETTINGS:
+        raise PluginValidationError(f"Widget settings must be a list of at most {MAX_WIDGET_SETTINGS} descriptors")
+    normalized: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for descriptor in value:
+        if not isinstance(descriptor, dict):
+            raise PluginValidationError("Widget setting descriptors must be objects")
+        key = descriptor.get("key")
+        if not isinstance(key, str) or len(key) > 64 or SETTING_KEY_PATTERN.fullmatch(key) is None:
+            raise PluginValidationError("Widget setting key is invalid")
+        if key in seen_keys:
+            raise PluginValidationError(f"Duplicate widget setting key: {key}")
+        seen_keys.add(key)
+        label = descriptor.get("label")
+        if not isinstance(label, str) or not label.strip() or len(label) > 80:
+            raise PluginValidationError(f"Widget setting {key} requires a bounded label")
+        setting_type = descriptor.get("type")
+        if setting_type not in WIDGET_SETTING_TYPES:
+            raise PluginValidationError(f"Widget setting {key} has an unsupported type")
+        result: dict[str, Any] = {"key": key, "label": label.strip(), "type": setting_type}
+        for field, limit in (("placeholder", 200), ("help", 200)):
+            if field in descriptor:
+                field_value = descriptor[field]
+                if not isinstance(field_value, str) or len(field_value) > limit:
+                    raise PluginValidationError(f"Widget setting {key} {field} must be a bounded string")
+                result[field] = field_value
+        if "default" in descriptor:
+            default_value = _validate_widget_setting_scalar(descriptor["default"], str(setting_type))
+            if default_value is not None:
+                result["default"] = default_value
+        bounds: dict[str, float] = {}
+        for field in ("min", "max", "step"):
+            if field not in descriptor:
+                continue
+            bound = descriptor[field]
+            if not isinstance(bound, (int, float)) or isinstance(bound, bool) or not math.isfinite(float(bound)):
+                raise PluginValidationError(f"Widget setting {key} {field} must be a finite number")
+            result[field] = bound
+            bounds[field] = float(bound)
+        if "min" in bounds and "max" in bounds and bounds["min"] >= bounds["max"]:
+            raise PluginValidationError(f"Widget setting {key} min must be lower than max")
+        if "step" in bounds and bounds["step"] <= 0:
+            raise PluginValidationError(f"Widget setting {key} step must be positive")
+        if "maxLength" in descriptor:
+            max_length = descriptor["maxLength"]
+            if not isinstance(max_length, int) or isinstance(max_length, bool) or not 1 <= max_length <= 1000:
+                raise PluginValidationError(f"Widget setting {key} maxLength must be between 1 and 1000")
+            result["maxLength"] = max_length
+        if setting_type == "select":
+            options = descriptor.get("options")
+            if not isinstance(options, list) or not 1 <= len(options) <= MAX_WIDGET_SETTING_OPTIONS:
+                raise PluginValidationError(f"Widget setting {key} requires 1 to {MAX_WIDGET_SETTING_OPTIONS} options")
+            values: list[str] = []
+            for option in options:
+                if not isinstance(option, dict):
+                    raise PluginValidationError(f"Widget setting {key} options must be objects")
+                option_value = option.get("value")
+                option_label = option.get("label")
+                if not isinstance(option_value, str) or not option_value or len(option_value) > 80:
+                    raise PluginValidationError(f"Widget setting {key} option values must be bounded strings")
+                if not isinstance(option_label, str) or not option_label.strip() or len(option_label) > 80:
+                    raise PluginValidationError(f"Widget setting {key} option labels must be bounded strings")
+                if option_value in values:
+                    raise PluginValidationError(f"Widget setting {key} has duplicate option values")
+                values.append(option_value)
+            result["options"] = [
+                {"value": option["value"], "label": str(option["label"]).strip()} for option in options
+            ]
+            if "default" in result and result["default"] not in values:
+                raise PluginValidationError(f"Widget setting {key} default must match one of the options")
+        if setting_type == "color" and "default" in result:
+            default_color = result["default"]
+            if not isinstance(default_color, str) or not HEX_COLOR_PATTERN.fullmatch(default_color):
+                raise PluginValidationError(f"Widget setting {key} default color must be a #RRGGBB value")
+        normalized.append(result)
+    return normalized
+
+
+def _validate_widget_refresh(value: Any) -> dict[str, Any] | None:
+    if value is None or value is False:
+        return None
+    if not isinstance(value, dict):
+        raise PluginValidationError("Widget refresh must be an object")
+    action = validate_identifier(value.get("action"), "widget refresh action", max_length=80)
+    try:
+        interval = int(value.get("interval_seconds", 300))
+    except (TypeError, ValueError) as exc:
+        raise PluginValidationError("Widget refresh interval must be an integer") from exc
+    if not MIN_WIDGET_REFRESH_SECONDS <= interval <= MAX_WIDGET_REFRESH_SECONDS:
+        raise PluginValidationError(
+            f"Widget refresh interval must be between {MIN_WIDGET_REFRESH_SECONDS} and {MAX_WIDGET_REFRESH_SECONDS} seconds"
+        )
+    result: dict[str, Any] = {"action": action, "interval_seconds": interval}
+    if "payload" in value:
+        result["payload"] = json_copy(value["payload"], limit=MAX_PAYLOAD_SIZE, label="widget refresh payload")
+    return result
 
 
 def _block_actions(blocks: list[dict[str, Any]]) -> set[str]:

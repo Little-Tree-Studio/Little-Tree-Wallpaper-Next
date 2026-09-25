@@ -395,6 +395,7 @@ class StorageService:
         data_dir = get_data_dir()
         config_dir = get_config_dir()
         downloads_dir = self._downloads_dir()
+        classifier_dir = Path(str(self.store.get("classifier.directory", "") or "")).expanduser() if self.store.get("classifier.directory", "") else get_data_dir() / "components" / "classifier"
         managed_download_paths = self._managed_download_files(strict=False)
         normalized_downloads_dir = self._normalized(downloads_dir.expanduser().resolve(strict=False))
         config_files = [
@@ -404,6 +405,13 @@ class StorageService:
         ]
         exports = list(data_dir.glob("*.ltfav")) if data_dir.exists() else []
         return [
+            {
+                "id": "classifier",
+                "title": "图片分类模型",
+                "description": "图片分类模型与独立推理运行时",
+                "paths": [classifier_dir],
+                "action": "none",
+            },
             {
                 "id": "application",
                 "title": "应用本体",

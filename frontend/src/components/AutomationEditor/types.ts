@@ -1,3 +1,5 @@
+import { WALLPAPER_MARKETS, DEFAULT_WALLPAPER_MARKET } from '@/lib/wallpaperMarkets';
+
 export type AutomationNodeType =
   | 'trigger'
   | 'condition'
@@ -36,7 +38,9 @@ export interface SimpleAutomationSettings {
   source: SimpleWallpaperSource;
   path: string;
   recursive: boolean;
-  resource: 'bing' | 'spotlight' | 'cnu' | 'pixiv';
+  resource: 'bing' | 'spotlight' | 'timeline' | 'cnu' | 'pixiv' | 'im' | 'ltws';
+  resourceSourceId?: string;
+  resourceApiName?: string;
 }
 
 export interface AutomationExpression {
@@ -291,6 +295,7 @@ const SOURCE_LABELS: Record<string, string> = {
   im: 'Intelligent Market',
   bing: 'Bing',
   spotlight: 'Windows 聚焦',
+  timeline: '拾光壁纸',
   cnu: 'CNU',
   pixiv: 'Pixiv 排行榜',
   ltws: '壁纸源 API',
@@ -317,6 +322,7 @@ export function formatNodeSummary(node: AutomationNode): string {
     const source = String(config.source || 'bing');
     const detail = source === 'bing' ? String(config.category || 'daily')
       : source === 'spotlight' ? String(config.spotlight_source || 'online')
+      : source === 'timeline' ? String(config.timeline_mode || 'random')
       : source === 'cnu' ? String(config.section || 'selected')
       : source === 'pixiv' ? String(config.mode || 'day')
       : source === 'im' ? String(config.source_name || config.source_id || '请选择来源')
@@ -483,7 +489,7 @@ export function getNodeSettings(node: AutomationNode, catalog?: AutomationResour
   if (node.type === 'datetime') return [{ pointer: '/value', label: '日期/时间戳', kind: 'text', value: config.value || '' }, { pointer: '/format', label: '输出格式', kind: 'text', value: config.format || '%Y-%m-%d %H:%M:%S' }, { pointer: '/timezone', label: '时区', kind: 'select', value: config.timezone || 'local', options: options([['local', '本地'], ['utc', 'UTC']]) }, { pointer: '/result_variable', label: '结果变量', kind: 'text', value: config.result_variable || 'datetime' }];
   if (node.type === 'fetch_resource') {
     const source = String(config.source || 'bing');
-    const result: AutomationSettingDescriptor[] = [{ pointer: '/source', label: '资源类型', kind: 'select', value: source, options: options([["im", 'IM'], ['bing', 'Bing'], ['spotlight', '聚焦'], ['cnu', 'CNU'], ['pixiv', 'Pixiv'], ['ltws', '壁纸源'], ['folder', '本地文件夹'], ['favorites', '收藏']]) }];
+    const result: AutomationSettingDescriptor[] = [{ pointer: '/source', label: '资源类型', kind: 'select', value: source, options: options([["im", 'IM'], ['bing', 'Bing'], ['spotlight', '聚焦'], ['timeline', '拾光'], ['cnu', 'CNU'], ['pixiv', 'Pixiv'], ['ltws', '壁纸源'], ['folder', '本地文件夹'], ['favorites', '收藏']]) }];
     if (source === 'folder') return [
       ...result,
       { pointer: '/path', label: '文件夹', kind: 'directory', value: config.path || '' },
@@ -502,14 +508,18 @@ export function getNodeSettings(node: AutomationNode, catalog?: AutomationResour
     }
     if (source === 'bing') result.push(
       { pointer: '/category', label: '范围', kind: 'select', value: config.category || 'daily', options: options([["daily", '每日'], ['recent', '近期']]) },
-      { pointer: '/market', label: '区域', kind: 'select', value: config.market || 'zh-CN', options: options([["zh-CN", '中国'], ['en-US', '美国'], ['ja-JP', '日本'], ['de-DE', '德国'], ['fr-FR', '法国']]) },
+      { pointer: '/market', label: '区域', kind: 'select', value: config.market || DEFAULT_WALLPAPER_MARKET, options: WALLPAPER_MARKETS.map((market) => ({ id: market.id, label: market.label })) },
       { pointer: '/quality', label: '画质', kind: 'select', value: config.quality || 'highDef', options: options([["highDef", '高清'], ['ultraHighDef', '超高清']]) },
       { pointer: '/count', label: '候选数量', kind: 'number', value: config.count ?? 8 },
     );
     if (source === 'spotlight') result.push(
       { pointer: '/spotlight_source', label: '来源', kind: 'select', value: config.spotlight_source || 'online', options: options([["online", '在线'], ['local', '本机']]) },
-      { pointer: '/market', label: '区域', kind: 'select', value: config.market || 'zh-CN', options: options([["zh-CN", '中国'], ['en-US', '美国'], ['ja-JP', '日本']]) },
+      { pointer: '/market', label: '区域', kind: 'select', value: config.market || DEFAULT_WALLPAPER_MARKET, options: WALLPAPER_MARKETS.map((market) => ({ id: market.id, label: market.label })) },
       { pointer: '/limit', label: '数量', kind: 'number', value: config.limit ?? 20 },
+    );
+    if (source === 'timeline') result.push(
+      { pointer: '/timeline_mode', label: '模式', kind: 'select', value: config.timeline_mode || 'random', options: options([["random", '随机'], ['latest', '最新'], ['trending', '热门'], ['topic', '专题']]) },
+      { pointer: '/topic', label: '专题 ID', kind: 'text', value: config.topic || '' },
     );
     if (source === 'cnu') result.push(
       { pointer: '/section', label: '栏目', kind: 'select', value: config.section || 'selected', options: options([["selected", '精选'], ['inspiration', '灵感'], ['discovery', '发现']]) },
@@ -637,8 +647,11 @@ function createLinearAutomation(
 const SIMPLE_RESOURCE_CONFIGS: Record<SimpleAutomationSettings['resource'], Record<string, unknown>> = {
   bing: { source: 'bing', category: 'daily', market: 'zh-CN', quality: 'highDef', count: 8, selection: 'random' },
   spotlight: { source: 'spotlight', spotlight_source: 'online', market: 'zh-CN', limit: 20, selection: 'random' },
+  timeline: { source: 'timeline', timeline_mode: 'random', selection: 'random' },
   cnu: { source: 'cnu', section: 'selected', page: 1, limit: 20, work_selection: 'random', image_selection: 'random' },
   pixiv: { source: 'pixiv', mode: 'day', page: 1, limit: 30, work_selection: 'random', image_selection: 'random' },
+  im: { source: 'im', selection: 'random' },
+  ltws: { source: 'ltws', selection: 'random' },
 };
 
 export const DEFAULT_SIMPLE_SETTINGS: SimpleAutomationSettings = {
@@ -650,6 +663,8 @@ export const DEFAULT_SIMPLE_SETTINGS: SimpleAutomationSettings = {
   path: '',
   recursive: false,
   resource: 'bing',
+  resourceSourceId: '',
+  resourceApiName: '',
 };
 
 export function applySimpleSettings(document: AutomationDocument, settings: SimpleAutomationSettings): AutomationDocument {
@@ -658,11 +673,17 @@ export function applySimpleSettings(document: AutomationDocument, settings: Simp
     : settings.trigger === 'schedule'
       ? { kind: 'schedule', time: settings.scheduleTime }
       : { kind: 'startup' };
+  const resourceConfig = { ...SIMPLE_RESOURCE_CONFIGS[settings.resource] };
+  if (settings.resource === 'im') resourceConfig.source_id = settings.resourceSourceId || '';
+  if (settings.resource === 'ltws') {
+    resourceConfig.source_id = settings.resourceSourceId || '';
+    resourceConfig.api_name = settings.resourceApiName || '';
+  }
   const sourceStep = settings.source === 'file'
     ? { type: 'local_file' as const, config: { path: settings.path } }
     : settings.source === 'folder'
       ? { type: 'fetch_resource' as const, config: { source: 'folder', path: settings.path, recursive: settings.recursive, order: 'shuffle' } }
-      : { type: 'fetch_resource' as const, config: SIMPLE_RESOURCE_CONFIGS[settings.resource] };
+      : { type: 'fetch_resource' as const, config: resourceConfig };
   const nodeIds = ['trigger', 'source', 'wallpaper', 'stop'].map((suffix) => `${document.id}-${suffix}`);
   const steps = [
     { type: 'trigger' as const, config: triggerConfig },

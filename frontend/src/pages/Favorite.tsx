@@ -13,13 +13,13 @@ import {
   Plus, Pencil, Trash2, ImageIcon, FolderPlus,
   RefreshCw, FolderOutput, Import, Globe, Settings2, Tag,
   AlertTriangle, FolderOpen, FolderInput, X, CheckSquare, FilePenLine,
-  Repeat2, Eye, Copy,
+  Repeat2, Eye, Copy, Sparkles,
 } from 'lucide-react';
 import {
   getFavorites, removeFavorite, updateFavorite, copyToClipboard,
   createFavoriteFolder, updateFavoriteFolder, deleteFavoriteFolder, setWallpaper, downloadWithProgress,
   exportFavorites, pickAndImportFavorites, selectLocalImage, localFileUrl, localPreviewUrl,
-  FAVORITES_CHANGED_EVENT, saveAutomation,
+  FAVORITES_CHANGED_EVENT, saveAutomation, getSettings, getClassifierStatus, updateSettings, classifyFavoriteItems,
 } from '@/api/backend';
 import { useImageViewer } from '@/components/ImageViewer/context';
 import type { FavoriteFolder, FavoriteItem, FavoritesData } from '@/types';
@@ -77,6 +77,9 @@ export default function Favorite() {
   const [rotationUnit, setRotationUnit] = useState<RotationUnit>('minutes');
   const [creatingRotation, setCreatingRotation] = useState(false);
   const [contextMenu, setContextMenu] = useState<FavoriteContextMenu | null>(null);
+  const [autoTagFavorites, setAutoTagFavorites] = useState(false);
+  const [autoTagBusy, setAutoTagBusy] = useState(false);
+  const [classifyingFavorites, setClassifyingFavorites] = useState(false);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const {contains} = useFilter({sensitivity: 'base'});
   const { openViewer } = useImageViewer();
@@ -109,9 +112,37 @@ export default function Favorite() {
 
   useEffect(() => {
     refresh();
+    getSettings().then((settings) => setAutoTagFavorites(settings.classifier?.auto_tag_favorites === true)).catch(() => undefined);
     window.addEventListener(FAVORITES_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(FAVORITES_CHANGED_EVENT, refresh);
   }, [refresh]);
+
+  const handleAutoTagToggle = async () => {
+    if (autoTagBusy) return;
+    setAutoTagBusy(true);
+    try {
+      const status = await getClassifierStatus();
+      if (!status.installed) {
+        toast.info('需要先安装图片分类模型', {
+          description: '已打开更新页面，请在“图片分类模型”区域完成安装。',
+          timeout: 5000,
+        });
+        navigate('/settings/updates');
+        return;
+      }
+      const enabled = !autoTagFavorites;
+      await updateSettings({ 'classifier.auto_tag_favorites': enabled });
+      setAutoTagFavorites(enabled);
+      toast.success(enabled ? '已启用收藏自动标签' : '已关闭收藏自动标签');
+    } catch (error) {
+      toast.danger('无法更新智能标签设置', {
+        description: error instanceof Error ? error.message : '请稍后重试',
+        timeout: 0,
+      });
+    } finally {
+      setAutoTagBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -157,7 +188,10 @@ export default function Favorite() {
     setEditTitle(item.title);
     setEditDescription(item.description || '');
     setEditFolderId(item.folder_id || 'default');
-    setEditSelectedTagKeys(item.tags || []);
+    // Smart tags are stored in the same visible tag list, but are also kept
+    // in smart_tags so the editor can render them as removable, non-addable
+    // tags instead of hiding them from the selected values.
+    setEditSelectedTagKeys(Array.from(new Set([...(item.tags || []), ...(item.smart_tags || [])])));
     setTagSearchText('');
   }, []);
 
@@ -226,6 +260,39 @@ export default function Favorite() {
   const handleBatchExport = async () => {
     if (selectedItems.length === 0) return;
     setShowExportModal(true);
+  };
+
+  const handleBatchSmartTags = async () => {
+    if (selectedItems.length === 0 || classifyingFavorites) return;
+    setClassifyingFavorites(true);
+    try {
+      const status = await getClassifierStatus();
+      if (!status.installed) {
+        toast.info('需要先安装图片分类模型', { description: '请先在更新设置中安装模型。', timeout: 5000 });
+        navigate('/settings/updates');
+        return;
+      }
+      const result = await classifyFavoriteItems(selectedItems.map((item) => item.id));
+      await refresh();
+      const reasonLabels: Record<string, string> = {
+        missing_local_file: '没有本地文件或远程地址',
+        download_failed: '远程图片下载失败',
+        classification_failed: '分类失败',
+      };
+      const skippedDetails = (result.results || [])
+        .filter((item) => item.status === 'skipped')
+        .map((item) => reasonLabels[item.reason || ''] || item.message || '未知原因')
+        .reduce<Record<string, number>>((counts, reason) => {
+          counts[reason] = (counts[reason] || 0) + 1;
+          return counts;
+        }, {});
+      const detail = Object.entries(skippedDetails).map(([reason, count]) => `${reason} ${count} 张`).join('，');
+      toast.success(`已为 ${result.processed} 张图片更新智能标签${result.skipped ? `，跳过 ${result.skipped} 张（${detail}）` : ''}`);
+    } catch (error) {
+      toast.danger('批量添加智能标签失败', { description: error instanceof Error ? error.message : '请稍后重试', timeout: 0 });
+    } finally {
+      setClassifyingFavorites(false);
+    }
   };
 
   const openRotationModal = (target: RotationTarget) => {
@@ -515,6 +582,9 @@ export default function Favorite() {
           <Button size="sm" variant="secondary" onPress={() => navigate('/tags')}>
             <Tag size={14} /> 标签管理
           </Button>
+          <Button size="sm" variant={autoTagFavorites ? 'primary' : 'secondary'} onPress={() => void handleAutoTagToggle()} isPending={autoTagBusy}>
+            <Sparkles size={14} /> {autoTagFavorites ? '已启用智能标签' : '添加自动标签'}
+          </Button>
         </div>
       </div>
 
@@ -622,7 +692,7 @@ export default function Favorite() {
                   <Card.Title className="text-sm">{item.title}</Card.Title>
                 </Card.Header>
                 <Card.Content className="space-y-1 pt-0">
-                  <TagList tags={item.tags} max={3} className="pl-1" />
+                   <TagList tags={item.tags} smartTags={item.smart_tags} max={3} className="pl-1" />
                   {item.description && (
                     <div className="line-clamp-1 text-xs text-muted" title={item.description}>
                       {item.description}
@@ -691,7 +761,10 @@ export default function Favorite() {
             </Button>
           </ButtonGroup>
           <Separator orientation="vertical" />
-          <ButtonGroup variant="tertiary">
+            <ButtonGroup variant="tertiary">
+            <Button size="sm" variant="secondary" isDisabled={selectedItems.length === 0 || classifyingFavorites} isPending={classifyingFavorites} onPress={() => void handleBatchSmartTags()}>
+              {({ isPending }) => <>{isPending ? <Spinner color="current" size="sm" /> : <Sparkles size={14} />}{isPending ? '处理中' : '智能标签'}</>}
+            </Button>
             <Button size="sm" variant="secondary" isDisabled={selectedItems.length === 0} onPress={() => setShowBatchMoveModal(true)}>
               <FolderInput size={14} /> 移动
             </Button>
@@ -823,7 +896,7 @@ export default function Favorite() {
 
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label>标签</Label>
+                     <Label>标签</Label>
                     <Button size="sm" variant="ghost" onPress={() => setShowTagManagerModal(true)}>
                       <Settings2 size={14} /> 管理标签
                     </Button>
@@ -895,7 +968,7 @@ export default function Favorite() {
                           )}
                         >
                           {tagOptions.map((item) => (
-                            <ListBox.Item key={item.id} id={item.id} textValue={item.name}>
+                            <ListBox.Item key={item.id} id={item.id} textValue={item.name} isDisabled={(data.smart_tags || []).includes(item.id)}>
                               {item.name}
                               <ListBox.ItemIndicator />
                             </ListBox.Item>

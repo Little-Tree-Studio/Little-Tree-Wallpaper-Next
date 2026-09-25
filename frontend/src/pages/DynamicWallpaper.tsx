@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Chip, Input, Label, ListBox, Select, Slider, Spinner, Switch, Tag, TagGroup, Tabs, Tooltip, toast } from '@heroui/react';
-import { Bug, Circle, CloudRain, Flower2, FolderOpen, Image, Images, Leaf, MonitorPlay, Pause, Play, Puzzle, RefreshCw, Settings2, Snowflake, Sparkle, Sparkles, Square, SunDim, Video } from 'lucide-react';
-import { useNavigate } from '@/lib/router';
+import { Alert, Button, Card, Chip, Input, Label, ListBox, Select, Slider, Spinner, Switch, Tag, TagGroup, Tabs, toast } from '@heroui/react';
+import { Circle, CloudRain, Flower2, FolderOpen, Image, Images, Leaf, MonitorPlay, Pause, Play, Puzzle, RefreshCw, Settings2, Snowflake, Sparkle, Sparkles, Square, SunDim, Video } from 'lucide-react';
 import DynamicDesktop, { DesktopPreviewOverlay } from '@/components/DynamicDesktop';
 import {
   applyDynamicWallpaperScene,
@@ -76,7 +75,6 @@ function sourceLabel(type: DynamicBackgroundType): string {
 }
 
 export default function DynamicWallpaper() {
-  const navigate = useNavigate();
   const [scene, setScene] = useState<DynamicWallpaperScene | null>(null);
   const [status, setStatus] = useState<DynamicWallpaperStatus | null>(null);
   const [favoriteFolders, setFavoriteFolders] = useState<{ id: string; name: string }[]>([]);
@@ -226,7 +224,6 @@ export default function DynamicWallpaper() {
           <p className="mt-1 text-sm text-muted">组合视频、图片轮播和小组件，创建一张可交互的桌面场景。</p>
         </div>
         <div className="flex gap-2">
-          <Tooltip><Button isIconOnly variant="ghost" aria-label="动态壁纸调试台" onPress={() => navigate('/tools/dynamic-wallpaper')}><Bug size={18} /></Button><Tooltip.Content>保留的动态壁纸调试台</Tooltip.Content></Tooltip>
           <Button variant="secondary" onPress={openEditor}><Puzzle size={17} />编辑小组件</Button>
           <Button onPress={start} isPending={pending === 'start'} isDisabled={!status.supported}><Play size={17} fill="currentColor" />{status.running ? '应用场景' : '启动服务'}</Button>
           <Button variant="danger-soft" onPress={stop} isPending={pending === 'stop'} isDisabled={!status.running && !status.operation_busy && pending !== 'start'}><Square size={14} fill="currentColor" />停止</Button>

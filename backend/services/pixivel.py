@@ -9,6 +9,7 @@ from loguru import logger
 
 from backend.models import WallpaperItem
 from backend.services.cache import ResponseCache
+from backend.settings_manager import DEFAULT_PIXIV_IMAGE_PROXY, PIXIV_IMAGE_PROXIES
 
 
 class PixivelServiceError(RuntimeError):
@@ -19,14 +20,12 @@ class PixivelService:
     """Fetch Pixiv ranking and artwork data through the HibiAPI mirror.
 
     The service talks to ``https://hibiapi.cocomi.eu.org`` (a public HibiAPI
-    instance used by the Pxelk frontend).  Ranking endpoints are cached and the
-    returned image URLs are rewritten so the application can proxy them
-    through ``/api/pixiv-image`` (Pixiv's CDN requires a ``Referer`` header).
+    instance used by the Pxelk frontend). Ranking endpoints are cached and image
+    URLs are rewritten to the selected public Pixiv image proxy.
     """
 
     base_url = "https://hibiapi.cocomi.eu.org"
     pixiv_base_url = "https://www.pixiv.net"
-    image_proxy_base_url = "https://i.yuki.sh"
     _cache = ResponseCache("pixivel", default_ttl=1800.0)
 
     _rank_modes = frozenset(
@@ -58,9 +57,15 @@ class PixivelService:
         "day_manga": "每日 漫画",
     }
 
-    def __init__(self, session: requests.Session | None = None, timeout_seconds: int = 20) -> None:
+    def __init__(
+        self,
+        session: requests.Session | None = None,
+        timeout_seconds: int = 20,
+        image_proxy: str = DEFAULT_PIXIV_IMAGE_PROXY,
+    ) -> None:
         self._session = session or requests.Session()
         self._timeout_seconds = max(1, timeout_seconds)
+        self.image_proxy = image_proxy if image_proxy in {proxy["id"] for proxy in PIXIV_IMAGE_PROXIES} else DEFAULT_PIXIV_IMAGE_PROXY
         self._session.headers.update(
             {
                 "User-Agent": (
@@ -112,7 +117,7 @@ class PixivelService:
             raise ValueError("榜单日期必须早于日本时间今天")
         selected_date_text = selected_date.isoformat()
 
-        cache_key = f"rank:v4:{normalized_mode}:{selected_date_text}:{page}:{limit}"
+        cache_key = f"rank:v4:{self.image_proxy}:{normalized_mode}:{selected_date_text}:{page}:{limit}"
         if not force_refresh:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -190,60 +195,58 @@ class PixivelService:
         illust = self._fetch_illust(work_id)
         return self._illust_to_wallpaper_items(illust)
 
-    @classmethod
     def _normalize_work_summary(
-        cls, illust: dict[str, Any], mode: str, ranking_date: str
+        self, illust: dict[str, Any], mode: str, ranking_date: str
     ) -> dict[str, Any]:
         work_id = str(illust.get("id") or "").strip()
         user = illust.get("user") or {}
         image_urls = illust.get("image_urls") or {}
-        page_count = cls._positive_int(illust.get("page_count")) or 1
+        page_count = self._positive_int(illust.get("page_count")) or 1
         return {
             "id": work_id,
             "title": str(illust.get("title") or "").strip(),
             "author": str(user.get("name") or "").strip(),
             "author_id": str(user.get("id") or "").strip(),
-            "preview_url": cls._rewrite_image_url(str(image_urls.get("medium") or "").strip()),
+            "preview_url": self._rewrite_image_url(str(image_urls.get("medium") or "").strip()),
             "mode": mode,
-            "mode_label": cls.rank_mode_label(mode),
+            "mode_label": self.rank_mode_label(mode),
             "page_count": page_count,
-            "width": cls._positive_int(illust.get("width")),
-            "height": cls._positive_int(illust.get("height")),
-            "total_view": cls._positive_int(illust.get("total_view")),
-            "total_bookmarks": cls._positive_int(illust.get("total_bookmarks")),
+            "width": self._positive_int(illust.get("width")),
+            "height": self._positive_int(illust.get("height")),
+            "total_view": self._positive_int(illust.get("total_view")),
+            "total_bookmarks": self._positive_int(illust.get("total_bookmarks")),
             "create_date": str(illust.get("create_date") or "").strip(),
             "ranking_date": ranking_date,
-            "tags": cls._format_tags(illust.get("tags") or []),
-            "detail_url": f"{cls.pixiv_base_url}/artworks/{work_id}",
+            "tags": self._format_tags(illust.get("tags") or []),
+            "detail_url": f"{self.pixiv_base_url}/artworks/{work_id}",
             "source_id": "builtin.pixivel",
             "source_name": "Pixiv 排行榜",
         }
 
-    @classmethod
-    def _illust_to_wallpaper_items(cls, illust: dict[str, Any]) -> list[dict[str, Any]]:
+    def _illust_to_wallpaper_items(self, illust: dict[str, Any]) -> list[dict[str, Any]]:
         work_id = str(illust.get("id") or "").strip()
         user = illust.get("user") or {}
         title = str(illust.get("title") or "").strip()
         caption = str(illust.get("caption") or "").strip()
-        tags = cls._format_tags(illust.get("tags") or [])
-        page_count = cls._positive_int(illust.get("page_count")) or 1
-        detail_url = f"{cls.pixiv_base_url}/artworks/{work_id}"
+        tags = self._format_tags(illust.get("tags") or [])
+        page_count = self._positive_int(illust.get("page_count")) or 1
+        detail_url = f"{self.pixiv_base_url}/artworks/{work_id}"
 
-        pages = cls._extract_pages(illust)
+        pages = self._extract_pages(illust)
         if not pages:
             pages = [
                 {
                     "image_url": str(illust.get("image_urls", {}).get("large") or ""),
                     "preview_url": str(illust.get("image_urls", {}).get("medium") or ""),
-                    "width": cls._positive_int(illust.get("width")),
-                    "height": cls._positive_int(illust.get("height")),
+                    "width": self._positive_int(illust.get("width")),
+                    "height": self._positive_int(illust.get("height")),
                 }
             ]
 
         results: list[dict[str, Any]] = []
         for index, page in enumerate(pages):
-            image_url = page.get("image_url") or ""
-            preview_url = page.get("preview_url") or image_url
+            image_url = self._rewrite_image_url(page.get("image_url") or "")
+            preview_url = self._rewrite_image_url(page.get("preview_url") or image_url)
             if not image_url:
                 continue
             results.append(
@@ -254,8 +257,8 @@ class PixivelService:
                     title=title if len(pages) == 1 else f"{title} #{index + 1}",
                     image_url=image_url,
                     preview_url=preview_url,
-                    width=page.get("width") or cls._positive_int(illust.get("width")),
-                    height=page.get("height") or cls._positive_int(illust.get("height")),
+                    width=page.get("width") or self._positive_int(illust.get("width")),
+                    height=page.get("height") or self._positive_int(illust.get("height")),
                     description=caption,
                     metadata={
                         "work_id": work_id,
@@ -265,7 +268,7 @@ class PixivelService:
                         "author": str(user.get("name") or "").strip(),
                         "author_id": str(user.get("id") or "").strip(),
                         "author_url": (
-                            f"{cls.pixiv_base_url}/users/{user.get('id')}"
+                            f"{self.pixiv_base_url}/users/{user.get('id')}"
                             if user.get("id")
                             else ""
                         ),
@@ -273,15 +276,14 @@ class PixivelService:
                         "page_count": page_count,
                         "page_index": index,
                         "create_date": str(illust.get("create_date") or "").strip(),
-                        "total_view": cls._positive_int(illust.get("total_view")),
-                        "total_bookmarks": cls._positive_int(illust.get("total_bookmarks")),
+                        "total_view": self._positive_int(illust.get("total_view")),
+                        "total_bookmarks": self._positive_int(illust.get("total_bookmarks")),
                     },
                 ).to_dict()
             )
         return results
 
-    @classmethod
-    def _extract_pages(cls, illust: dict[str, Any]) -> list[dict[str, Any]]:
+    def _extract_pages(self, illust: dict[str, Any]) -> list[dict[str, Any]]:
         """Return a list of image URLs for every page of a multi-page artwork."""
         pages: list[dict[str, Any]] = []
         meta_pages = illust.get("meta_pages") or []
@@ -298,10 +300,10 @@ class PixivelService:
                     continue
                 pages.append(
                     {
-                        "image_url": cls._rewrite_image_url(image_url),
-                        "preview_url": cls._rewrite_image_url(medium or large or image_url),
-                        "width": cls._positive_int(page.get("width")),
-                        "height": cls._positive_int(page.get("height")),
+                        "image_url": self._rewrite_image_url(image_url),
+                        "preview_url": self._rewrite_image_url(medium or large or image_url),
+                        "width": self._positive_int(page.get("width")),
+                        "height": self._positive_int(page.get("height")),
                     }
                 )
             return pages
@@ -310,8 +312,8 @@ class PixivelService:
         if isinstance(meta_single, dict) and meta_single.get("original_image_url"):
             pages.append(
                 {
-                    "image_url": cls._rewrite_image_url(str(meta_single["original_image_url"]).strip()),
-                    "preview_url": cls._rewrite_image_url(
+                    "image_url": self._rewrite_image_url(str(meta_single["original_image_url"]).strip()),
+                    "preview_url": self._rewrite_image_url(
                         str(illust.get("image_urls", {}).get("medium", "")).strip()
                     ),
                 }
@@ -335,23 +337,29 @@ class PixivelService:
                 formatted.append(tag.strip())
         return formatted
 
-    @classmethod
-    def _rewrite_image_url(cls, url: str) -> str:
-        """Rewrite Pixiv's origin and legacy mirror to the active image CDN.
+    def _rewrite_image_url(self, url: str) -> str:
+        """Rewrite Pixiv's origin and known mirrors to the selected image proxy.
 
         Direct access to ``i.pximg.net`` is blocked in some regions; the
-        ``i.yuki.sh`` mirror is the active endpoint used by the target frontend.
+        configured public proxy supplies the required Pixiv Referer.
         """
         if not url:
             return url
+        proxy = next(proxy for proxy in PIXIV_IMAGE_PROXIES if proxy["id"] == self.image_proxy)
         for origin in (
             "https://i.pximg.net",
             "http://i.pximg.net",
             "https://pximg.cocomi.eu.org",
             "http://pximg.cocomi.eu.org",
+            "https://i.yuki.sh",
+            "http://i.yuki.sh",
+            "https://pixiv.azuremio.top",
+            "http://pixiv.azuremio.top",
+            "https://pximg.0080417.xyz",
+            "http://pximg.0080417.xyz",
         ):
             if url.startswith(origin):
-                return url.replace(origin, cls.image_proxy_base_url, 1)
+                return url.replace(origin, proxy["base_url"], 1)
         return url
 
     @staticmethod

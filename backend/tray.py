@@ -105,8 +105,8 @@ class ApplicationTray:
                 self._on_main_closed(window)
                 window.close()
 
-    def notify(self, title: str, message: str) -> None:
-        """Show a clickable Windows notification with a tray fallback."""
+    def notify(self, title: str, message: str) -> bool:
+        """Show a clickable notification with a tray fallback."""
         if sys.platform == "win32":
             try:
                 from windows_toasts import Toast, WindowsToaster
@@ -117,7 +117,7 @@ class ApplicationTray:
                 notification.text_fields = [title, message]
                 notification.on_activated = lambda _args: self.show_main_window()
                 self._windows_toaster.show_toast(notification)
-                return
+                return True
             except Exception as exc:
                 logger.warning("Clickable Windows notification failed: {}", exc)
         with self._lock:
@@ -125,6 +125,8 @@ class ApplicationTray:
         if icon is not None:
             with contextlib.suppress(Exception):
                 icon.notify(message, title)
+                return True
+        return False
 
     def _dynamic_action(self, action: str) -> None:
         try:

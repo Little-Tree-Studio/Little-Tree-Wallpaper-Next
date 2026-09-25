@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.settings_manager import POLLINATIONS_PROVIDER_ID, SettingsStore
+from backend.settings_manager import DEFAULT_PIXIV_IMAGE_PROXY, POLLINATIONS_PROVIDER_ID, SettingsStore
 
 
 class SettingsStoreMigrationTests(unittest.TestCase):
@@ -21,6 +21,7 @@ class SettingsStoreMigrationTests(unittest.TestCase):
             self.assertEqual(store.get("sniff.max_results"), 300)
             self.assertEqual(store.get("create.export_format"), "png")
             self.assertEqual(store.get("generate.prompt_history_limit"), 12)
+            self.assertEqual(store.get("wallpaper.pixiv.image_proxy"), DEFAULT_PIXIV_IMAGE_PROXY)
             self.assertFalse(store.get("onboarding.completed"))
             self.assertEqual(store.get("onboarding.agreement_version"), "")
             self.assertTrue(store.get("ui.hide_on_close"))
@@ -138,6 +139,18 @@ class SettingsStoreMigrationTests(unittest.TestCase):
             )
             store = SettingsStore(path)
             self.assertEqual(store.get("updates.mirror"), "https://gh-proxy.org/")
+
+    def test_invalid_pixiv_image_proxy_uses_yuki_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps({"wallpaper": {"pixiv": {"image_proxy": "not-a-proxy"}}}),
+                encoding="utf-8",
+            )
+
+            store = SettingsStore(path)
+
+            self.assertEqual(store.get("wallpaper.pixiv.image_proxy"), DEFAULT_PIXIV_IMAGE_PROXY)
 
 
 if __name__ == "__main__":

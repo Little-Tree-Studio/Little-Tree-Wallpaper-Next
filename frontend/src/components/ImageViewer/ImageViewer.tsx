@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, RotateCw, ZoomIn, ZoomOut, Maximize, Heart, Image as ImageIcon,
   Copy, ChevronLeft, ChevronRight, Save, PanelsTopLeft, ExternalLink,
-  ClipboardCopy, SlidersHorizontal,
+  ClipboardCopy, SlidersHorizontal, ImageOff,
 } from 'lucide-react';
 import { Button, Kbd, Label, ListBox, Separator, Spinner, Tooltip, toast } from '@heroui/react';
 import { useImageViewer } from './context';
@@ -45,6 +45,26 @@ function stableResourceUrl(value?: string | null): string {
     return value;
   }
   return value;
+}
+
+function ThumbnailImage({ src, title }: { src?: string; title?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return (
+      <div className="flex h-14 w-24 items-center justify-center bg-black/60">
+        <ImageOff size={16} className="text-white/40" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={title || ''}
+      className="h-14 w-24 object-cover"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 function TooltipIconButton({
@@ -706,11 +726,10 @@ export default function ImageViewer() {
                     : 'opacity-60 hover:opacity-100'
                 }`}
               >
-                <img
+                <ThumbnailImage
+                  key={item.preview_url || item.src}
                   src={item.preview_url || item.src}
-                  alt={item.title || ''}
-                  className="h-14 w-24 object-cover"
-                  loading="lazy"
+                  title={item.title}
                 />
               </Button>
               <Tooltip.Content>

@@ -44,6 +44,22 @@ import type {
   AutomationSummary,
 } from '@/components/AutomationEditor/types';
 
+export interface DesktopCapabilities {
+  platform: string;
+  desktop_session: string;
+  wallpaper: { get: boolean; set: boolean; displays: boolean };
+  notifications: boolean;
+  native_notifications: boolean;
+}
+
+export interface DesktopDisplay {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  is_primary: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Bridge: the frontend talks to the FastAPI backend over HTTP (same origin).
 // A per-session secret token (delivered via the LumiView launch URL) authorizes
@@ -51,7 +67,15 @@ import type {
 // ---------------------------------------------------------------------------
 const TOKEN_STORAGE_KEY = '__ltw_api_token__';
 export const FAVORITES_CHANGED_EVENT = 'ltw:favorites-changed';
+export const WALLPAPER_CHANGED_EVENT = 'ltw:wallpaper-changed';
+export const HISTORY_CHANGED_EVENT = 'ltw:history-changed';
 export const PLUGIN_REGISTRY_CHANGED_EVENT = 'ltw:plugin-registry-changed';
+
+function notifyChanged(event: string): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(event));
+  }
+}
 
 export function notifyFavoritesChanged(): void {
   if (typeof window !== 'undefined') {
@@ -112,20 +136,37 @@ export function readableMediaUrl(url: string): string {
   return url;
 }
 
+/**
+ * Route a remote media URL through the backend image proxy.
+ *
+ * The webview cannot read most third-party images with `fetch()` (CORS and
+ * hotlink protection), so downloads, clipboard copies and image edits ask the
+ * backend to fetch the bytes with the right Referer/proxy headers and stream
+ * them back same-origin. Local and same-origin URLs are returned unchanged.
+ */
+export function proxiedMediaUrl(url: string, referer?: string): string {
+  if (typeof window === 'undefined') return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (!parsed.protocol.startsWith('http') || parsed.origin === window.location.origin) return url;
+    const query = new URLSearchParams({ url: parsed.toString() });
+    if (referer) query.set('referer', referer);
+    return `/api/sniff-image?${query}`;
+  } catch {
+    // Data URLs and malformed values are left for fetch to handle.
+    return url;
+  }
+}
+
+/** Fetchable same-origin URL for media bytes, proxying remote hosts. */
+function mediaFetchUrl(url: string): string {
+  return proxiedMediaUrl(readableMediaUrl(url));
+}
+
 /** Fetch an image as readable bytes for Canvas-based editing. */
 export async function fetchEditableImage(url: string, referer?: string): Promise<Blob> {
   await waitForApi();
-  let sourceUrl = readableMediaUrl(url);
-  try {
-    const parsed = new URL(sourceUrl, window.location.href);
-    if (parsed.protocol.startsWith('http') && parsed.origin !== window.location.origin) {
-      const query = new URLSearchParams({ url: parsed.toString() });
-      if (referer) query.set('referer', referer);
-      sourceUrl = `/api/sniff-image?${query}`;
-    }
-  } catch {
-    // Data URLs and browser-supported image sources can be fetched directly.
-  }
+  const sourceUrl = proxiedMediaUrl(readableMediaUrl(url), referer);
   const response = await fetch(sourceUrl, { headers: authHeaders() });
   if (!response.ok) throw new Error(`图片读取失败 (HTTP ${response.status})`);
   const blob = await response.blob();
@@ -301,6 +342,31 @@ export async function getCurrentWallpaper(): Promise<WallpaperInfo | null> {
   return call('get_current_wallpaper');
 }
 
+export async function getDesktopCapabilities(): Promise<DesktopCapabilities> {
+  return call('get_desktop_capabilities');
+}
+
+export async function getDesktopDisplays(): Promise<DesktopDisplay[]> {
+  return call('get_desktop_displays');
+}
+
+export async function getDesktopWallpaper(): Promise<string | null> {
+  return call('get_desktop_wallpaper');
+}
+
+export async function setDesktopWallpaper(path: string): Promise<{ success: boolean; error?: string }> {
+  return call('set_desktop_wallpaper', path);
+}
+
+export async function notifyDesktop(
+  title: string,
+  message: string,
+  urgency: 'low' | 'normal' | 'critical' = 'normal',
+  timeoutMs = 5_000,
+): Promise<{ success: boolean }> {
+  return call('notify_desktop', title, message, urgency, timeoutMs);
+}
+
 export interface DisplayResolution {
   id: string;
   name: string;
@@ -321,8 +387,17 @@ export interface SetWallpaperResult {
   cancelled?: boolean;
 }
 
+function notifyWallpaperApplied(result: SetWallpaperResult): void {
+  if (result.success && !result.cancelled && !result.requires_confirmation) {
+    notifyChanged(WALLPAPER_CHANGED_EVENT);
+    notifyChanged(HISTORY_CHANGED_EVENT);
+  }
+}
+
 async function setWallpaperRaw(path: string, confirmed = false): Promise<SetWallpaperResult> {
-  return call('set_wallpaper', path, confirmed);
+  const result = await call<SetWallpaperResult>('set_wallpaper', path, confirmed);
+  notifyWallpaperApplied(result);
+  return result;
 }
 
 async function applyStaticWallpaper(path: string, confirmed: boolean): Promise<SetWallpaperResult> {
@@ -359,7 +434,9 @@ export async function resolvePendingStaticWallpaper(
   taskId: string,
   confirmed: boolean,
 ): Promise<SetWallpaperResult> {
-  return call('resolve_pending_static_wallpaper', taskId, confirmed);
+  const result = await call<SetWallpaperResult>('resolve_pending_static_wallpaper', taskId, confirmed);
+  notifyWallpaperApplied(result);
+  return result;
 }
 
 /** Static application identity (rarely changes). Sourced from the
@@ -406,6 +483,41 @@ export async function getAppInfo(): Promise<AppInfo> {
 
 export async function getBuildInfo(): Promise<BuildInfo> {
   return call<BuildInfo>('get_build_info');
+}
+
+/** A single running process that belongs to a conflicting wallpaper app. */
+export interface ConflictingProcess {
+  /** Lowercase executable name, e.g. ``"wallpaper64.exe"``. */
+  name: string;
+  pid: number;
+}
+
+/** Result of the competing-wallpaper-app detection. */
+export interface WallpaperConflictStatus {
+  /** True when at least one conflicting process is running. */
+  detected: boolean;
+  /** Display name of the conflicting app, e.g. ``"壁纸引擎（Wallpaper Engine）"``. */
+  app_label: string;
+  /** User-facing explanation of why the conflict matters. */
+  description: string;
+  processes: ConflictingProcess[];
+}
+
+/** Result of closing the conflicting wallpaper app. */
+export interface WallpaperConflictTerminateResult {
+  terminated: ConflictingProcess[];
+  /** Processes that could not be closed (e.g. elevated or protected). */
+  failed: ConflictingProcess[];
+  /** Conflicting processes still running after the attempt. */
+  remaining: ConflictingProcess[];
+}
+
+export async function getWallpaperConflicts(): Promise<WallpaperConflictStatus> {
+  return call<WallpaperConflictStatus>('get_wallpaper_conflicts');
+}
+
+export async function terminateWallpaperConflicts(): Promise<WallpaperConflictTerminateResult> {
+  return call<WallpaperConflictTerminateResult>('terminate_wallpaper_conflicts');
 }
 
 export async function getBingWallpaper(): Promise<BingWallpaper | null> {
@@ -568,7 +680,7 @@ export async function copyImageToClipboardWithProgress(url: string): Promise<boo
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
+    (onProgress) => fetchBlobWithProgress(mediaFetchUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return false;
 
@@ -608,7 +720,7 @@ export async function downloadWithProgress(
       failureLabel: '下载失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs });
+      const blob = await fetchBlobWithProgress(mediaFetchUrl(url), onProgress, { headers: authHeaders(), timeoutMs });
       const path = await saveBlobToDownloads(blob, filenameForBlob(filename, blob));
       if (!path) {
         toast.danger('保存失败', { timeout: 0 });
@@ -633,7 +745,7 @@ export async function saveAsWithProgress(
       failureLabel: '拉取数据失败，请重试',
     },
     async (onProgress) => {
-      const blob = await fetchBlobWithProgress(readableMediaUrl(sourceUrl), onProgress, { headers: authHeaders(), timeoutMs });
+      const blob = await fetchBlobWithProgress(mediaFetchUrl(sourceUrl), onProgress, { headers: authHeaders(), timeoutMs });
       const path = await saveBlobAs(blob, filenameForBlob(filename, blob));
       return { path, cancelled: path === null };
     }
@@ -681,7 +793,7 @@ export async function setWallpaperWithProgress(
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
+    (onProgress) => fetchBlobWithProgress(mediaFetchUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return null;
 
@@ -731,7 +843,7 @@ export async function openWithSystemWithProgress(
       loadingDescription: formatProgressDescription,
       failureLabel: '拉取数据失败，请重试',
     },
-    (onProgress) => fetchBlobWithProgress(readableMediaUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
+    (onProgress) => fetchBlobWithProgress(mediaFetchUrl(url), onProgress, { headers: authHeaders(), timeoutMs })
   );
   if (!blob) return null;
 
@@ -1018,12 +1130,102 @@ export function setSetting(key: string, value: any): Promise<void> {
   return request;
 }
 
-export async function getHistory(): Promise<{ path: string; title: string; reason: string; time: string }[]> {
+export interface HistoryItem {
+  path: string;
+  title: string;
+  reason: string;
+  time: string;
+  original_path?: string;
+  preview_url?: string;
+}
+
+export async function getHistory(): Promise<HistoryItem[]> {
   return call('get_history');
 }
 
 export async function addToHistory(path: string, title: string, reason: string): Promise<void> {
-  return call('add_to_history', path, title, reason);
+  const result = await call<void>('add_to_history', path, title, reason);
+  notifyChanged(HISTORY_CHANGED_EVENT);
+  return result;
+}
+
+export interface ClassifierPackage {
+  version?: string;
+  latest_version?: string;
+  download_url?: string;
+  size_bytes?: number;
+  sha256?: string;
+  [key: string]: unknown;
+}
+
+export interface ClassifierCatalog {
+  channel: string;
+  latest_version?: string;
+  version?: string;
+  package?: ClassifierPackage;
+  download_url?: string;
+  size_bytes?: number;
+  sha256?: string;
+  release_notes_url?: string;
+  platforms?: {
+    windows?: {
+      x64?: ClassifierPackage;
+    };
+  };
+  [key: string]: unknown;
+}
+
+export interface ClassifierStatus {
+  installed: boolean;
+  version: string;
+  root: string;
+  channel: string;
+  mirror: string;
+  directory?: string;
+  download: { phase: string; version?: string; progress?: number; error?: string };
+}
+
+export async function getClassifierCatalog(): Promise<ClassifierCatalog> {
+  return call('get_classifier_catalog');
+}
+
+export async function getClassifierStatus(): Promise<ClassifierStatus> {
+  return call('get_classifier_status');
+}
+
+export async function pickClassifierDirectory(): Promise<{ path: string } | null> {
+  return call('pick_classifier_directory');
+}
+
+export async function installClassifier(packageInfo: ClassifierPackage): Promise<ClassifierStatus> {
+  return call('install_classifier', packageInfo);
+}
+
+export async function startClassifierInstall(packageInfo: ClassifierPackage): Promise<ClassifierStatus> {
+  return call('start_classifier_install', packageInfo);
+}
+
+export interface ClassifyFavoritesResult {
+  processed: number;
+  skipped: number;
+  items: FavoriteItem[];
+  results?: Array<{ id: string; status: 'processed' | 'skipped'; reason?: string; message?: string; smart_tags?: string[] }>;
+}
+
+export async function classifyFavoriteItems(ids: string[]): Promise<ClassifyFavoritesResult> {
+  return call('classify_favorite_items', ids);
+}
+
+export async function deleteHistoryItem(path: string): Promise<boolean> {
+  const result = await call<boolean>('delete_history_item', path);
+  if (result === true) notifyChanged(HISTORY_CHANGED_EVENT);
+  return result;
+}
+
+export async function clearHistory(): Promise<void> {
+  const result = await call<void>('clear_history');
+  notifyChanged(HISTORY_CHANGED_EVENT);
+  return result;
 }
 
 export interface UpdateChannel {
@@ -1056,6 +1258,13 @@ export interface UpdateCheckResult {
 }
 
 export const FORCED_UPDATE_DETECTED_EVENT = 'ltw:forced-update-detected';
+export const TEST_UPDATE_DETECTED_EVENT = 'ltw:test-update-detected';
+
+export function notifyTestUpdateDetected(update: UpdateCheckResult): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(TEST_UPDATE_DETECTED_EVENT, { detail: update }));
+  }
+}
 
 export function notifyForcedUpdateDetected(update: UpdateCheckResult): void {
   if (typeof window !== 'undefined' && update.has_update && update.force_update) {
@@ -1327,6 +1536,8 @@ export interface DynamicBackgroundConfig {
   overlay_opacity: number;
 }
 
+export type DynamicWidgetTextColor = 'auto' | 'light' | 'dark';
+
 export interface DynamicWidgetInstance {
   id: string;
   type: string;
@@ -1337,6 +1548,9 @@ export interface DynamicWidgetInstance {
   opacity: number;
   background_opacity: number;
   background_blur: boolean;
+  text_scale?: number;
+  text_color?: DynamicWidgetTextColor;
+  accent_color?: string;
   settings: Record<string, unknown>;
 }
 
@@ -1619,7 +1833,9 @@ export async function listHistory(): Promise<any[]> {
 }
 
 export async function recordCurrentWallpaper(): Promise<any | null> {
-  return call('record_current_wallpaper');
+  const result = await call<any | null>('record_current_wallpaper');
+  if (typeof result?.path === 'string' && result.path) notifyChanged(HISTORY_CHANGED_EVENT);
+  return result;
 }
 
 export async function runtimeSnapshot(): Promise<any> {
@@ -1755,6 +1971,20 @@ export async function getCrashReports(): Promise<Array<{ path: string; name: str
 
 export async function openCrashReport(reportPath: string): Promise<any> {
   return call('open_crash_report', reportPath);
+}
+
+export interface DiagnosticsExportResult {
+  saved_path: string;
+  cancelled?: boolean;
+  error?: string;
+  attachment_count?: number;
+  skipped_count?: number;
+  size_bytes?: number;
+}
+
+/** Export environment info, redacted settings, logs and crash reports as a ZIP. */
+export async function exportDiagnostics(): Promise<DiagnosticsExportResult> {
+  return call('export_diagnostics');
 }
 
 export async function listIntelligentMarketSources(force: boolean = false): Promise<IntelligentMarketSource[]> {

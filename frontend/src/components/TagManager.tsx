@@ -12,6 +12,7 @@ interface TagInfo {
   name: string;
   count: number;
   isSystem: boolean;
+  isSmart: boolean;
 }
 
 interface TagManagerProps {
@@ -22,6 +23,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [systemTags, setSystemTags] = useState<string[]>([]);
+  const [smartTags, setSmartTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [newTagName, setNewTagName] = useState('');
@@ -38,6 +40,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
     setItems(d.items);
     setAllTags(d.all_tags || []);
     setSystemTags(d.system_tags || []);
+    setSmartTags(d.smart_tags || []);
     setLoading(false);
   }, []);
 
@@ -56,13 +59,15 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
       }
     }
     return Array.from(map.entries())
-      .map(([name, count]) => ({ name, count, isSystem: systemTags.includes(name) }))
+      .map(([name, count]) => ({ name, count, isSystem: systemTags.includes(name), isSmart: smartTags.includes(name) }))
       .sort((a, b) => {
+        if (a.isSmart && !b.isSmart) return -1;
+        if (!a.isSmart && b.isSmart) return 1;
         if (a.isSystem && !b.isSystem) return -1;
         if (!a.isSystem && b.isSystem) return 1;
         return a.name.localeCompare(b.name);
       });
-  }, [items, allTags, systemTags]);
+  }, [items, allTags, smartTags, systemTags]);
 
   const filteredTags = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -77,7 +82,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
       alert('标签已存在');
       return;
     }
-    if (systemTags.includes(name)) {
+    if (systemTags.includes(name) || smartTags.includes(name)) {
       alert('不能使用系统标签名称');
       return;
     }
@@ -125,7 +130,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
     setLoading(false);
   };
 
-  const selectableTags = filteredTags.filter((tag) => !tag.isSystem);
+  const selectableTags = filteredTags.filter((tag) => !tag.isSystem && !tag.isSmart);
   const allSelectableSelected = selectableTags.length > 0
     && selectableTags.every((tag) => selectedTags.has(tag.name));
 
@@ -252,24 +257,24 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
             <Card
               key={tag.name}
               className={`flex flex-row items-center justify-between p-3 ${
-                isBatchMode && !tag.isSystem
+                isBatchMode && !tag.isSystem && !tag.isSmart
                   ? 'cursor-pointer select-none hover:bg-surface-secondary'
                   : ''
               } ${selectedTags.has(tag.name) ? 'ring-2 ring-primary' : ''}`}
-              role={isBatchMode && !tag.isSystem ? 'checkbox' : undefined}
-              aria-checked={isBatchMode && !tag.isSystem ? selectedTags.has(tag.name) : undefined}
-              tabIndex={isBatchMode && !tag.isSystem ? 0 : undefined}
+              role={isBatchMode && !tag.isSystem && !tag.isSmart ? 'checkbox' : undefined}
+              aria-checked={isBatchMode && !tag.isSystem && !tag.isSmart ? selectedTags.has(tag.name) : undefined}
+              tabIndex={isBatchMode && !tag.isSystem && !tag.isSmart ? 0 : undefined}
               onClick={() => {
-                if (isBatchMode && !tag.isSystem) toggleTagSelection(tag.name);
+                if (isBatchMode && !tag.isSystem && !tag.isSmart) toggleTagSelection(tag.name);
               }}
               onKeyDown={(event) => {
-                if (!isBatchMode || tag.isSystem || (event.key !== 'Enter' && event.key !== ' ')) return;
+                if (!isBatchMode || tag.isSystem || tag.isSmart || (event.key !== 'Enter' && event.key !== ' ')) return;
                 event.preventDefault();
                 toggleTagSelection(tag.name);
               }}
             >
               <div className="flex items-center gap-3 min-w-0">
-                {isBatchMode && !tag.isSystem && (
+                {isBatchMode && !tag.isSystem && !tag.isSmart && (
                   <Checkbox
                     className="inline-flex shrink-0 items-center"
                     isSelected={selectedTags.has(tag.name)}
@@ -282,19 +287,26 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
                     </Checkbox.Content>
                   </Checkbox>
                 )}
-                <Chip size="sm" color={tag.isSystem ? 'warning' : 'default'} variant={tag.isSystem ? 'soft' : 'secondary'}>
+                <Chip
+                  size="sm"
+                  color={tag.isSmart ? 'accent' : tag.isSystem ? 'warning' : 'default'}
+                  variant={tag.isSmart ? 'soft' : tag.isSystem ? 'soft' : 'secondary'}
+                  className={tag.isSmart ? 'border-violet-300/60 bg-violet-500/12 text-violet-700 shadow-[0_0_12px_-4px_rgba(139,92,246,0.75)] dark:border-violet-300/30 dark:bg-violet-300/10 dark:text-violet-200' : undefined}
+                >
                   <Chip.Label className="truncate max-w-[140px]" title={tag.name}>{tag.name}</Chip.Label>
                 </Chip>
                 <Badge size="sm" variant="soft">{tag.count}</Badge>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 {isBatchMode ? (
-                  tag.isSystem ? (
+                  tag.isSmart ? (
+                    <Chip size="sm" color="accent" variant="soft"><Chip.Label>智能标签，不可管理</Chip.Label></Chip>
+                  ) : tag.isSystem ? (
                     <Chip size="sm" color="warning" variant="soft">
                       <Chip.Label>系统</Chip.Label>
                     </Chip>
                   ) : null
-                ) : !tag.isSystem ? (
+                ) : !tag.isSystem && !tag.isSmart ? (
                   <>
                     <Button
                       size="sm"
@@ -318,7 +330,7 @@ export default function TagManager({ onRefresh }: TagManagerProps) {
                   </>
                 ) : (
                   <Chip size="sm" color="warning" variant="soft">
-                    <Chip.Label>系统</Chip.Label>
+                    <Chip.Label>{tag.isSmart ? '智能' : '系统'}</Chip.Label>
                   </Chip>
                 )}
               </div>

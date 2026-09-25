@@ -11,9 +11,33 @@ from loguru import logger
 from backend.models import WallpaperItem
 from backend.services.cache import ResponseCache
 
+SUPPORTED_MARKETS: tuple[str, ...] = (
+    "zh-CN",
+    "zh-TW",
+    "en-US",
+    "en-GB",
+    "en-AU",
+    "en-CA",
+    "en-IN",
+    "ja-JP",
+    "ko-KR",
+    "de-DE",
+    "fr-FR",
+    "it-IT",
+    "es-ES",
+    "pt-BR",
+    "ru-RU",
+    "nl-NL",
+    "pl-PL",
+    "tr-TR",
+    "sv-SE",
+    "th-TH",
+)
+
 
 class BingService:
-    endpoint = "https://cn.bing.com/HPImageArchive.aspx"
+    endpoint = "https://www.bing.com/HPImageArchive.aspx"
+    cn_endpoint = "https://cn.bing.com/HPImageArchive.aspx"
     gallery_endpoint = "https://www.bing.com/hp/api/v1/imagegallery"
     _screen_quality_pattern = re.compile(r"^(\d{2,5})x(\d{2,5})$")
     _quality_aliases = {
@@ -153,9 +177,14 @@ class BingService:
             },
         ).to_dict()
 
+    def _daily_endpoint(self, market: str) -> str:
+        # cn.bing.com always serves the China edition regardless of ``mkt``;
+        # other regions must go through www.bing.com to get local content.
+        return self.cn_endpoint if market == "zh-CN" else self.endpoint
+
     def _get_daily_wallpaper(self, market: str) -> dict[str, Any] | None:
         response = requests.get(
-            self.endpoint,
+            self._daily_endpoint(market),
             params={
                 "format": "js",
                 "idx": 0,

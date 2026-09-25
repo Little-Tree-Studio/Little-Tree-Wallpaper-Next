@@ -75,5 +75,6 @@ def ensure_dirs() -> None:
     (get_cache_dir() / "logs").mkdir(exist_ok=True)
     (get_cache_dir() / "sniff").mkdir(exist_ok=True)
     (get_data_dir() / "downloads").mkdir(exist_ok=True)
+    (get_data_dir() / "history").mkdir(exist_ok=True)
     (get_data_dir() / "wallpaper_sources").mkdir(exist_ok=True)
     (get_config_dir() / "themes").mkdir(exist_ok=True)

@@ -1,18 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Card, Button, Separator, ComboBox, ListBox, Input, Label, Description,
-  Modal, toast,
+  Modal, ScrollShadow, toast,
 } from '@heroui/react';
 import type { Key } from '@heroui/react';
 import {
   Download, FileText, FolderOpen, Trash2, Shield, RefreshCw,
   LifeBuoy, BookOpen, MessageSquareWarning, ChevronDown, ChevronRight,
-  ExternalLink, Copy,
+  ExternalLink, Copy, FileArchive,
 } from 'lucide-react';
 import {
   getLogStats, setLogFileLevel, clearLogs, getDebugLog, saveDebugLog,
   openDebugLogFile, openDebugLogDirectory, getCrashReports, openCrashReport,
-  openUrl, copyToClipboard, type LogStats,
+  exportDiagnostics, openUrl, copyToClipboard, type LogStats,
 } from '@/api/backend';
 
 interface CrashReport {
@@ -74,6 +74,7 @@ export default function Help() {
   const [showRecent, setShowRecent] = useState(false);
   const [recentLog, setRecentLog] = useState<{ content: string; path: string; truncated: boolean } | null>(null);
   const [logLoading, setLogLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -143,6 +144,24 @@ export default function Help() {
       toast.danger('保存日志失败', { timeout: 0 });
     } finally {
       setLogLoading(false);
+    }
+  };
+
+  const handleExportDiagnostics = async () => {
+    setExporting(true);
+    try {
+      const result = await exportDiagnostics();
+      if (result?.cancelled) return;
+      if (result?.saved_path) {
+        const count = typeof result.attachment_count === 'number' ? `，含 ${result.attachment_count} 个附件` : '';
+        toast.success(`诊断数据已导出${count}`, { timeout: 4000 });
+      } else {
+        toast.danger(result?.error || '导出诊断数据失败', { timeout: 0 });
+      }
+    } catch {
+      toast.danger('导出诊断数据失败', { timeout: 0 });
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -285,6 +304,9 @@ export default function Help() {
             <Button size="sm" variant="secondary" onPress={handleSaveLog} isDisabled={logLoading}>
               <Download size={14} /> 保存日志
             </Button>
+            <Button size="sm" variant="secondary" onPress={handleExportDiagnostics} isDisabled={exporting}>
+              <FileArchive size={14} /> {exporting ? '正在导出…' : '导出诊断数据'}
+            </Button>
             <Button size="sm" variant="ghost" onPress={() => openDebugLogFile()}>
               <FileText size={14} /> 打开日志
             </Button>
@@ -299,6 +321,9 @@ export default function Help() {
               <Trash2 size={14} /> 清除日志
             </Button>
           </div>
+          <Description>
+            诊断数据包含运行环境、应用设置（密钥与令牌已脱敏）、日志和异常退出报告，不包含壁纸与图片文件。
+          </Description>
 
           {/* Recent log viewer */}
           {showRecent && (
@@ -327,20 +352,26 @@ export default function Help() {
             </div>
             {crashReports.length > 0 ? (
               <div className="space-y-1">
-                <div className="text-xs text-muted">发现 {crashReports.length} 份错误报告</div>
-                <div className="max-h-40 space-y-1 overflow-auto">
-                  {crashReports.map((report) => (
-                    <div key={report.path} className="flex items-center justify-between rounded-lg border border-border p-2">
-                      <div className="min-w-0 text-xs text-muted">
-                        <div className="truncate">{report.name}</div>
-                        <div>{new Date(report.created_at).toLocaleString()} · {(report.size / 1024).toFixed(1)} KB</div>
-                      </div>
-                      <Button size="sm" variant="ghost" onPress={() => handleOpenCrashReport(report.path)}>
-                        打开
-                      </Button>
-                    </div>
-                  ))}
-                </div>
+                <div className="text-xs text-muted">发现 {crashReports.length} 份错误报告，点击可打开</div>
+                <ScrollShadow hideScrollBar className="max-h-40">
+                  <ListBox
+                    aria-label="异常退出报告"
+                    selectionMode="none"
+                    onAction={(key) => void handleOpenCrashReport(String(key))}
+                  >
+                    {crashReports.map((report) => (
+                      <ListBox.Item key={report.path} id={report.path} textValue={report.name}>
+                        <div className="flex min-w-0 flex-1 flex-col">
+                          <Label className="max-w-full truncate">{report.name}</Label>
+                          <Description>
+                            {new Date(report.created_at).toLocaleString()} · {formatBytes(report.size)}
+                          </Description>
+                        </div>
+                        <ExternalLink size={14} className="shrink-0 text-muted" />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </ScrollShadow>
               </div>
             ) : (
               <div className="text-xs text-muted">暂无异常退出错误报告</div>
